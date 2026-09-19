@@ -13,11 +13,15 @@
  *     send({ request, env }) -> Promise<raw Jev response>  // ネットワーク送信はここだけ
  *   }
  *
- * 現時点で実装されている Provider は無い（すべて stub）。API仕様未確認のため推測実装しない。
+ * direct は実装済み（jev-direct-provider.mjs、2026-09-19公式API仕様確認済み）。vercel / cloudflare は
+ * 引き続き予約のみ（API仕様未確認のため推測実装しない）。
  */
 import { AdapterUnavailableError } from '../../core/errors.mjs';
+import { createDirectJevProvider } from './jev-direct-provider.mjs';
 
 export const JEV_PROVIDER_IDS = Object.freeze(['direct', 'vercel', 'cloudflare']);
+
+export { createDirectJevProvider };
 
 export function assertJevProviderShape(provider) {
   const problems = [];
@@ -29,23 +33,6 @@ export function assertJevProviderShape(provider) {
   }
   if (problems.length) throw new Error(`invalid jev provider: ${problems.join(', ')}`);
   return provider;
-}
-
-/**
- * TypeSafe Direct 経路 — stub。
- * 必要なキー名は JEV_API_KEY（値は .env・Human設定）。API仕様が確定するまで send() は実装しない。
- */
-export function createDirectJevProvider() {
-  return {
-    id: 'direct',
-    available(env) {
-      if (!env.JEV_API_KEY) return { ok: false, reason: 'JEV_API_KEY_MISSING' };
-      return { ok: true };
-    },
-    async send({ request }) {
-      throw new AdapterUnavailableError('jev', 'JEV_CLIENT_NOT_IMPLEMENTED', { route: 'direct', task: request?.task });
-    },
-  };
 }
 
 /** Vercel AI Gateway 経路 — 予約のみ（キー名・エンドポイント仕様は未確認） */

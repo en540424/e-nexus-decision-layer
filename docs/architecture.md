@@ -17,7 +17,7 @@
 │   7 outcome validation  → 8 usage metering                      │
 └──────────────────────────────────────────────────────────────┘
                 ▼   Adapter Interface（supports / decide）
-   rules   jev(stub)   mock-jev   local(stub)   llm(stub)   human
+   rules   jev(direct実装済み/APIキー未取得)   mock-jev   local(stub)   llm(stub)   human
 ```
 
 ## 2. 判断の流れ
@@ -79,12 +79,19 @@ Pre-Decision                 Execution                    Post-Execution Verific
 
 ```
 Decision Layer → Jev Adapter（変換だけ） → Jev Provider（経路だけ）
-                                          ├─ direct     TypeSafe Direct API（stub）
+                                          ├─ direct     TypeSafe Direct API（実装済み。2026-09-19公式API仕様確認）
                                           ├─ vercel     Vercel AI Gateway（予約）
                                           └─ cloudflare Cloudflare 経由（予約）
 ```
-`JEV_PROVIDER` で切替。経路の追加は `src/adapters/jev/jev-provider-interface.mjs` の契約を満たす1ファイルで済み、Adapter・Engine は変更しない。
-API 仕様が未確認の経路は `available()` が `JEV_ROUTE_NOT_IMPLEMENTED` を返し、Engine は次の Adapter へ落ちる。
+`JEV_PROVIDER` で切替（既定 `direct`）。経路の追加は `src/adapters/jev/jev-provider-interface.mjs` の契約を満たす1ファイルで済み、Adapter・Engine は変更しない。
+API 仕様が未確認の経路（vercel / cloudflare）は `available()` が `JEV_ROUTE_NOT_IMPLEMENTED` を返し、Engine は次の Adapter へ落ちる。
+
+`direct`（`src/adapters/jev/jev-direct-provider.mjs`）は `POST https://api.typesafe.ai/v1/systemone` へ
+Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加なし）。403/422/429/529/5xx/timeoutの分類とリトライ
+（408・429・5xx・timeoutのみ、`Retry-After`尊重、最大2回）、Network Gate二重チェック、Secret非表示はここで完結する。
+outcome schema → Jev questions（noul/choice/score）の写像と confidence 合成は `src/adapters/jev/jev-adapter.mjs`
+（変換層）が持つ。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
+integration test のみで叩く）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
 
 ## 10. 仕様に固定しない情報
 

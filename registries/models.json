@@ -37,12 +37,17 @@
       "provider": "typesafe-ai",
       "role": "decision-engine",
       "auto_selectable": true,
-      "status": "adapter-stub",
-      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。到達経路は JEV_PROVIDER（direct / vercel / cloudflare）で切替。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
+      "status": "direct-provider-implemented",
+      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。到達経路は JEV_PROVIDER（direct / vercel / cloudflare）で切替。direct は2026-09-19に公式API仕様確認のうえ実装済み（APIキー未取得のため実疎通は未実施）。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
       "routes": {
-        "direct": "stub",
+        "direct": "implemented",
         "vercel": "reserved",
         "cloudflare": "reserved"
+      },
+      "pricing": {
+        "$comment": "2026-09-19時点のベンダー公表値（docs.typesafe.ai/models）。恒久仕様ではない。実課金台帳はここではなく通常のUsage Meteringとコスト管理側が正本。",
+        "input_usd_micros_per_million_tokens": 42000,
+        "output_usd_micros_per_million_tokens": 0
       }
     },
     {

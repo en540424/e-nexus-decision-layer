@@ -33,9 +33,25 @@ test('a custom provider can be injected without touching the adapter or the engi
   const fake = {
     id: 'fake-gateway',
     available: () => ({ ok: true }),
+    // 応答は公式Jev形式（{model, answers, usage}）。2026-09-19確認済み仕様に合わせる（MA-30開発ログ参照）
     async send({ request }) {
       calls.push(request);
-      return { value: { local_sufficient: false, remotion_suitable: false, paid_generation_required: true, human_review_required: true, recommended_route: 'en-generate-hub' }, confidence: 0.9 };
+      return {
+        model: 'jev-1.13.0',
+        answers: {
+          local_sufficient: { type: 'noul', noul: 0.05 },
+          remotion_suitable: { type: 'noul', noul: 0.05 },
+          paid_generation_required: { type: 'noul', noul: 0.95 },
+          human_review_required: { type: 'noul', noul: 0.95 },
+          recommended_route: {
+            type: 'choice',
+            choice: 'en-generate-hub',
+            probabilities: { local: 0.01, remotion: 0.01, 'en-generate-hub': 0.9, 'human-review': 0.08 },
+            confidence: 0.9,
+          },
+        },
+        usage: { input_tokens: 120, output_tokens: 20 },
+      };
     },
   };
   const jev = createJevAdapter({ env: { EDL_ALLOW_NETWORK: 'true' }, provider: fake });
@@ -46,8 +62,14 @@ test('a custom provider can be injected without touching the adapter or the engi
   assert.equal(r.provider, 'typesafe-ai');
   assert.equal(r.tier, 'human', 'human_review_required still forces human even via a real-looking provider');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].task, 'paid-generation-gate');
-  assert.ok(Array.isArray(calls[0].candidates));
+  // request は公式Jev形式（{model, state, questions}）。task/candidates は state 配下（jev-adapter.mjs の変換結果）
+  assert.equal(calls[0].model, 'jev-latest');
+  assert.equal(calls[0].state.task, 'paid-generation-gate');
+  assert.ok(Array.isArray(calls[0].state.candidates));
+  assert.deepEqual(r.outcome, {
+    local_sufficient: false, remotion_suitable: false, paid_generation_required: true,
+    human_review_required: true, recommended_route: 'en-generate-hub',
+  }, 'outcome carries only the typed business fields, no jev-specific shape (noul/choice/probabilities)');
 });
 
 test('reserved decision types exist by name only and cannot be decided', async () => {

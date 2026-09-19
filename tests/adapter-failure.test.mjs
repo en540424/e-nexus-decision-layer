@@ -40,15 +40,13 @@ test('adapter failure: malformed result (confidence out of range) is treated as 
   assert.match(r.fallback.trace[0].reason, /confidence out of range/);
 });
 
-test('jev stub: key missing / network disabled / not implemented — never sends anything', async () => {
+test('jev gates: key missing / network disabled block Jev before any request is built (never sends anything)', async () => {
   const noKey = createJevAdapter({ env: {} });
   await assert.rejects(() => noKey.decide({ decisionType: 'x' }), (e) => e instanceof AdapterUnavailableError && e.details.reason === 'JEV_API_KEY_MISSING');
   const keyNoNet = createJevAdapter({ env: { JEV_API_KEY: 'dummy-for-test' } });
   await assert.rejects(() => keyNoNet.decide({ decisionType: 'x' }), (e) => e.details.reason === 'NETWORK_DISABLED');
-  const keyNet = createJevAdapter({ env: { JEV_API_KEY: 'dummy-for-test', EDL_ALLOW_NETWORK: 'true' } });
-  await assert.rejects(() => keyNet.decide({ decisionType: 'x' }), (e) => e.details.reason === 'JEV_CLIENT_NOT_IMPLEMENTED');
-  // 例外メッセージにキー値が漏れないこと
-  try { await keyNet.decide({ decisionType: 'x' }); } catch (e) { assert.ok(!JSON.stringify({ m: e.message, d: e.details }).includes('dummy-for-test')); }
+  // 例外メッセージにキー値が漏れないこと（Direct Provider の実送信テストは tests/jev-direct-provider.test.mjs 参照）
+  try { await keyNoNet.decide({ decisionType: 'x' }); } catch (e) { assert.ok(!JSON.stringify({ m: e.message, d: e.details }).includes('dummy-for-test')); }
 });
 
 test('adapter interface: shape is enforced at engine construction', () => {

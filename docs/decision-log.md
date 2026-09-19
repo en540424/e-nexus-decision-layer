@@ -17,3 +17,7 @@
 | 2026-09-19 | Jev Adapter を「変換」と「経路（Provider）」に分離。`JEV_PROVIDER`＝direct / vercel / cloudflare | Adapter が env 直読み・direct 固定だと経路追加で decide() を書き換えることになる。Provider 1ファイル追加で済む形に | Adapter を経路ごとに複製 |
 | 2026-09-19 | 将来ユースケース4件（micro decision / context relevance / I/O guard 補助 / post-execution verify）は decision_type 名の**予約のみ**（schema・rules・Adapter は作らない） | 名前と責務境界を先に固定し、実装時に既存設計と矛盾しないようにする。特に guard 補助は「解除を返せない」禁止キーを先に置く | 今 schema まで作る |
 | 2026-09-19 | ベンダー公表の性能値（ms・価格比・選択肢上限・学習手法等）を仕様に入れない | 変更され得る値に本体を依存させない。閾値は実測で決める | docs に数値を転記 |
+| 2026-09-19 | Direct Provider は `@typesafe-ai/sdk` を採用せず、Node 20+ の `fetch`/`AbortController` で自前実装 | 依存ゼロ方針（`package.json`に依存無し）を維持するため。SDK既定値（timeout 10s・retry 2回・backoff・Retry-After尊重）は自前実装で再現 | SDK採用（依存追加を許容） |
+| 2026-09-19 | outcome schemaのフィールド型からJev questionsへ自動写像（boolean→noul、enum文字列→choice、2〜10段の整数→score）。対応不能な型は`JEV_UNSUPPORTED_OUTCOME_FIELD`で止める | decision_typeごとにJev変換コードを書き足す設計だとAdapterが肥大化し、型の対応漏れを推測で埋めるリスクが出る。汎用写像＋明示的な非対応エラーの方が安全 | decision_typeごとに専用マッピング関数を書く |
+| 2026-09-19 | 全体confidence = 各questionのconfidenceの最小値（保守側で合成） | 一部のquestionだけ確信度が高くても、他が不確かなら全体をhuman行きにする。楽観的な平均・最大値は誤ってautoにする方向に倒れやすい | 平均値・重み付け合成 |
+| 2026-09-19 | noulのconfidenceを`\|2*noul-1\|`として独自導出（公式は返さない） | 公式値が無い以上ここで作るしかない。0.5付近＝五分五分で低confidence、0/1付近＝高confidenceという直感に一致させた | confidence常に1.0固定（楽観） |
