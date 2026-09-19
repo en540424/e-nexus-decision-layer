@@ -102,6 +102,7 @@ outcome schema → Jev questions（noul/choice/score）の写像と confidence �
 （変換層）が持つ。 question の判断基準は schema 側に書く（outcome field の `description` = instructions、`recommended_route` の
 `x-enum-descriptions` = choice criteria の説明、outcome の `description` = `state.brief`。2026-09-19 Confidence Calibration。
 第1回実測（同日）で description を書いた field の confidence は 0.04〜0.28 → 0.76〜1.00 に上がった。Vercel 経路の失敗は AI SDK の `RetryError` を unwrap して元の 429/5xx で分類する（`jev-vercel-provider.mjs` `classifyGatewayError`）。
+Calibration は同日 **B（question 設計）で確定**、閾値・min 合成は維持、`human_review_required` は次フェーズで Hybrid（policy 側）へ。auto は real Jev 0/14 で Production Auto Ready = NO、Wrapper Design Ready = YES（`docs/poc-paid-generation-gate.md` §Calibration 最終確定）。
 `docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
 integration test のみで叩く）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
 

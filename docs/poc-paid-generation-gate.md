@@ -144,3 +144,49 @@ node scripts/poc-calibration.mjs analyze
 - **`human_review_required` は別扱いの候補（D：一部 field は Jev 向きでない）**。「人が route 判定を確認すべきか」は資産の事実ではなく組織の許容度に依存し、input に無い。improved で残り 6 件も同 field が limiting なら、この field は Jev に訊かず他 4 field と confidence から決定的に導く（follow-up タスク）を検討する。**今回は wording を変えない**（改善版の A/B を汚さない）
 - aggregate（min）・閾値（0.85 / 0.60）：**変更しない**。improved 残 6 件が揃うまで判断材料不足。alt aggregate 列は解釈用のまま
 - OpenMontage wrapper ready：**保留**（improved 実測完了・error 原因の実測確認が未了）
+
+### Calibration 最終確定（2026-09-19、実測 baseline 7 / improved 7、同一母集団 10 ケース）
+
+**measured fact**（`node scripts/poc-calibration.mjs analyze`。improved 7 run・baseline 3 run を case_id 単位で最新成功 record に統合。D1 は `--offline` でネットワークゼロ確認）
+
+| 項目 | baseline（description 無し） | improved（description / criteria / brief あり） |
+|---|---|---|
+| Rules First / Jev ok / 失敗 | 3 / 7 / 0 | 3 / 7 / 0 |
+| Jev confidence min / median / mean / max | 0.02 / 0.10 / 0.089 / 0.20 | 0.00 / 0.24 / 0.291 / 0.66 |
+| tier（現閾値） | human 7 | review 1（E1）／human 6／**auto 0** |
+| 期待 route 一致 | 4 / 7（A3・C1・E1 が不一致） | **6 / 7**（C1 のみ不一致） |
+| outcome の field 間整合 | 矛盾あり（A3・C1） | **7 / 7 整合** |
+| field confidence mean：local / remotion / paid / human_review / route | 0.46 / 0.11 / 0.44 / 0.31 / 0.50 | **0.75 / 0.70 / 0.73 / 0.43 / 0.91** |
+| limiting field | remotion_suitable ×5 | **human_review_required ×5**、local ×1、remotion ×1 |
+| latency median | 552ms | 938ms |
+| Jev cost / 件（input tokens） | ≈21 USD micros（≈510 tokens） | ≈52 USD micros（≈1,240 tokens）＝ **2.4 倍**（絶対額は 7 件で ≈$0.0004） |
+
+- **ノイズ床**：F1 を improved で 2 回実行（10:19 → 0.18、10:20 → 0.24。差は remotion_suitable のみ、route・human_review_required は同一）。**同一入力で ±0.06 程度は揺れる**。統合は最新成功を採用するので表は 0.24。ケース別 Δ が 0.1 未満（B1 +0.08、D2 −0.02）は意味を読まない。baseline → improved の mean 差（+0.20）はノイズ床を大きく超える
+- **E1（improved）は実データで初めて Human Gate を通過した件**：Jev 0.66 ≥ review_min で chain が Jev で確定（`resolved_by=jev`、attempts 2、top-level cost 52 = usage_total 52）→ `human_review_required=true` の `forcedHumanKey` で **tier=human に固定**。「閾値を超えても Human フラグが勝つ」経路の初の実測。final resolver / attempts の分離が両方向で正しいことも同時に確認
+- **auto は 0 / 14**（real Jev 全測定）。improved 最大 0.66 に対し auto_min 0.85。min 合成に human_review_required が含まれる限り auto は実質到達しない
+- **429 の実測確定**：短時間に 5 リクエスト連続で `JEV_RATE_LIMITED`（`GatewayRateLimitError`、`rate_limit_exceeded`、SDK retry 2 回・7.4s）。前回未確定だった元エラーは **rate limit**。数分後の再実行で成功。runner は即停止・成功済みは再課金なし・`analyze` が統合、と設計どおり動いた
+- metering：final=human の全 Jev ok 件で `attempts[]` に provider / model=typesafe-ai/jev / networked=true / usage_known=true / cost が残る（改めて破損なし）
+- D1（Rules First）は improved 側も `--offline` で resolved_by=rules・Jev 未呼出・networked_attempts 0 を確認（課金 0）
+
+**human_review_required の実測**（improved 7 件）：B1 0.12(false)・A3 0.46(false)・B2 0.40(false)・C1 0.50(true)・D2 0.00(true)・E1 0.66(true)・F1 0.90(true)。**向きは 7 / 7 で期待と矛盾しない**（明確ケースは false、曖昧ケースは true）が、明確ケースほど p が 0.5 に寄る（「人が見るべきか」を資産の事実から確信をもって否定できない）。他 4 field が 0.70〜0.91 に上がった後も**この field だけ 0.43** で limiting ×5。
+
+**C1（境界ケース）**：期待 `human-review` に対し Jev は `local`（local=true・remotion=true・paid=false・**human_review_required=true**）。**route 推薦としては不一致として記録**する。一方 `human_review_required=true` が付いたため最終 tier は human で安全側は保たれた。残る不確実：ケース定義の `expected.route=human-review` と `expected.human_review=true` が同じことの二重表現だった可能性（事後に期待を書き換えない。regression sentinel としてケースを維持）。
+
+**decision**
+
+| 項目 | 決定 | 根拠 |
+|---|---|---|
+| Calibration 分類（全体） | **B：question 設計改善で十分** | route 不一致 3→1、limiting が remotion（×5）→ human_review（×5）に移動、outcome 整合 7/7、description を書いた 4 field の mean が 0.11〜0.50 → 0.70〜0.91 |
+| `human_review_required`（単体） | **D：この field は Jev 単独向きでない**。次フェーズで **Hybrid（Option 3）**：Jev の答えは判断材料として残し、Decision Layer が policy（decision_type / project）＋他 4 field の confidence＋field 間矛盾＋Jev の true で human review 要否を決定的に導く（Jev が true なら常に true＝安全側のみ強化）。**今回は wording・コード変更なし** | 意味論：資産の事実ではなく組織の許容度の判断で input に無い。confidence が低いから外すのではなく、Rules First → Jev → Human の思想では policy 側が持つべき値。向きは 7/7 正しいので材料としては有用 |
+| aggregate | **min 維持** | alt 列（mean / second_min / human_review 除外）を検討し却下：mean なら C1（route 不一致）が review に上がる。min が実際の不一致を止めている実測がある。human_review_required の Hybrid 化後に再評価 |
+| threshold | **auto_min 0.85 / review_min 0.60 維持** | 変更根拠なし。auto を作るために下げれば、最も calibration の悪い field に自動 routing を渡すことになる。n=7 |
+| C1 | 不一致として記録・ケース維持・閾値/aggregate を C1 に合わせて調整しない | 上記 |
+| Rules First | 変更なし（D1 の粗さは記録のみ） | §15 |
+| **Wrapper Design Ready** | **YES** | route semantics 安定（6/7・整合 7/7）、Human Gate 実測（E1）、confidence 挙動理解（min・ノイズ床・auto 0/14）、閾値/aggregate 確定、metering 実測、cost ≈52 USD micros/件、429 挙動既知（burst 禁止、runner と同じ pacing） |
+| **Production Auto Ready** | **NO** | auto 0/14。human_review_required の Hybrid 化と、より多くの実データ（n=7 は小）が前提。wrapper は review / human 経路だけを前提に設計する |
+
+**remaining uncertainty**：サンプル 7 件／同一入力のノイズ ±0.06／C1 の期待定義／TypeSafe Direct 実疎通（招待待ち、本 Calibration を block しない）／本番入力分布での confidence（今回は設計ケース）
+
+**follow-up（MA-30 の完了を block しない。番号は Human 発番、台帳慣例なら `MA-30-1` / `MA-30-2`）**
+1. OpenMontage Decision Layer Wrapper：「支払い前宣言」→ `decide` → `recommended_route=en-generate-hub` のときだけ `/en-generate` へ。review / human 経路のみ。1 判定 ≈52 USD micros、burst しない
+2. `human_review_required` Hybrid 化（上表）

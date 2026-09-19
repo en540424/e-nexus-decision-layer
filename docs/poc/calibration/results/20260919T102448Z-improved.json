@@ -1,0 +1,154 @@
+{
+  "schema": "edl-poc-calibration-v1",
+  "decision_type": "paid-generation-gate",
+  "variant": "improved",
+  "started_at": "2026-09-19T10:24:48.980Z",
+  "finished_at": "2026-09-19T10:24:49.295Z",
+  "node": "v24.13.1",
+  "provider": {
+    "route": "offline",
+    "note": "rules → human only; no network; non-rules cases skipped"
+  },
+  "thresholds": {
+    "auto_min": 0.85,
+    "review_min": 0.6
+  },
+  "usage_path": "C:\\Users\\envie\\e-nexus-decision-layer\\data\\usage\\usage.jsonl",
+  "cases_total": 1,
+  "stopped": null,
+  "offline": true,
+  "skipped_offline": [],
+  "records": [
+    {
+      "case_id": "D1-motion-with-photoreal-rules",
+      "category": "D: Remotion と生成AIの境界（Rules First が先に確定する形）",
+      "variant": "improved",
+      "input": {
+        "asset_kind": "b-roll",
+        "purpose": "Motion-graphics explainer of our delivery process; needs one photoreal background plate of a city street at dusk that we do not have",
+        "style": "motion-graphics",
+        "duration_sec": 20,
+        "has_reference_media": false,
+        "has_local_assets": true,
+        "language": "ja"
+      },
+      "expected": {
+        "resolver": "rules",
+        "route": "local",
+        "human_review": false,
+        "paid_generation": false,
+        "ambiguity": "medium",
+        "note": "rule local-assets-present-and-flat（has_local_assets=true + motion-graphics）が確定する。purpose の『無い素材が要る』は rules が見ない＝Rules の粗さの観測ケース。Rules を弱めるためではなく記録用"
+      },
+      "decision_id": "dec_20260919102448983_bebf5797",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "auto",
+        "confidence": 1,
+        "outcome": {
+          "local_sufficient": true,
+          "remotion_suitable": true,
+          "paid_generation_required": false,
+          "human_review_required": false,
+          "recommended_route": "local"
+        },
+        "human_escalation": false,
+        "human_gate": {
+          "required": false,
+          "preserved": true,
+          "reason": null,
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:local-assets-present-and-flat — 素材が手元にあり写実性を要求しない場合は無料経路"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "local",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "NOT_REGISTERED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-19T10:24:48.991Z",
+        "decision_id": "dec_20260919102448983_bebf5797",
+        "application_id": "openmontage",
+        "project_id": "openmontage",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "paid-generation-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": false,
+        "tier": "auto",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        }
+      },
+      "wall_ms": 10
+    }
+  ]
+}

@@ -11,6 +11,9 @@
  *   node scripts/poc-calibration.mjs run --questions improved|baseline [--only A3,B1] [--out <file>]
  *       real Jev。シェルに AI_GATEWAY_API_KEY / JEV_PROVIDER=vercel / EDL_ALLOW_NETWORK=true が export
  *       されているときだけ動く（無ければ exit 4 で止まり、キーの入力は求めない）。各ケース1回・逐次
+ *   node scripts/poc-calibration.mjs run --questions improved --only D1-... --offline
+ *       ネットワークゼロ。chain は rules → human だけで、Rules に当たらないケースは**実行せずスキップ**する
+ *       （Jev を呼ばない・Human escalation も書かない）。Rules First 想定ケースの record をキー無しで揃えるため
  *   node scripts/poc-calibration.mjs analyze [<results.json | dir>...] [--compare <other-results.json>]
  *       引数無しなら docs/poc/calibration/results/ の *.json を全部読む（PowerShell はネイティブ実行ファイルに glob を
  *       展開しないので、Human は引数無しで実行する）。ディレクトリを渡せばその中の *.json。
@@ -138,18 +141,27 @@ function assertNoSecrets(text, env) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /** @param {object} [opts.provider] テスト専用：Jev Provider を注入（実ネットワークを使わずに runner を検証する）。本番 run では省略 */
-export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, pauseAfterRetryableMs = 5000, log = () => {}, provider = null }) {
+export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, pauseAfterRetryableMs = 5000, log = () => {}, provider = null, offline = false }) {
   const capture = {};
+  const rules = createRulesAdapter();
   const jev = wrapJevAdapter(createJevAdapter({ env, provider, decisionTypeLoader: decisionTypeLoaderFor(variant) }), capture);
-  // 本番 defaultAdapters() と同じ構成。realJevUsable() が真なので mock-jev は入らない（呼び出し側で保証する）
-  const engine = createDecisionEngine({ adapters: [createRulesAdapter(), jev, createLocalAdapterStub(), createLlmAdapterStub({ env }), createHumanAdapter()], meter });
+  // 本番 defaultAdapters() と同じ構成。realJevUsable() が真なので mock-jev は入らない（呼び出し側で保証する）。
+  // offline は rules → human だけ（Rules に当たらないケースは下で実行前にスキップするので human にも到達しない）
+  const engine = createDecisionEngine({ adapters: offline ? [rules, createHumanAdapter()] : [rules, jev, createLocalAdapterStub(), createLlmAdapterStub({ env }), createHumanAdapter()], meter });
   const thresholds = loadThresholds(doc.decision_type);
   const selected = only ? doc.cases.filter((c) => only.includes(c.case_id)) : doc.cases;
   const records = [];
   let consecutiveUnavailable = 0;
   let stopped = null;
+  const skipped_offline = [];
   for (const c of selected) {
     const started = Date.now();
+    if (offline) {
+      // 実行前に rules だけで判定。当たらなければ何も呼ばず・何も書かずスキップ（Jev も Human escalation も発生させない）
+      let hit = true;
+      try { await rules.decide({ decisionType: doc.decision_type, input: c.input, candidates: [], context: {} }); } catch { hit = false; }
+      if (!hit) { skipped_offline.push(c.case_id); log(`${c.case_id}: skipped (offline, no rule matched — would need Jev)`); continue; }
+    }
     const result = await engine.decide(requestFor(doc, c));
     const jevAttempt = result.fallback.trace.find((a) => a.adapter === 'jev') ?? null;
     const rulesHit = result.resolved_by === 'rules';
@@ -212,7 +224,7 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
     } else consecutiveUnavailable = 0;
     if (delayMs) await sleep(delayMs);
   }
-  return { thresholds, records, stopped };
+  return { thresholds, records, stopped, skipped_offline };
 }
 
 function providerSummary(env) {
@@ -228,7 +240,8 @@ async function cmdRun(opts, env) {
   const variant = opts.questions ?? 'improved';
   decisionTypeLoaderFor(variant);
   const doc = loadCases(opts.cases ?? DEFAULT_CASES_PATH);
-  if (!realJevUsable(env)) {
+  const offline = opts.offline === true;
+  if (!offline && !realJevUsable(env)) {
     process.stderr.write([
       'real Jev route is not usable in this shell (key / JEV_PROVIDER / EDL_ALLOW_NETWORK not exported).',
       'Human Required: run this command in your own shell where AI_GATEWAY_API_KEY, JEV_PROVIDER=vercel and',
@@ -241,7 +254,8 @@ async function cmdRun(opts, env) {
   const only = opts.only ? String(opts.only).split(',').map((s) => s.trim()).filter(Boolean) : null;
   const meter = createFileMeter();
   const startedAt = new Date();
-  const { thresholds, records, stopped } = await runCases({ doc, variant, only, env, meter, log: (m) => process.stderr.write(`${m}\n`) });
+  if (offline && !only) throw new Error('--offline requires --only <rules-first case ids>');
+  const { thresholds, records, stopped, skipped_offline } = await runCases({ doc, variant, only, env, meter, offline, log: (m) => process.stderr.write(`${m}\n`) });
   const out = {
     schema: 'edl-poc-calibration-v1',
     decision_type: doc.decision_type,
@@ -249,11 +263,12 @@ async function cmdRun(opts, env) {
     started_at: startedAt.toISOString(),
     finished_at: new Date().toISOString(),
     node: process.version,
-    provider: providerSummary(env),
+    provider: offline ? { route: 'offline', note: 'rules → human only; no network; non-rules cases skipped' } : providerSummary(env),
     thresholds,
     usage_path: meter.path,
     cases_total: records.length,
     stopped,
+    ...(offline ? { offline: true, skipped_offline } : {}),
     records,
   };
   const text = JSON.stringify(out, null, 2);
@@ -568,7 +583,7 @@ async function main() {
       return;
     }
     default:
-      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] | analyze [<results.json|dir>...] [--compare other.json]\n');
+      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] [--offline] | analyze [<results.json|dir>...] [--compare other.json]\n');
       process.exitCode = 2;
   }
 }

@@ -210,3 +210,19 @@ test('analyze with no arguments reads every committed results json (PowerShell d
   assert.deepEqual(resolveResultFiles([RESULTS_DIR]), files, 'a directory argument behaves the same');
   assert.throws(() => resolveResultFiles(['docs/poc/calibration/results/*.json']), /not found/, 'an unexpanded glob fails loudly instead of silently');
 });
+
+test('runCases offline: rules-first case is recorded through the real engine with zero network; a non-rules case is skipped before any adapter runs (no Jev, no human escalation row)', async () => {
+  const doc = loadCases();
+  const provider = { id: 'must-not-be-called', available: () => ({ ok: true }), async send() { throw new Error('network call in offline mode'); } };
+  const meter = createMemoryMeter();
+  const { records, stopped, skipped_offline } = await runCases({ doc, variant: 'improved', only: ['D1-motion-with-photoreal-rules', 'C1-boundary-scene-unspecified'], env: {}, meter, provider, offline: true, delayMs: 0 });
+  assert.equal(stopped, null);
+  assert.deepEqual(skipped_offline, ['C1-boundary-scene-unspecified']);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].case_id, 'D1-motion-with-photoreal-rules');
+  assert.equal(records[0].rules_first_hit, true);
+  assert.equal(records[0].jev, null);
+  assert.equal(records[0].final.resolved_by, 'rules');
+  assert.equal(meter.readAll().length, 1, 'only the rules-resolved decision is metered');
+  assert.equal(records[0].usage_record.usage_total.networked_attempts, 0);
+});
