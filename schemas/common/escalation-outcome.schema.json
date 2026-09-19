@@ -1,0 +1,14 @@
+{
+  "$id": "edl/common/escalation-outcome",
+  "title": "EscalationOutcome",
+  "description": "Human Adapter が返す唯一の outcome 形。承認ではなく「Humanへ上げた」事実だけを表す。",
+  "type": "object",
+  "required": ["escalated", "human_review_required", "reason", "decision_type"],
+  "additionalProperties": false,
+  "properties": {
+    "escalated": { "type": "boolean", "const": true },
+    "human_review_required": { "type": "boolean", "const": true },
+    "reason": { "type": "string" },
+    "decision_type": { "type": "string" }
+  }
+}

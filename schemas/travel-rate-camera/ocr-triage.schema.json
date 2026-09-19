@@ -1,0 +1,30 @@
+{
+  "$id": "edl/travel-rate-camera/ocr-triage",
+  "title": "OcrTriage",
+  "description": "schema-only（将来展開）。OCR結果を受けて currency_type / needs_retake / needs_human_review / parsing_route を返す。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["ocr_text"],
+      "properties": {
+        "ocr_text": { "type": "string" },
+        "line_confidences": { "type": "array", "items": { "type": "object", "required": ["text", "confidence"], "properties": { "text": { "type": "string" }, "confidence": { "type": "number", "minimum": 0, "maximum": 1 } } } },
+        "country_hint": { "type": ["string", "null"] },
+        "__mock": { "type": "object" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["currency_type", "needs_retake", "needs_human_review", "parsing_route"],
+      "additionalProperties": false,
+      "properties": {
+        "currency_type": { "type": ["string", "null"], "description": "ISO 4217 または null" },
+        "ocr_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "needs_retake": { "type": "boolean" },
+        "needs_human_review": { "type": "boolean" },
+        "parsing_route": { "type": "string", "enum": ["rule-extract", "llm-extract", "manual"] }
+      }
+    }
+  }
+}

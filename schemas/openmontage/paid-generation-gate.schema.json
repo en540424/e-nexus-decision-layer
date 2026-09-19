@@ -1,0 +1,35 @@
+{
+  "$id": "edl/openmontage/paid-generation-gate",
+  "title": "PaidGenerationGate",
+  "description": "PoC。有料生成APIを呼ぶ直前の事前トリアージ。outcome には承認を意味するキーを置かない。paid_generation_required=true は『en-generate-hub の Human-only承認フローへ進む価値がある』という意味でしかなく、実行許可ではない。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["asset_kind", "purpose"],
+      "properties": {
+        "asset_kind": { "type": "string", "enum": ["kinetic-typography", "subtitle", "slideshow", "b-roll", "talking-head", "product-shot", "scene", "image", "other"] },
+        "purpose": { "type": "string", "minLength": 1 },
+        "style": { "type": "string", "enum": ["flat", "motion-graphics", "photoreal", "cinematic", "anime", "unspecified"] },
+        "duration_sec": { "type": "number", "minimum": 0 },
+        "has_reference_media": { "type": "boolean" },
+        "has_local_assets": { "type": "boolean" },
+        "estimated_paid_cost_usd_micros": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string" },
+        "__mock": { "type": "object", "description": "テスト専用。Mock Jev の挙動制御。実運用の Adapter は無視する" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["local_sufficient", "remotion_suitable", "paid_generation_required", "human_review_required", "recommended_route"],
+      "additionalProperties": false,
+      "properties": {
+        "local_sufficient": { "type": "boolean" },
+        "remotion_suitable": { "type": "boolean" },
+        "paid_generation_required": { "type": "boolean" },
+        "human_review_required": { "type": "boolean" },
+        "recommended_route": { "type": "string", "enum": ["local", "remotion", "en-generate-hub", "human-review"] }
+      }
+    }
+  }
+}

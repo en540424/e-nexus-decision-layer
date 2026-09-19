@@ -1,0 +1,30 @@
+{
+  "$id": "edl/ai-phone/call-triage",
+  "title": "CallTriage",
+  "description": "schema-only（将来展開）。電話AI受付（電話AI受付キット V1 = Twilio × n8n × Discord）の通話要約を受けて分類する。個人情報（氏名・電話番号）は input に入れない。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["transcript_summary"],
+      "properties": {
+        "transcript_summary": { "type": "string" },
+        "duration_sec": { "type": "number", "minimum": 0 },
+        "business_hours": { "type": "boolean" },
+        "__mock": { "type": "object" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["call_category", "urgency", "sales_lead", "complaint", "human_required"],
+      "additionalProperties": false,
+      "properties": {
+        "call_category": { "type": "string", "enum": ["inquiry", "order", "sales", "complaint", "spam", "other"] },
+        "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+        "sales_lead": { "type": "boolean" },
+        "complaint": { "type": "boolean" },
+        "human_required": { "type": "boolean" }
+      }
+    }
+  }
+}

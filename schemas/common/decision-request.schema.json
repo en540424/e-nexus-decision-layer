@@ -1,0 +1,21 @@
+{
+  "$id": "edl/common/decision-request",
+  "title": "DecisionRequest",
+  "description": "App / Agent / IDE Adapter から Decision Layer へ渡す共通リクエスト。decision_type 固有の input の形は schemas/<domain>/*.schema.json が持つ。",
+  "type": "object",
+  "required": ["decision_type", "application_id", "project_id", "input"],
+  "properties": {
+    "decision_type": { "type": "string", "minLength": 1 },
+    "application_id": { "type": "string", "minLength": 1, "description": "呼び出し元アプリ／Agent／IDE（例: claude-code, cursor, hermes, openmontage, travel-rate-camera）" },
+    "project_id": { "type": "string", "minLength": 1, "description": "registries/projects.json の id" },
+    "tenant": { "type": ["string", "null"], "description": "販売版でのユーザー／テナント識別子。原価集計用。PIIは入れない" },
+    "input": { "type": "object" },
+    "context": { "type": "object" },
+    "options": {
+      "type": "object",
+      "properties": {
+        "allow_paid_adapters": { "type": "boolean", "description": "true のときだけ有料Provider（policies/cost/limits.json の paid_providers）のAdapterを chain に残す" }
+      }
+    }
+  }
+}

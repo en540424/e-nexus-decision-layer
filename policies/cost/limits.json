@@ -1,0 +1,6 @@
+{
+  "$comment": "Cost Gate。paid_providers に含まれる provider の Adapter は request.options.allow_paid_adapters=true のときだけ chain に残る。mock / local / rules / human は無料。1判定あたりの推定コスト上限は metering の実測後に設定する（現状は記録のみ）。",
+  "paid_providers": ["typesafe-ai", "anthropic", "openai", "google"],
+  "per_decision_estimated_cost_usd_micros_max": null,
+  "note": "有料生成API（fal.ai / WaveSpeedAI 等）の予算ゲートは en-generate-hub が正本。ここでは Decision Layer 自身が使う判定モデルの費用だけを扱う。"
+}

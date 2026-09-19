@@ -1,0 +1,14 @@
+{
+  "schema": "edl-registry-v1",
+  "kind": "models",
+  "updated": "2026-09-19",
+  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Advisorモデル運用ルール_正本 と ~/.claude/settings.json（modelSettings）。role: executor / advisor / special-approval / decision-engine。Fable は Human の特別承認が無ければ候補に出さない（auto_selectable=false）。",
+  "entries": [
+    { "id": "sonnet", "scope": "global", "provider": "anthropic", "role": "executor", "default_effort": "high", "auto_selectable": true, "description": "通常実行（Sonnet First）" },
+    { "id": "opus", "scope": "global", "provider": "anthropic", "role": "advisor", "default_effort": "medium", "auto_selectable": true, "description": "Advisor（難所の判断・第二意見）。実行役にはしない" },
+    { "id": "fable", "scope": "global", "provider": "anthropic", "role": "special-approval", "default_effort": "high", "auto_selectable": false, "description": "特別承認制の最終手段。自動選択・永続設定禁止" },
+    { "id": "jev", "scope": "global", "provider": "typesafe-ai", "role": "decision-engine", "auto_selectable": true, "status": "adapter-stub", "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない" },
+    { "id": "mock-jev", "scope": "global", "provider": "mock", "role": "decision-engine", "auto_selectable": true, "description": "Jev の模擬（APIキー無しで本体を検証）" },
+    { "id": "codex", "scope": "global", "provider": "openai", "role": "reviewer", "auto_selectable": false, "description": "read-only 独立レビュー（codex-review.ps1 経由のみ）" }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$comment": "PoC の deterministic rules。明らかに local / Remotion で足りる種別だけを rules で確定し、それ以外は Jev（mock）へ渡す。有料が必要そうな入力も rules では確定せず、human_review_required=true を返して en-generate-hub の Human-only承認へ誘導する。",
+  "rules": [
+    {
+      "id": "text-only-assets-are-local",
+      "when": { "asset_kind": { "in": ["kinetic-typography", "subtitle", "slideshow"] } },
+      "outcome": { "local_sufficient": true, "remotion_suitable": true, "paid_generation_required": false, "human_review_required": false, "recommended_route": "remotion" },
+      "rationale": "MA-29 PoC で Remotion のみで日本語タイポグラフィ/字幕動画を生成できることを Human 確認済み"
+    },
+    {
+      "id": "local-assets-present-and-flat",
+      "when": { "has_local_assets": true, "style": { "in": ["flat", "motion-graphics"] } },
+      "outcome": { "local_sufficient": true, "remotion_suitable": true, "paid_generation_required": false, "human_review_required": false, "recommended_route": "local" },
+      "rationale": "素材が手元にあり写実性を要求しない場合は無料経路"
+    },
+    {
+      "id": "high-cost-estimate-always-human",
+      "when": { "estimated_paid_cost_usd_micros": { "gte": 5000000 } },
+      "outcome": { "local_sufficient": false, "remotion_suitable": false, "paid_generation_required": true, "human_review_required": true, "recommended_route": "en-generate-hub" },
+      "rationale": "推定 $5 以上は必ず Human review（en-generate-hub 側の承認・予算ゲートとは独立の事前警告）"
+    }
+  ]
+}

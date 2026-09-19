@@ -1,0 +1,8 @@
+{
+  "$comment": "Adapter chain の既定順。deterministic rules を必ず先頭に置き、Jev（本物 or mock）→ local → llm → human の順。overrides で decision_type ごとに変えられる。ID は登録済み Adapter の id。",
+  "default_chain": ["rules", "jev", "mock-jev", "local", "llm", "human"],
+  "overrides": {
+    "model-route": { "chain": ["rules", "human"] },
+    "skill-route": { "chain": ["rules", "jev", "mock-jev", "human"] }
+  }
+}

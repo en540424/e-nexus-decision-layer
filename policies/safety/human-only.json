@@ -1,0 +1,16 @@
+{
+  "$comment": "Human Gate 保護。ここに列挙した decision_type は Adapter を一切呼ばず human へ直行する（Jev/LLM の confidence では解除できない）。forbidden_outcome_keys が outcome に現れたら HumanGateViolationError で停止する。既存の Human-only 境界（Vault CLAUDE.md『Human-only操作』・Safety台帳§4・en-generate-hub 承認チェーン）を弱めるためのものではなく、Decision Layer が誤ってそれらを肩代わりしないための壁。",
+  "human_only_decision_types": [
+    "deploy-approval",
+    "app-store-submit-approval",
+    "paid-api-execution-approval",
+    "git-destructive-approval",
+    "production-db-change-approval",
+    "secret-access-approval",
+    "external-send-approval",
+    "settings-permission-change-approval",
+    "budget-gate-override"
+  ],
+  "forbidden_outcome_keys": ["approved", "approval", "approve", "authorized", "authorize", "bypass_human_gate", "override_budget", "skip_human_review"],
+  "force_human_when_outcome": { "human_review_required": true }
+}

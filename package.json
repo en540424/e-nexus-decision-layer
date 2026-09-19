@@ -1,0 +1,13 @@
+{
+  "name": "e-nexus-decision-layer",
+  "version": "0.1.0",
+  "description": "E-NEXUS共通Decision Layer。AI非依存・IDE非依存の判断基盤。Jev / Rules / LLM / Local / Human をAdapterとして差し替え・併用できる。",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "decide": "node src/cli.mjs decide"
+  },
+  "license": "UNLICENSED"
+}

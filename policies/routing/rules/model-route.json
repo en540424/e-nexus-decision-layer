@@ -1,0 +1,14 @@
+{
+  "$comment": "Advisorモデル運用ルール_正本 §2（Sonnet First・Advisor 13条件）と最小ハーネス §15-3（危険条件）を rules 化。Fable は出力候補に存在しない（特別承認制＝Human-only）。executor は常に sonnet、Opus は Advisor としてのみ。",
+  "rules": [
+    { "id": "human-requested-model", "when": { "human_requested_model": { "exists": true } }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": true, "note": "Human が明示指定したモデルは Human 側の設定変更で反映する（Decision Layer は変更しない）" } },
+    { "id": "harness-change-needs-advisor", "when": { "touches_harness": true }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": true, "note": "Advisor§2-2 条件13" } },
+    { "id": "billing-auth-db-needs-advisor", "when": { "touches_billing_or_auth_or_db": true }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": true, "note": "Advisor§2-2 条件3 / 最小ハーネス§15-3" } },
+    { "id": "design-decision-needs-advisor", "when": { "design_decision": true }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": false, "note": "Advisor§2-2 条件1・6" } },
+    { "id": "repeated-failure-needs-advisor", "when": { "repeated_failure": true }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": false, "note": "Advisor§2-2 条件4・12" } },
+    { "id": "cross-repo-L", "when": { "task_size": "L", "cross_repo": true }, "outcome": { "executor_model": "sonnet", "consult_advisor": true, "effort": "high", "human_review_required": false, "note": "Advisor§2-2 条件11" } },
+    { "id": "L-default", "when": { "task_size": "L" }, "outcome": { "executor_model": "sonnet", "consult_advisor": false, "effort": "high", "human_review_required": false, "note": "Sonnet First。Plan 必須（最小ハーネス§15-2）" } },
+    { "id": "M-default", "when": { "task_size": "M" }, "outcome": { "executor_model": "sonnet", "consult_advisor": false, "effort": "high", "human_review_required": false, "note": "Sonnet First" } },
+    { "id": "S-default", "when": { "task_size": "S" }, "outcome": { "executor_model": "sonnet", "consult_advisor": false, "effort": "medium", "human_review_required": false, "note": "Sonnet First。Plan 不要" } }
+  ]
+}

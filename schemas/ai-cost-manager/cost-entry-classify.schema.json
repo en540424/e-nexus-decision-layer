@@ -1,0 +1,31 @@
+{
+  "$id": "edl/ai-cost-manager/cost-entry-classify",
+  "title": "CostEntryClassify",
+  "description": "schema-only（将来展開）。AI Cost Manager のサービス登録・請求明細を受けて billing_model / cadence / provider_category / anomaly / review_candidate を返す。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["service_name"],
+      "properties": {
+        "service_name": { "type": "string" },
+        "description": { "type": "string" },
+        "amount_jpy": { "type": "number", "minimum": 0 },
+        "previous_amounts_jpy": { "type": "array", "items": { "type": "number" } },
+        "__mock": { "type": "object" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["billing_model", "cadence", "provider_category", "anomaly", "review_candidate"],
+      "additionalProperties": false,
+      "properties": {
+        "billing_model": { "type": "string", "enum": ["fixed", "usage_based", "hybrid", "unknown"] },
+        "cadence": { "type": "string", "enum": ["monthly", "annual", "one_time", "unknown"] },
+        "provider_category": { "type": "string", "enum": ["llm", "image_video", "voice", "infra", "saas", "other"] },
+        "anomaly": { "type": "boolean" },
+        "review_candidate": { "type": "string", "enum": ["none", "upgrade", "downgrade", "cancel"] }
+      }
+    }
+  }
+}

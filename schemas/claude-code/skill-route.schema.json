@@ -1,0 +1,25 @@
+{
+  "$id": "edl/claude-code/skill-route",
+  "title": "SkillRoute",
+  "description": "schema-only（将来展開）。ユーザー指示から Skill 候補を選ぶ。候補は registries/skills.json から global + project のみ渡す。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["instruction"],
+      "properties": {
+        "instruction": { "type": "string" },
+        "__mock": { "type": "object" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["skill_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "skill_ids": { "type": "array", "items": { "type": "string" } },
+        "human_review_required": { "type": "boolean" }
+      }
+    }
+  }
+}

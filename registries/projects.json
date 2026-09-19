@@ -1,0 +1,21 @@
+{
+  "schema": "edl-registry-v1",
+  "kind": "projects",
+  "updated": "2026-09-19",
+  "$comment": "上位正本は EN-Knowledge-Vault の AI-Workflow-System/01_harness/managed-repos.json（repo登録簿）と 05_Business/経営方針 の各正本。ここは Decision Layer が project_id を解決するための派生スナップショット。2026-09-19 横断監査で実在を確認できた repo / 構想のみ登録。EN-Volt は Vault・ホームディレクトリのどこにも実体が無かったため登録しない。",
+  "entries": [
+    { "id": "e-nexus-decision-layer", "name": "E-NEXUS Decision Layer", "aliases": ["decision-layer", "EDL"], "repo": "C:\\Users\\envie\\e-nexus-decision-layer", "kind": "platform", "status": "poc" },
+    { "id": "en-generate-hub", "name": "EN Generate Hub (MA-17)", "aliases": ["MA-17", "EN-Generate-Hub"], "repo": "C:\\Users\\envie\\en-generate-hub", "kind": "platform", "status": "active", "gates": ["human-only approval", "budget 3-tier", "ledger", "duplicate-guard", "submit-guard"] },
+    { "id": "en-product-hub", "name": "EN Product Hub (MA-25)", "aliases": ["MA-25", "Product Hub"], "repo": "C:\\Users\\envie\\en-product-hub", "kind": "platform", "status": "active", "gates": ["Hub同期 更新ボタン", "pull-plan auto/claude/human"] },
+    { "id": "openmontage", "name": "OpenMontage (MA-29, class B fork)", "aliases": ["MA-29"], "repo": "C:\\Users\\envie\\poc\\openmontage-ma29", "kind": "tool", "status": "conditional-adopted", "note": "有料生成は en-generate-hub 経由のみ。内蔵Provider直実行は禁止" },
+    { "id": "travel-rate-camera", "name": "Travel Rate Camera / 旅レートカメラ", "aliases": ["travel-rate-camera-app", "旅レートカメラ"], "repo": "C:\\Users\\envie\\travel-rate-camera-app", "kind": "app", "status": "active" },
+    { "id": "ai-cost-manager", "name": "AI Cost Manager", "aliases": ["AI-Cost-Manager"], "repo": "C:\\Users\\envie\\ai-cost-manager", "kind": "app", "status": "active" },
+    { "id": "ai-trading-lab", "name": "AI Trading Lab (MA-27)", "aliases": ["MA-27", "AI-Trading-Lab"], "repo": "C:\\Users\\envie\\ai-trading-lab", "kind": "research", "status": "active", "note": "ExecutionMode(backtest-only) / sealed_guard は中央化しない（Safety台帳§12）" },
+    { "id": "ai-phone", "name": "電話AI受付キット V1", "aliases": ["AI Phone", "電話AI受付キット"], "repo": null, "kind": "automation", "status": "manual-only", "note": "Vault 01_Projects/電話AI受付キット/ にセットアップマニュアルのみ。コードrepoは未確認（n8n上のworkflow）" },
+    { "id": "e-nexus-site", "name": "E-NEXUS公式サイト", "aliases": ["e-nexus-site"], "repo": "C:\\Users\\envie\\e-nexus-site", "kind": "web", "status": "active" },
+    { "id": "en-sns-hub", "name": "EN SNS Hub", "aliases": ["en-sns-hub"], "repo": "C:\\Users\\envie\\en-sns-hub", "kind": "automation", "status": "active", "note": "fact_check_status confirmed/needs_review を LLM 自己申告で持つ（PASS/REVIEW の既存例）" },
+    { "id": "ai-driving-companion", "name": "AIドライビング・コンパニオン", "aliases": ["ai-driving-companion"], "repo": "C:\\Users\\envie\\ai-driving-companion", "kind": "app", "status": "active" },
+    { "id": "e-nexus-distribution-hub", "name": "E-NEXUS Distribution Hub", "aliases": ["distribution-hub"], "repo": "C:\\Users\\envie\\e-nexus-distribution-hub", "kind": "platform", "status": "design-only", "note": "docs/README のみ。別ターミナルで設計中のため変更禁止" },
+    { "id": "en-knowledge-vault", "name": "EN-Knowledge-Vault (Claude Code Harness)", "aliases": ["vault", "claude-code-harness"], "repo": "C:\\Obsidian\\EN-Knowledge-Vault", "kind": "harness", "status": "active" }
+  ]
+}

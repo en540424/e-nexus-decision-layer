@@ -1,0 +1,43 @@
+{
+  "$id": "edl/common/decision-result",
+  "title": "DecisionResult",
+  "description": "Decision Layer が返す共通結果。outcome の中身は decision_type 固有 schema で別途検証される。承認を意味するキー（approved 等）は policies/safety/human-only.json により構造上存在できない。",
+  "type": "object",
+  "required": ["decision_id", "decision_type", "application_id", "project_id", "outcome", "confidence", "tier", "resolved_by", "human_gate", "fallback", "timestamp"],
+  "properties": {
+    "decision_id": { "type": "string", "minLength": 1 },
+    "decision_type": { "type": "string" },
+    "application_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "tenant": { "type": ["string", "null"] },
+    "outcome": { "type": "object" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "tier": { "type": "string", "enum": ["auto", "review", "human"] },
+    "resolved_by": { "type": "string" },
+    "provider": { "type": ["string", "null"] },
+    "model": { "type": ["string", "null"] },
+    "rationale": { "type": ["string", "null"] },
+    "human_gate": {
+      "type": "object",
+      "required": ["required", "preserved"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "preserved": { "type": "boolean", "const": true },
+        "reason": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["occurred", "trace"],
+      "properties": {
+        "occurred": { "type": "boolean" },
+        "trace": { "type": "array", "items": { "type": "object", "required": ["adapter", "status"] } },
+        "skipped": { "type": "array" }
+      }
+    },
+    "candidates_considered": { "type": "array", "items": { "type": "string" } },
+    "thresholds": { "type": "object" },
+    "timestamp": { "type": "string" }
+  }
+}

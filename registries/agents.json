@@ -1,0 +1,13 @@
+{
+  "schema": "edl-registry-v1",
+  "kind": "agents",
+  "updated": "2026-09-19",
+  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Agent_SubAgent委任ルール §3-9（常設カスタムAgent 4体）と .claude/agents/*.md。すべて read-only（ファイル変更・Git・外部接続はしない）。Agent Router はここから候補を渡す。",
+  "entries": [
+    { "id": "current-state-auditor", "scope": "global", "location": ".claude/agents/current-state-auditor.md", "type": "read-only", "trigger": "明示指名 または L作業開始前", "description": "現在地だけを確定する監査役" },
+    { "id": "decision-organizer", "scope": "global", "location": ".claude/agents/decision-organizer.md", "type": "read-only", "trigger": "明示指名のみ", "description": "方向性未確定時の選択肢整理" },
+    { "id": "implementation-planner", "scope": "global", "location": ".claude/agents/implementation-planner.md", "type": "read-only", "trigger": "明示指名のみ", "description": "M/L作業の計画分解" },
+    { "id": "independent-inspector", "scope": "global", "location": ".claude/agents/independent-inspector.md", "type": "read-only", "trigger": "明示指名 または L作業の初回実運用前", "description": "完了報告の独立検品" },
+    { "id": "hermes", "scope": "global", "location": "AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_Hermes常駐Agent導入設計_2026-08-30.md", "type": "design-only", "trigger": "未導入", "status": "planned", "description": "Mac mini常駐Agent（設計のみ・未導入）" }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。PoC で実装済みなのは paid-generation-gate のみ。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。",
+  "decision_types": {
+    "paid-generation-gate": {
+      "domain": "openmontage",
+      "schema": "schemas/openmontage/paid-generation-gate.schema.json",
+      "status": "poc",
+      "candidates": null,
+      "description": "有料生成APIを呼ぶ直前の事前トリアージ。local / Remotion / 有料 / Human review のどれが妥当かを型付きで返す。en-generate-hub の承認・予算・台帳には一切触れない（その手前で動く）。"
+    },
+    "ocr-triage": {
+      "domain": "travel-rate-camera",
+      "schema": "schemas/travel-rate-camera/ocr-triage.schema.json",
+      "status": "schema-only",
+      "candidates": null,
+      "description": "OCR結果の currency_type / needs_retake / needs_human_review / parsing_route。"
+    },
+    "call-triage": {
+      "domain": "ai-phone",
+      "schema": "schemas/ai-phone/call-triage.schema.json",
+      "status": "schema-only",
+      "candidates": null,
+      "description": "電話AI受付の call_category / urgency / sales_lead / complaint / human_required。"
+    },
+    "cost-entry-classify": {
+      "domain": "ai-cost-manager",
+      "schema": "schemas/ai-cost-manager/cost-entry-classify.schema.json",
+      "status": "schema-only",
+      "candidates": null,
+      "description": "AI Cost Manager の billing_model / cadence / provider_category / anomaly / review_candidate。"
+    },
+    "model-route": {
+      "domain": "claude-code",
+      "schema": "schemas/claude-code/model-route.schema.json",
+      "status": "schema-only",
+      "candidates": { "kind": "models" },
+      "description": "Claude Code Harness の Model / Effort Router。Advisor正本§2-2 の13条件をルール化した rules ファイルが先に評価される。"
+    },
+    "skill-route": {
+      "domain": "claude-code",
+      "schema": "schemas/claude-code/skill-route.schema.json",
+      "status": "schema-only",
+      "candidates": { "kind": "skills" },
+      "description": "Skill候補選択。Registry が global + project の候補だけを渡す。"
+    }
+  }
+}

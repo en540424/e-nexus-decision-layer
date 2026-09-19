@@ -1,0 +1,14 @@
+{
+  "$comment": "tier ごとの後続。Decision Layer はここに書いた『誰へ渡すか』を返すだけで、実行・承認はしない。",
+  "tiers": {
+    "auto": { "next": "caller-proceeds", "note": "呼び出し側が通常コード／Local処理へ進んでよい候補。既存ゲートは別途通る" },
+    "review": { "next": "upper-llm-recheck", "note": "llm adapter が実装されるまでは caller が Human 確認へ倒す" },
+    "human": { "next": "human-review", "note": "Human Review。en-generate-hub なら承認文入力、Claude Code なら permission、Hub なら更新ボタン" }
+  },
+  "existing_gates_untouched": [
+    "en-generate-hub: approval-validator / approval-token / submit-guard / budget 3階層 / ledger",
+    "Claude Code: .claude/settings.json permissions.deny / hooks / autoMode hard_deny",
+    "EN Product Hub: Hub同期の更新ボタン（承認境界）",
+    "Vault CLAUDE.md: Human-only操作一覧"
+  ]
+}

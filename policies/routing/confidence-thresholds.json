@@ -1,0 +1,7 @@
+{
+  "$comment": "confidence → tier。auto_min 以上=auto、review_min 以上=review、それ未満=human。初期値は仮置きで、PoC の usage.jsonl と実測から調整する（コードへ固定しない）。",
+  "default": { "auto_min": 0.85, "review_min": 0.6 },
+  "overrides": {
+    "paid-generation-gate": { "auto_min": 0.85, "review_min": 0.6 }
+  }
+}
