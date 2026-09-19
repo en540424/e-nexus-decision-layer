@@ -31,12 +31,13 @@
  *       APICallError は statusCode / isRetryable を持つ（duck-typing で判定。SDK未インストール時のテストや
  *       テスト用 evaluateImpl 注入でも同じ判定ロジックが効くようにするため isInstance() には依存しない）
  *
- * 未確認のまま実装した1点（次回の実疎通テストで確認すること。docs/decision-log.md 参照）:
- *   - createGateway({ apiKey }) が返すインスタンスに .evaluationModel(modelId) が生えていること。
- *     既定シングルトン gateway（'@ai-sdk/gateway'）に生えていることは一次情報で確認済みだが、
- *     createGateway() のカスタムインスタンスも同じ形を持つかは AI SDK の他 Provider（createOpenAI 等）との
- *     設計一貫性からの推定。誤りなら .evaluationModel is not a function で即座に JEV_VERCEL_SDK_ERROR になり、
- *     推測で成功したことにはならない。
+ * 実疎通で確定した点（2026-09-19、JEV_PROVIDER=vercel・model typesafe-ai/jev・ai@7 インストール済み環境）:
+ *   - createGateway({ apiKey }).evaluationModel(modelId) の組み合わせは実在し、実通信に成功した
+ *     （実装時は既定シングルトン gateway の .evaluationModel() しか一次情報で確認できていなかった。
+ *     resolveEvaluationModel() の存在チェックは防御としてそのまま残す）
+ *   - 正規モデルIDは `typesafe-ai/jev`（DEFAULT_VERCEL_MODEL_ID）。約3.1s / confidence≈0.08 の実応答を得た
+ *   - 403 は「キー不正」以外（カード未認証・モデル権限・Gatewayポリシー）でも返るため、401（JEV_AUTH_FAILED）
+ *     と 403（JEV_FORBIDDEN）を分けて分類する。どちらも再試行しない。response body はログに出さない
  *
  * 依存: npm パッケージ 'ai'（AI SDK v7、Node.js 22+ 必須）。Decision Layer 全体の依存ゼロ方針
  * （jev-direct-provider.mjs 参照）とは別に、Evaluation modality が AI SDK 経由でしか提供されないため
@@ -47,12 +48,16 @@
  */
 import { AdapterUnavailableError } from '../../core/errors.mjs';
 
-const DEFAULT_MODEL_PREFIX = 'typesafe-ai/';
+/**
+ * Vercel AI Gateway 上の Jev の正規モデルID（vercel.com/ai-gateway/models/jev。2026-09-19 実疎通で成功確認済み）。
+ * Direct の内部モデルID（`jev-latest` 等、TypeSafe 側のカタログ）とは別のカタログなので、
+ * `typesafe-ai/${内部ID}` のような機械的接頭辞変換はしない（`typesafe-ai/jev-latest` は未検証）。
+ */
+export const DEFAULT_VERCEL_MODEL_ID = 'typesafe-ai/jev';
 
-/** 内部 request.model（例: 'jev-latest'）→ Gateway モデルID。JEV_VERCEL_MODEL があれば完全上書き */
-export function toGatewayModelId(internalModel, env = {}) {
-  if (env.JEV_VERCEL_MODEL) return env.JEV_VERCEL_MODEL;
-  return `${DEFAULT_MODEL_PREFIX}${internalModel}`;
+/** Gateway モデルID。JEV_VERCEL_MODEL があれば完全上書き、無ければ正規既定。内部 request.model（Direct用）は使わない */
+export function toGatewayModelId(env = {}) {
+  return env.JEV_VERCEL_MODEL || DEFAULT_VERCEL_MODEL_ID;
 }
 
 /** 内部 questions（noul/choice/score）→ AI SDK evaluate() の questions（boolean/choice/score） */
@@ -122,8 +127,12 @@ export function toDirectShapedResponse(result, { questions }) {
 export function classifyGatewayError(err) {
   if (typeof err?.statusCode === 'number') {
     const status = err.statusCode;
-    if (status === 401 || status === 403) {
+    if (status === 401) {
       return new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'vercel', status, retryable: false });
+    }
+    if (status === 403) {
+      // キーは通ったが拒否された（カード未認証・モデル権限・Gatewayポリシー等）。原因はGateway側で確認する
+      return new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'vercel', status, retryable: false });
     }
     if (status === 422 || status === 400) {
       return new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', { route: 'vercel', status, retryable: false });
@@ -185,7 +194,7 @@ export function createVercelJevProvider({ evaluateImpl, gatewayFactory } = {}) {
       }
 
       const questions = toGatewayQuestions(request.questions);
-      const modelId = toGatewayModelId(request.model, env);
+      const modelId = toGatewayModelId(env);
       const providerOptions = env.JEV_ZDR === 'true' ? { gateway: { zeroDataRetention: true } } : undefined;
 
       let evaluateFn;

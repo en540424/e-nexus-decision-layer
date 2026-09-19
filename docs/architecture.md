@@ -17,14 +17,17 @@
 │   7 outcome validation  → 8 usage metering                      │
 └──────────────────────────────────────────────────────────────┘
                 ▼   Adapter Interface（supports / decide）
-   rules   jev(direct実装済み/APIキー未取得)   mock-jev   local(stub)   llm(stub)   human
+   rules   jev(direct実装済み・vercel実疎通済み)   [mock-jev]   local(stub)   llm(stub)   human
 ```
 
 ## 2. 判断の流れ
 
 1. **deterministic rules**（`policies/routing/rules/<decision_type>.json`）で解ければ confidence 1.0 で確定
-2. 解けなければ **probabilistic Adapter**（jev → mock-jev → local → llm）。Jev は低コストGateとして既定で試す。高コストな汎用LLM（`policies/cost/limits.json` の `paid_providers`）は `options.allow_paid_adapters=true` のときだけ
-3. **confidence → tier**：`auto`（≥ auto_min）/ `review`（≥ review_min）/ `human`。閾値は policy、コード固定しない
+2. 解けなければ **probabilistic Adapter**（jev → [mock-jev] → local → llm）。Jev は低コストGateとして既定で試す。高コストな汎用LLM（`policies/cost/limits.json` の `paid_providers`）は `options.allow_paid_adapters=true` のときだけ。
+   **mock-jev は「実 Jev 経路が使えない（キー無し／Network Gate OFF）とき」だけ既定 chain に入る**（`src/index.mjs` `defaultAdapters` が `realJevUsable(env)` で判定）。実 Jev が正常応答した結果を mock のヒューリスティックが上書きすることはない（2026-09-19 実疎通で観測した欠陥の修正。詳細は decision-log）
+3. **confidence → tier**：`auto`（≥ auto_min）/ `review`（≥ review_min）/ `human`。閾値は policy、コード固定しない。
+   Adapter が**正常応答したが human 相当**の場合は trace に `status:'ok'` として残し（unavailable とは区別）、chain の次（local → llm の再判定差し込み口 → human escalation）へ進む。正常応答は provider 失敗ではない。
+   既知の残課題：chain が継続した場合、実 Jev の confidence / usage は `fallback.trace` にだけ残り、`result` と metering には出ない（2026-09-19 記録。修正は未着手）
 4. **Human gate**：`policies/safety/human-only.json` の `force_human_when_outcome_keys`（`human_review_required` / `needs_human_review` / `human_required`）のいずれかが true なら confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない
 5. chain を使い切れば **Human Adapter** が escalation を返す（承認ではない）
 
@@ -100,9 +103,12 @@ Gateway 側の質問型（`boolean`/`choice`/`score`、choice/score の confiden
 「経路＋相互変換」を持つ（`jev-adapter.mjs` は変更しない）。依存パッケージ `ai`（AI SDK v7、**Node.js 22+ 必須**）は
 Decision Layer 全体の依存ゼロ方針とは別枠で `package.json` の `optionalDependencies` に置き、動的 `import('ai')` で
 読み込む。未インストールなら `JEV_VERCEL_SDK_MISSING` で unavailable になり、direct/mock/rules 経路や既存テストには
-一切影響しない。**APIキー未取得・`ai` 未インストールのため実疎通は未実施**（unit tests はすべて注入した
-`evaluateImpl` で、実 SDK・実ネットワークを一切使わない）。詳細仕様は 2026-09-19 MA-30開発ログ
-「Vercel AI Gateway経由 Jev 実接続」節を正本とする。
+一切影響しない。**2026-09-19 実疎通成功**（`JEV_PROVIDER=vercel`・model `typesafe-ai/jev`・約3.1s・confidence≈0.08。
+`createGateway({apiKey}).evaluationModel()` の実在もこれで確定）。正規モデルIDは `typesafe-ai/jev`（`DEFAULT_VERCEL_MODEL_ID`。
+`JEV_VERCEL_MODEL` で上書き可。Direct 用の `JEV_MODEL`／内部既定 `jev-latest` は Gateway 側へ持ち込まない）。
+403 は 401（キー不正）と分けて `JEV_FORBIDDEN`（カード未認証・モデル権限・Gatewayポリシー等）。
+unit tests はすべて注入した `evaluateImpl` で、実 SDK・実ネットワークを一切使わない。詳細は 2026-09-19 MA-30開発ログ
+「Vercel AI Gateway経由 Jev 実接続」「実疎通成功後の正式反映」節を正本とする。
 
 ## 10. 仕様に固定しない情報
 
