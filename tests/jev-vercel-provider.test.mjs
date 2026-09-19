@@ -274,3 +274,60 @@ test('direct vs vercel: same paid-generation-gate input converges to the same ou
     assert.ok(!(leaked in vercel.outcome), `${leaked} must not leak into outcome`);
   }
 });
+
+// ---- RetryError unwrap（2026-09-19 Calibration 実測で 4 件が JEV_VERCEL_SDK_ERROR に丸まっていた原因の修正） ----
+
+function retryErrorLike(inner, reason = 'maxRetriesExceeded', tries = 3) {
+  // ai@7 の RetryError の形（duck-typing 対象）：name / reason / errors[] / lastError。statusCode は持たない
+  const errors = Array.from({ length: tries }, () => inner);
+  return Object.assign(new Error(`Failed after ${tries} attempts. Last error: x`), { name: 'RetryError', reason, errors, lastError: inner });
+}
+
+test('classifyGatewayError: RetryError wrapping a 429 → JEV_RATE_LIMITED with real retry_count and networked=true (not JEV_VERCEL_SDK_ERROR)', () => {
+  const inner = Object.assign(new Error('Rate limit exceeded'), { name: 'GatewayRateLimitError', statusCode: 429, isRetryable: true, type: 'rate_limit_exceeded' });
+  const e = classifyGatewayError(retryErrorLike(inner));
+  assert.equal(e.details.reason, 'JEV_RATE_LIMITED');
+  assert.equal(e.details.status, 429);
+  assert.equal(e.details.retry_count, 2, 'errors.length - 1 = observed retries, not maxRetries guess');
+  assert.equal(e.details.retry_reason, 'maxRetriesExceeded');
+  assert.equal(e.details.networked, true);
+  assert.equal(e.details.error_name, 'GatewayRateLimitError');
+  assert.equal(e.details.error_type, 'rate_limit_exceeded');
+  assert.ok(!JSON.stringify(e.details).includes('Rate limit exceeded'), 'message text is not copied into details');
+});
+
+test('classifyGatewayError: RetryError wrapping a 503 → JEV_OVERLOADED; errorNotRetryable wrapper keeps the inner classification', () => {
+  const inner = Object.assign(new Error('service unavailable'), { name: 'GatewayInternalServerError', statusCode: 503, isRetryable: true });
+  const e = classifyGatewayError(retryErrorLike(inner));
+  assert.equal(e.details.reason, 'JEV_OVERLOADED');
+  assert.equal(e.details.status, 503);
+  assert.equal(e.details.retry_count, 2);
+  const inner2 = Object.assign(new Error('bad'), { name: 'APICallError', statusCode: 422, isRetryable: false });
+  const e2 = classifyGatewayError(retryErrorLike(inner2, 'errorNotRetryable', 2));
+  assert.equal(e2.details.reason, 'JEV_REQUEST_REJECTED');
+  assert.equal(e2.details.retry_count, 1);
+  assert.equal(e2.details.retry_reason, 'errorNotRetryable');
+});
+
+test('classifyGatewayError: no regression — bare 401 / 403 / 429 / 5xx / abort still classify as before; unknown SDK error stays JEV_VERCEL_SDK_ERROR with networked=null', () => {
+  assert.equal(classifyGatewayError({ statusCode: 401 }).details.reason, 'JEV_AUTH_FAILED');
+  assert.equal(classifyGatewayError({ statusCode: 403 }).details.reason, 'JEV_FORBIDDEN');
+  assert.equal(classifyGatewayError({ statusCode: 429 }).details.reason, 'JEV_RATE_LIMITED');
+  assert.equal(classifyGatewayError({ statusCode: 502 }).details.reason, 'JEV_OVERLOADED');
+  assert.equal(classifyGatewayError({ name: 'AbortError' }).details.reason, 'JEV_NETWORK_ERROR');
+  const unknown = classifyGatewayError(Object.assign(new Error('x'), { name: 'TypeValidationError' }));
+  assert.equal(unknown.details.reason, 'JEV_VERCEL_SDK_ERROR');
+  assert.equal(unknown.details.networked, null);
+  assert.equal(unknown.details.error_name, 'TypeValidationError');
+  // RetryError with empty errors[] is not unwrapped (no inner to classify)
+  assert.equal(classifyGatewayError({ name: 'RetryError', reason: 'abort', errors: [] }).details.reason, 'JEV_VERCEL_SDK_ERROR');
+});
+
+test('vercel provider: a RetryError thrown by evaluate() reaches the adapter as the unwrapped reason with retry_count (attempt metering keeps 1 attempt = 1 decide())', async () => {
+  const inner = Object.assign(new Error('Rate limit exceeded'), { name: 'GatewayRateLimitError', statusCode: 429, isRetryable: true });
+  const provider = createVercelJevProvider({ evaluateImpl: async () => { throw retryErrorLike(inner); } });
+  await assert.rejects(
+    () => provider.send({ request: { model: 'jev-latest', state: { task: 't' }, questions: { q: { type: 'noul', instructions: 'x' } } }, env: { AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' } }),
+    (e) => e.details.reason === 'JEV_RATE_LIMITED' && e.details.retry_count === 2 && e.details.networked === true && e.details.route === 'vercel',
+  );
+});

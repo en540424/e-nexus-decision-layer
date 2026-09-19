@@ -132,3 +132,72 @@ test('analyze / analyzeToMarkdown: distribution, grouping, field-level, metering
   stripQuestionDesign(dt);
   assert.ok(dt.schema.properties.outcome.description);
 });
+
+// ---- 2026-09-19 継続：RetryError 診断・merge・payload shape ----
+
+test('runCases: a RetryError-wrapped 503 from the real provider path is recorded with diagnostic (status / retry_count / error_name), networked=true in attempts[], and the run continues (not an immediate stop)', async () => {
+  const { mergeResults } = await import('../scripts/poc-calibration.mjs');
+  const { createVercelJevProvider } = await import('../src/adapters/jev/jev-vercel-provider.mjs');
+  let calls = 0;
+  const inner = Object.assign(new Error('service unavailable'), { name: 'GatewayInternalServerError', statusCode: 503, isRetryable: true });
+  const evaluateImpl = async ({ questions }) => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error('Failed after 3 attempts'), { name: 'RetryError', reason: 'maxRetriesExceeded', errors: [inner, inner, inner], lastError: inner });
+    const answers = {};
+    for (const [name, q] of Object.entries(questions)) answers[name] = q.type === 'boolean' ? { type: 'boolean', probability: 0.97 } : { type: 'choice', choice: 'remotion' };
+    return { answers, usage: { inputTokens: 300, outputTokens: 20 }, response: { modelId: 'typesafe-ai/jev' }, providerMetadata: { typesafe: { confidence: { recommended_route: 0.9 } } } };
+  };
+  const provider = createVercelJevProvider({ evaluateImpl });
+  const doc = loadCases();
+  const env = { EDL_ALLOW_NETWORK: 'true', AI_GATEWAY_API_KEY: 'test-key-not-real-0000', JEV_PROVIDER: 'vercel' };
+  const meter = createMemoryMeter();
+  const { records, stopped } = await runCases({ doc, variant: 'improved', only: ['A3-motion-lower-third', 'B1-photoreal-scene-baseline'], env, meter, provider, delayMs: 1, pauseAfterRetryableMs: 1 });
+  assert.equal(stopped, null, 'one retryable failure does not stop the run');
+  const a3 = records[0];
+  assert.equal(a3.jev.status, 'unavailable');
+  assert.equal(a3.jev.reason, 'JEV_OVERLOADED');
+  assert.deepEqual(a3.jev.diagnostic, { status: 503, retryable: true, retry_count: 2, retry_reason: 'maxRetriesExceeded', error_name: 'GatewayInternalServerError' });
+  const jevAttempt = a3.usage_record.attempts.find((a) => a.adapter === 'jev');
+  assert.equal(jevAttempt.networked, true, 'retried ⇒ dispatched');
+  assert.equal(jevAttempt.retry_count, 2);
+  assert.equal(jevAttempt.usage_known, false, 'unknown ≠ 0');
+  assert.equal(a3.usage_record.usage_total.unknown_usage_attempts, 1);
+  const b1 = records[1];
+  assert.equal(b1.jev.status, 'ok');
+  assert.equal(b1.final.resolved_by, 'jev');
+  // secret never appears in the results shape
+  assert.ok(!JSON.stringify(records).includes('test-key-not-real-0000'));
+
+  // merge: latest ok record per case wins over an earlier failure; earlier ok survives a later failure
+  const outFail = { variant: 'improved', started_at: '2026-09-19T09:49:57Z', thresholds: { auto_min: 0.85, review_min: 0.6 }, records: [a3, { ...b1, jev: { ...b1.jev, status: 'unavailable', reason: 'JEV_OVERLOADED' } }] };
+  const outOk = { variant: 'improved', started_at: '2026-09-19T09:48:17Z', thresholds: { auto_min: 0.85, review_min: 0.6 }, records: [b1] };
+  const outLater = { variant: 'improved', started_at: '2026-09-19T10:30:00Z', thresholds: { auto_min: 0.85, review_min: 0.6 }, records: [{ ...a3, jev: { ...b1.jev } }] };
+  const merged = mergeResults([outFail, outOk, outLater]);
+  assert.deepEqual(Object.keys(merged), ['improved']);
+  const byId = Object.fromEntries(merged.improved.records.map((r) => [r.case_id, r]));
+  assert.equal(byId['B1-photoreal-scene-baseline'].jev.status, 'ok', 'earlier ok kept over later failure');
+  assert.equal(byId['B1-photoreal-scene-baseline'].source_started_at, '2026-09-19T09:48:17Z');
+  assert.equal(byId['A3-motion-lower-third'].jev.status, 'ok', 'later ok replaces earlier failure');
+  assert.equal(merged.improved.sources.length, 3);
+  const md = analyzeToMarkdown(merged.improved);
+  assert.ok(md.includes('merged from 3 run(s)'));
+});
+
+test('payload shape: the cases that failed in the real run (D2 / E1 / A3 / B1) build the same question structure as the cases that succeeded — no case-specific payload defect', async () => {
+  const { buildJevRequest } = await import('../src/adapters/jev/jev-adapter.mjs');
+  const { toGatewayQuestions } = await import('../src/adapters/jev/jev-vercel-provider.mjs');
+  const doc = loadCases();
+  const dt = loadDecisionType(doc.decision_type);
+  const shapes = new Set();
+  for (const c of doc.cases.filter((x) => x.expected.resolver === 'jev')) {
+    const { request } = buildJevRequest({ decisionType: doc.decision_type, outcomeSchema: dt.schema.properties.outcome, input: c.input, candidates: [] });
+    const gw = toGatewayQuestions(request.questions);
+    JSON.parse(JSON.stringify(request.state)); // JSON-compatible state
+    for (const [name, q] of Object.entries(gw)) {
+      assert.ok(typeof q.instructions === 'string' && q.instructions.length > 0, `${c.case_id}.${name} instructions`);
+      if (q.type === 'choice') for (const v of Object.values(q.criteria)) assert.ok(typeof v === 'string' && v.length > 0, `${c.case_id}.${name} criteria`);
+    }
+    shapes.add(JSON.stringify(Object.entries(gw).map(([n, q]) => [n, q.type, q.instructions.length, q.criteria ? Object.keys(q.criteria).length : 0])));
+  }
+  assert.equal(shapes.size, 1, 'all jev cases send an identical question structure; only state.input differs');
+});

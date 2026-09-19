@@ -11,8 +11,10 @@
  *   node scripts/poc-calibration.mjs run --questions improved|baseline [--only A3,B1] [--out <file>]
  *       real Jev。シェルに AI_GATEWAY_API_KEY / JEV_PROVIDER=vercel / EDL_ALLOW_NETWORK=true が export
  *       されているときだけ動く（無ければ exit 4 で止まり、キーの入力は求めない）。各ケース1回・逐次
- *   node scripts/poc-calibration.mjs analyze <results.json> [--compare <other-results.json>]
- *       分布（min / max / median）・route別・ambiguity別・field-level の限界質問・閾値感度を Markdown で出す
+ *   node scripts/poc-calibration.mjs analyze <results.json...> [--compare <other-results.json>]
+ *       分布（min / max / median）・route別・ambiguity別・field-level の限界質問・閾値感度を Markdown で出す。
+ *       複数ファイルを渡すと variant ごとに統合し（case_id 単位で「最新の成功 record」を採用、失敗 record は成功が無い
+ *       case だけ残す）、improved と baseline が両方あれば比較表も出す。成功済み case を再課金せず結果を継ぎ足すための機構
  *
  * --questions:
  *   improved = 現行 schema（outcome field の description / x-enum-descriptions / outcome description = brief を送る）
@@ -95,7 +97,13 @@ export function wrapJevAdapter(inner, capture) {
         capture.current = { ok: true, outcome: r.outcome, confidence: r.confidence, field_confidence: r.field_confidence ?? null, rationale: r.rationale ?? null };
         return r;
       } catch (err) {
-        capture.current = { ok: false, reason: err?.details?.reason ?? `ERROR:${err?.name ?? 'unknown'}` };
+        const d = err?.details ?? {};
+        // 診断は allowlist（数値・短い識別子のみ）。message / body / headers / キーは写さない
+        const diagnostic = {};
+        for (const k of ['status', 'retryable', 'retry_count', 'retry_reason', 'error_name', 'error_type', 'detail']) {
+          if (typeof d[k] === 'number' || typeof d[k] === 'boolean' || (typeof d[k] === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(d[k]))) diagnostic[k] = d[k];
+        }
+        capture.current = { ok: false, reason: d.reason ?? `ERROR:${err?.name ?? 'unknown'}`, diagnostic };
         throw err;
       }
     },
@@ -128,7 +136,7 @@ function assertNoSecrets(text, env) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /** @param {object} [opts.provider] テスト専用：Jev Provider を注入（実ネットワークを使わずに runner を検証する）。本番 run では省略 */
-export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, log = () => {}, provider = null }) {
+export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, pauseAfterRetryableMs = 5000, log = () => {}, provider = null }) {
   const capture = {};
   const jev = wrapJevAdapter(createJevAdapter({ env, provider, decisionTypeLoader: decisionTypeLoaderFor(variant) }), capture);
   // 本番 defaultAdapters() と同じ構成。realJevUsable() が真なので mock-jev は入らない（呼び出し側で保証する）
@@ -182,6 +190,7 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
         outcome: jevCapture?.ok ? jevCapture.outcome : null,
         field_confidence: jevCapture?.ok ? jevCapture.field_confidence : null,
         limiting_field: jevCapture?.ok ? limitingField(jevCapture.field_confidence) : null,
+        diagnostic: jevCapture && !jevCapture.ok ? jevCapture.diagnostic : null,
       } : null,
       trace: result.fallback.trace,
       skipped: result.fallback.skipped,
@@ -189,13 +198,15 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
       wall_ms: Date.now() - started,
     };
     records.push(rec);
-    log(`${c.case_id}: resolved_by=${result.resolved_by} tier=${result.tier}${jevAttempt ? ` jev=${jevAttempt.status}${jevAttempt.status === 'ok' ? ` conf=${jevAttempt.confidence.toFixed(3)} limiting=${rec.jev.limiting_field}` : ` reason=${jevAttempt.reason}`} ${jevAttempt.latency_ms}ms` : ' (jev not called)'}`);
+    log(`${c.case_id}: resolved_by=${result.resolved_by} tier=${result.tier}${jevAttempt ? ` jev=${jevAttempt.status}${jevAttempt.status === 'ok' ? ` conf=${jevAttempt.confidence.toFixed(3)} limiting=${rec.jev.limiting_field}` : ` reason=${jevAttempt.reason} status=${rec.jev.diagnostic?.status ?? '-'} retry=${rec.jev.diagnostic?.retry_count ?? '-'} ${rec.jev.diagnostic?.error_name ?? ''}`} ${jevAttempt.latency_ms}ms` : ' (jev not called)'}`);
     if (jevAttempt && jevAttempt.status !== 'ok') {
       consecutiveUnavailable += 1;
       if (STOP_REASONS.has(jevAttempt.reason) || consecutiveUnavailable >= 2) {
-        stopped = { after_case: c.case_id, reason: jevAttempt.reason, consecutive_unavailable: consecutiveUnavailable };
+        stopped = { after_case: c.case_id, reason: jevAttempt.reason, consecutive_unavailable: consecutiveUnavailable, diagnostic: rec.jev.diagnostic };
         break;
       }
+      // retryable な失敗（5xx / timeout 等。SDK が既に 2s→4s で再試行済み）の直後は連打せず一呼吸置く（1 回だけ。固定 sleep の乱用はしない）
+      if (rec.jev.diagnostic?.retryable === true && delayMs) await sleep(pauseAfterRetryableMs);
     } else consecutiveUnavailable = 0;
     if (delayMs) await sleep(delayMs);
   }
@@ -280,6 +291,33 @@ export async function dryRun({ doc, variant, dump = null }) {
     });
   }
   return { variant, rules_first: rules, jev_candidates: doc.cases.length - rules, cases: lines };
+}
+
+// ---------------------------------------------------------------- merge（複数 results → variant ごとに最新成功 record）
+
+/** results ファイル群を variant ごとに統合する。case_id 単位で「最新の成功（rules hit または jev ok）」を採用し、
+ *  成功が無い case は最新の失敗 record を残す。返り値は { [variant]: out相当 }。新しい情報は作らない */
+export function mergeResults(outs) {
+  const byVariant = {};
+  const sorted = [...outs].sort((a, b) => String(a.started_at ?? '').localeCompare(String(b.started_at ?? '')));
+  for (const out of sorted) {
+    const v = out.variant ?? '(none)';
+    const g = (byVariant[v] ??= { variant: v, thresholds: out.thresholds, decision_type: out.decision_type, provider: out.provider, sources: [], records: new Map(), started_at: out.started_at, finished_at: out.finished_at, stopped: null });
+    g.sources.push(out.started_at ?? '(unknown)');
+    g.finished_at = out.finished_at ?? g.finished_at;
+    g.thresholds = out.thresholds ?? g.thresholds;
+    for (const r of out.records ?? []) {
+      const ok = r.rules_first_hit || r.jev?.status === 'ok';
+      const prev = g.records.get(r.case_id);
+      const prevOk = prev && (prev.rules_first_hit || prev.jev?.status === 'ok');
+      if (!prev || ok || !prevOk) g.records.set(r.case_id, { ...r, source_started_at: out.started_at ?? null });
+    }
+  }
+  const result = {};
+  for (const [v, g] of Object.entries(byVariant)) {
+    result[v] = { ...g, merged: true, records: [...g.records.values()], cases_total: g.records.size };
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------- analyze
@@ -402,7 +440,7 @@ export function analyze(out) {
     tokens: { input: inputTokens, output: outputTokens, estimated_cost_usd_micros: cost },
     comparison,
     metering,
-    failed: jevFailed.map((r) => ({ case_id: r.case_id, reason: r.jev.reason, networked: r.jev.networked })),
+    failed: jevFailed.map((r) => ({ case_id: r.case_id, reason: r.jev.reason, networked: r.jev.networked, diagnostic: r.jev.diagnostic ?? null, latency_ms: r.jev.latency_ms })),
   };
 }
 
@@ -411,7 +449,7 @@ function fmtStats(s) { return s.n ? `n=${s.n} min=${s.min} median=${s.median} me
 export function analyzeToMarkdown(out, compare = null) {
   const a = analyze(out);
   const L = [];
-  L.push(`# Calibration analysis — variant=${a.variant} (${out.started_at ?? ''})`);
+  L.push(`# Calibration analysis — variant=${a.variant} (${out.merged ? `merged from ${out.sources.length} run(s): ${out.sources.join(', ')}` : (out.started_at ?? '')})`);
   L.push('');
   L.push(`- thresholds: auto_min=${a.thresholds.auto_min} review_min=${a.thresholds.review_min}`);
   L.push(`- cases=${a.counts.cases} rules_first=${a.counts.rules_first} jev_ok=${a.counts.jev_ok} jev_failed=${a.counts.jev_failed}${a.counts.stopped ? ` STOPPED after ${a.counts.stopped.after_case} (${a.counts.stopped.reason})` : ''}`);
@@ -450,7 +488,7 @@ export function analyzeToMarkdown(out, compare = null) {
   if (a.failed.length) {
     L.push('');
     L.push('## Failed jev attempts');
-    for (const f of a.failed) L.push(`- ${f.case_id}: ${f.reason} (networked=${f.networked})`);
+    for (const f of a.failed) L.push(`- ${f.case_id}: ${f.reason} (networked=${f.networked}, ${f.latency_ms}ms${f.diagnostic ? `, ${JSON.stringify(f.diagnostic)}` : ''})`);
   }
   if (compare) {
     const b = analyze(compare);
@@ -502,15 +540,19 @@ async function main() {
       await cmdRun(opts, process.env);
       return;
     case 'analyze': {
-      const file = positional[0];
-      if (!file || !existsSync(file)) throw new Error('analyze <results.json> [--compare <other.json>]');
-      const out = JSON.parse(readFileSync(file, 'utf8'));
-      const compare = opts.compare ? JSON.parse(readFileSync(String(opts.compare), 'utf8')) : null;
-      process.stdout.write(`${analyzeToMarkdown(out, compare)}\n`);
+      const files = [...positional, ...(opts.compare ? [String(opts.compare)] : [])];
+      if (!files.length || files.some((f) => !existsSync(f))) throw new Error('analyze <results.json...> [--compare <other.json>]');
+      const outs = files.map((f) => JSON.parse(readFileSync(f, 'utf8')));
+      if (outs.length === 1) { process.stdout.write(`${analyzeToMarkdown(outs[0])}\n`); return; }
+      const merged = mergeResults(outs);
+      const primary = merged.improved ?? Object.values(merged)[0];
+      const compare = merged.baseline && primary !== merged.baseline ? merged.baseline : (Object.values(merged).find((m) => m !== primary) ?? null);
+      process.stdout.write(`${analyzeToMarkdown(primary, compare)}\n`);
+      if (compare) process.stdout.write(`\n---\n\n${analyzeToMarkdown(compare)}\n`);
       return;
     }
     default:
-      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] | analyze <results.json> [--compare other.json]\n');
+      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] | analyze <results.json...> [--compare other.json]\n');
       process.exitCode = 2;
   }
 }

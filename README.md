@@ -20,7 +20,7 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 126 tests, 依存ゼロ（node --test）
+npm test                                     # 133 tests, 依存ゼロ（node --test）
 node scripts/poc-calibration.mjs dry-run     # Confidence Calibration（Rules First 件数と送信予定 questions。ネットワーク無し）
 node src/cli.mjs types                       # decision_type 一覧
 node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","application_id":"claude-code","project_id":"openmontage","input":{"asset_kind":"subtitle","purpose":"jp caption"}}'

@@ -30,6 +30,11 @@
  *   - https://ai-sdk.dev/docs/reference/ai-sdk-errors/ai-api-call-error
  *       APICallError は statusCode / isRetryable を持つ（duck-typing で判定。SDK未インストール時のテストや
  *       テスト用 evaluateImpl 注入でも同じ判定ロジックが効くようにするため isInstance() には依存しない）
+ *   - ai@7.0.107 実体（node_modules/ai/dist/index.js、@ai-sdk/provider-utils retryWithExponentialBackoffInternal）:
+ *       retryable（APICallError.isRetryable / GatewayError.isRetryable = 408/409/429/5xx）は 2s→4s（Retry-After 尊重）で
+ *       最大2回再試行し、使い切ると RetryError{ reason, errors[], lastError }（statusCode 無し）を投げる。
+ *       Gateway 側エラーは GatewayRateLimitError(429, type:'rate_limit_exceeded') / GatewayInternalServerError 等で
+ *       statusCode・isRetryable・type を持つ。classifyGatewayError はこれを unwrap する（2026-09-19 Calibration で判明）
  *
  * 実疎通で確定した点（2026-09-19、JEV_PROVIDER=vercel・model typesafe-ai/jev・ai@7 インストール済み環境）:
  *   - createGateway({ apiKey }).evaluationModel(modelId) の組み合わせは実在し、実通信に成功した
@@ -123,34 +128,59 @@ export function toDirectShapedResponse(result, { questions }) {
   };
 }
 
+/** 診断用の安全な allowlist（値は文字列/数値/真偽のみ。message・headers・body・キーは含めない） */
+function safeDiagnostic(err) {
+  const d = {};
+  if (typeof err?.name === 'string' && /^[A-Za-z_]{1,64}$/.test(err.name)) d.error_name = err.name;
+  if (typeof err?.type === 'string' && /^[a-z_]{1,64}$/.test(err.type)) d.error_type = err.type; // Gateway error の type（例 rate_limit_exceeded）
+  return d;
+}
+
 /** AI SDK / Gateway のエラーを Direct Provider と同じ reason 語彙へ分類する（duck-typing。isInstance()には依存しない）。
- *  evaluate() 呼び出し後にだけ使うため HTTP/ネットワーク系は networked:true（送信後の失敗）。判別できない SDK エラーは null */
+ *  evaluate() 呼び出し後にだけ使うため HTTP/ネットワーク系は networked:true（送信後の失敗）。判別できない SDK エラーは null。
+ *
+ *  RetryError（2026-09-19 Calibration 実測で判明）：AI SDK は retryable（408/409/429/5xx）なエラーを既定 maxRetries=2・
+ *  2s→4s backoff で再試行し、使い切ると RetryError{ reason:'maxRetriesExceeded'|'errorNotRetryable', errors:[…], lastError }
+ *  を投げる。RetryError 自体は statusCode を持たないため、以前はここで JEV_VERCEL_SDK_ERROR（networked:null）に丸まっていた
+ *  （実測 4 件、いずれも約 6.8〜7.5s = 6s backoff + 3 回分の通信）。元エラーは errors[] の末尾にあるので、それを分類し直し、
+ *  retry_count = errors.length - 1（実カウント。maxRetries からの推定ではない）を details に付ける。 */
 export function classifyGatewayError(err) {
+  // RetryError（duck-typing：reason 文字列 + errors 配列）→ 元エラーで分類し、実 retry 回数を付ける
+  if (typeof err?.reason === 'string' && Array.isArray(err?.errors) && err.errors.length > 0) {
+    const last = err.lastError ?? err.errors[err.errors.length - 1];
+    const inner = classifyGatewayError(last);
+    inner.details.retry_count = err.errors.length - 1;
+    inner.details.retry_reason = err.reason;
+    // 再試行された＝少なくとも 1 回は送信されている（retryable は送信後の HTTP 応答でしか決まらない）
+    if (inner.details.networked !== true) inner.details.networked = true;
+    return inner;
+  }
+  const diag = safeDiagnostic(err);
   if (typeof err?.statusCode === 'number') {
     const status = err.statusCode;
     if (status === 401) {
-      return new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'vercel', networked: true, status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'vercel', networked: true, status, retryable: false, ...diag });
     }
     if (status === 403) {
       // キーは通ったが拒否された（カード未認証・モデル権限・Gatewayポリシー等）。原因はGateway側で確認する
-      return new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'vercel', networked: true, status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'vercel', networked: true, status, retryable: false, ...diag });
     }
     if (status === 422 || status === 400) {
-      return new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', { route: 'vercel', networked: true, status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', { route: 'vercel', networked: true, status, retryable: false, ...diag });
     }
     if (status === 429) {
-      return new AdapterUnavailableError('jev', 'JEV_RATE_LIMITED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false });
+      return new AdapterUnavailableError('jev', 'JEV_RATE_LIMITED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false, ...diag });
     }
     if (status === 408 || status === 529 || (status >= 500 && status <= 599)) {
-      return new AdapterUnavailableError('jev', 'JEV_OVERLOADED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false });
+      return new AdapterUnavailableError('jev', 'JEV_OVERLOADED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false, ...diag });
     }
-    return new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'vercel', networked: true, status, retryable: !!err.isRetryable });
+    return new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'vercel', networked: true, status, retryable: !!err.isRetryable, ...diag });
   }
   if (err?.name === 'AbortError' || err?.code === 'ETIMEDOUT' || err?.code === 'ECONNRESET') {
-    return new AdapterUnavailableError('jev', 'JEV_NETWORK_ERROR', { route: 'vercel', networked: true, retryable: true });
+    return new AdapterUnavailableError('jev', 'JEV_NETWORK_ERROR', { route: 'vercel', networked: true, retryable: true, ...diag });
   }
   // SDK 内部エラーは送信前（引数不正等）か送信後か判別できない → networked: null（不明。true と偽らない）
-  return new AdapterUnavailableError('jev', 'JEV_VERCEL_SDK_ERROR', { route: 'vercel', networked: null, detail: err?.name ?? 'unknown', retryable: false });
+  return new AdapterUnavailableError('jev', 'JEV_VERCEL_SDK_ERROR', { route: 'vercel', networked: null, detail: err?.name ?? 'unknown', retryable: false, ...diag });
 }
 
 /** createGateway() が返すインスタンスから evaluationModel を安全に解決する。無ければ推測せず即座に失敗する */
@@ -214,7 +244,8 @@ export function createVercelJevProvider({ evaluateImpl, gatewayFactory } = {}) {
         evaluateFn = sdk.experimental_evaluate;
       }
 
-      // AI SDK が内部で最大2回リトライするが回数は観測できないため、retry_count は meta に書かない（捏造しない）
+      // AI SDK が内部で最大2回リトライする。成功時は回数を観測できないので retry_count は付けない（捏造しない）。
+      // 失敗時は RetryError.errors.length から実回数が分かるので classifyGatewayError が details.retry_count に付ける
       let result;
       try {
         result = await evaluateFn({ model, state: request.state, questions, providerOptions, maxRetries: 2 });

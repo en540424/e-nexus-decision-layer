@@ -94,3 +94,51 @@ node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/<improved>
 - Calibration 分類：**B（question 設計改善で十分）の暫定**。閾値 0.85 / 0.60 は**維持**（実測前の変更は §11 の順序に反する）
 - 実測後に見るもの：(1) improved の confidence 分布が baseline より上がるか、(2) 明確ケース（A3・B1・B2）と曖昧ケース（C1・F1）が分離するか、(3) limiting field が特定の question に偏るか（偏るなら閾値でなくその question を直す）、(4) final=human のケースでも `attempts[]` に Jev の provider / model / tokens / cost / confidence / latency が残るか（§19）
 - OpenMontage wrapper ready 判定は**実測完了まで保留**（question 設計安定・confidence 挙動理解の 2 条件が未充足）
+
+### 実測結果（第1回、2026-09-19 09:48–09:50 UTC、Human 実行）と `JEV_VERCEL_SDK_ERROR` の原因
+
+**measured fact**（`docs/poc/calibration/results/20260919T09*.json`。統合表示は `node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/*.json`）
+
+| variant | Rules First | Jev ok | Jev 失敗 | confidence（Jev ok） | limiting field |
+|---|---|---|---|---|---|
+| baseline（description 無し） | 3（A1・A2・D1） | 4（A3・B1・B2・C1） | 2（D2・E1） | min 0.04 / median 0.07 / max 0.12、全件 tier=human | remotion_suitable ×3、paid_generation_required ×1 |
+| improved（smoke B1） | — | 1（B1） | 0 | 0.12（tier=human） | human_review_required |
+| improved（全体 run） | 2（A1・A2） | 0 | 2（A3・B1） | — | — |
+
+- baseline の outcome は **field 間で矛盾**する（A3：`remotion_suitable=true`・`paid=false` なのに route=`en-generate-hub`。C1：`local_sufficient=false` なのに route=`local`）。route 定義を渡していない以上、当然の結果
+- improved B1 は **field 間で整合**（local=false / remotion=false / paid=true / route=en-generate-hub）、field confidence は local 0.94・remotion 0.92・route 1.00・paid 0.76、**human_review_required だけ 0.12**（baseline B1 の limiting は remotion 0.04）。description を書いた field はそのまま上がり、書き方が「組織の判断基準」に依存する field だけが残った
+- latency：成功 393〜2743ms（median 528ms）、tokens ≈ 300〜500 in、cost 21〜52 USD micros/件。失敗 4 件はすべて **6840〜7477ms**
+- metering（§19）：final=human の全 Jev ok 件で `attempts[]` に `provider=typesafe-ai / model=typesafe-ai/jev / networked=true / usage_known=true / cost` が残った。失敗件は `networked=null / usage_known=false / unknown_usage_attempts=1`（送ったか不明扱い。0 と書いていない）
+
+**`JEV_VERCEL_SDK_ERROR` の根本原因**（コードから確定。`node_modules/ai@7.0.107`・`@ai-sdk/provider-utils` の実体を読んだ）
+
+- AI SDK `experimental_evaluate` は retryable（`APICallError.isRetryable` / `GatewayError.isRetryable` = 408/409/429/5xx）なエラーを既定 `maxRetries=2`・`initialDelay 2000ms`・`backoffFactor 2`（Retry-After 尊重）で再試行し、使い切ると **`RetryError{ reason:'maxRetriesExceeded', errors:[3件], lastError }`** を投げる
+- `RetryError` は **`statusCode` を持たない**ため、`classifyGatewayError` の `statusCode` 分岐に入らず末尾の `JEV_VERCEL_SDK_ERROR`（`networked:null`）に丸まっていた。失敗 4 件の 6.8〜7.5s = 2s + 4s の backoff + 3 回分の通信で完全に一致
+- 除外できるもの：payload / question 構造（`validateEvaluationInput` は retry の**前**に走り ms で失敗する。同じ B1 payload が 09:48 に成功している。`tests/poc-calibration.test.mjs` で 7 ケースの question 構造が同一であることも固定）、parse 不正（別 reason `JEV_MALFORMED_RESPONSE` になる）、401/403（non-retryable → 1 回目で生のまま throw → `JEV_AUTH_FAILED`/`JEV_FORBIDDEN` に分類される）
+- **確定できないもの**：元エラーが 429（Gateway/Jev の rate limit）か 5xx（一時障害）か。`errors[]` を捨てていたので保存結果からは分からない。状況証拠（5 秒間に 6 リクエスト連打の直後から 30 秒以上すべて失敗、Retry-After があれば短縮されるはずの遅延が純粋な backoff 値）は rate limit 寄りだが**推測で確定しない**。分類は §11 の **E（未確定）→ 観測可能性を上げて smoke 1 件で事実取得**
+
+**修正**（repo。core・policy・閾値・Human Gate は無変更）
+
+- `classifyGatewayError`：`RetryError`（duck-typing：`reason` 文字列 + `errors[]`）を **unwrap** して元エラーで分類し直す（429 → `JEV_RATE_LIMITED`、5xx → `JEV_OVERLOADED`、…）。`retry_count = errors.length − 1`（**実カウント**。maxRetries からの推定ではない）、`retry_reason`、`networked:true`（再試行された＝送信済み）を details に付ける。成功時の retry 回数は SDK が公開しないので従来どおり付けない
+- safe diagnostic：`error_name`（識別子のみ）・`error_type`（Gateway の `type`、例 `rate_limit_exceeded`）・`status`・`retryable` を details に。message / body / headers / キーは写さない。runner は allowlist で results JSON に `jev.diagnostic` として保存
+- runner：retryable 失敗の直後は 5 秒置いて次へ（連打しない。停止条件「429/認証系は即停止・2 連続失敗で停止」は維持）。`analyze` に複数ファイル統合（case_id × variant で最新の成功 record を採用、成功済みは再課金しない）
+- tests 127 → 133
+
+**Human Required（再実測。使うシェルで `JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・`EDL_ALLOW_NETWORK=true` を再 export）**
+
+```
+node scripts/poc-calibration.mjs run --questions improved --only A3-motion-lower-third
+# ↑ 1 リクエスト。失敗しても今度は reason / status / retry_count / error_name が results に残る。成功したら続けて：
+node scripts/poc-calibration.mjs run --questions improved --only B2-photoreal-image,C1-boundary-scene-unspecified,D2-motion-with-photoreal-jev,E1-product-shot-reference,F1-underspecified
+node scripts/poc-calibration.mjs run --questions baseline --only D2-motion-with-photoreal-jev,E1-product-shot-reference,F1-underspecified
+node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/*.json
+```
+
+合計 9 リクエスト（improved 6・baseline 3）。既に成功している baseline 4 件・improved B1 は再実行しない（`analyze` が統合する）。
+
+### 判定（第1回実測後・暫定のまま）
+
+- **Calibration 分類：B（question 設計改善で十分）の暫定**、n=1。改善が狙った field（local / remotion / route）はそのまま上がり、outcome の整合性も回復した。ただし improved の残り 6 件が未測定
+- **`human_review_required` は別扱いの候補（D：一部 field は Jev 向きでない）**。「人が route 判定を確認すべきか」は資産の事実ではなく組織の許容度に依存し、input に無い。improved で残り 6 件も同 field が limiting なら、この field は Jev に訊かず他 4 field と confidence から決定的に導く（follow-up タスク）を検討する。**今回は wording を変えない**（改善版の A/B を汚さない）
+- aggregate（min）・閾値（0.85 / 0.60）：**変更しない**。improved 残 6 件が揃うまで判断材料不足。alt aggregate 列は解釈用のまま
+- OpenMontage wrapper ready：**保留**（improved 実測完了・error 原因の実測確認が未了）
