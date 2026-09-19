@@ -1,5 +1,5 @@
 {
-  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。PoC で実装済みなのは paid-generation-gate のみ。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。",
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。PoC で実装済みなのは paid-generation-gate のみ。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
   "decision_types": {
     "paid-generation-gate": {
       "domain": "openmontage",
@@ -33,15 +33,37 @@
       "domain": "claude-code",
       "schema": "schemas/claude-code/model-route.schema.json",
       "status": "schema-only",
-      "candidates": { "kind": "models" },
+      "candidates": {
+        "kind": "models"
+      },
       "description": "Claude Code Harness の Model / Effort Router。Advisor正本§2-2 の13条件をルール化した rules ファイルが先に評価される。"
     },
     "skill-route": {
       "domain": "claude-code",
       "schema": "schemas/claude-code/skill-route.schema.json",
       "status": "schema-only",
-      "candidates": { "kind": "skills" },
+      "candidates": {
+        "kind": "skills"
+      },
       "description": "Skill候補選択。Registry が global + project の候補だけを渡す。"
+    }
+  },
+  "reserved_decision_types": {
+    "agent-action-micro": {
+      "domain": "agent",
+      "description": "Browser / Computer Use / Hermes 等の連続する小さな行動判断（click / type / back / continue / retry / stop / tool選択 / sub-agent選択）。docs/roadmap-future-use-cases.md §1"
+    },
+    "context-relevance": {
+      "domain": "harness",
+      "description": "上位LLMへ渡す前に、ログ・tool result・Skill情報・過去contextを「必要／残す／削除可／優先度」で仕分ける。要約ではなく relevance decision。context-diet を補完し置換しない。同 §2"
+    },
+    "io-guard-assist": {
+      "domain": "safety",
+      "description": "PII・機密・suspicious input/output・出力品質・security alert の「可能性あり」検知と escalation 推奨。既存Safety/Humanへ上げるだけで、解除・承認・ブロック解除は返せない。同 §3"
+    },
+    "post-execution-verify": {
+      "domain": "harness",
+      "description": "実行後の型付き検証。verdict = PASS / RETRY / REVIEW / ESCALATE / HUMAN。Human-only承認の代替ではない。同 §4"
     }
   }
 }

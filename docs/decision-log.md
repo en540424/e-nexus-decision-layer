@@ -14,3 +14,6 @@
 | 2026-09-19 | PoC は「有料生成直前の Decision Gate」 | docs/poc-paid-generation-gate.md 参照。Model Router は rules で完結するため Jev PoC に不向き | Model Router / Skill Router |
 | 2026-09-19 | metering の通貨単位を USD micros | en-generate-hub budget.mjs と同一単位で転記時の桁ズレ防止 | USD float |
 | 2026-09-19 | `EN-Volt` は登録しない | Vault・ホームディレクトリのどこにも実体が確認できなかった（推測で作らない） | 空エントリ登録 |
+| 2026-09-19 | Jev Adapter を「変換」と「経路（Provider）」に分離。`JEV_PROVIDER`＝direct / vercel / cloudflare | Adapter が env 直読み・direct 固定だと経路追加で decide() を書き換えることになる。Provider 1ファイル追加で済む形に | Adapter を経路ごとに複製 |
+| 2026-09-19 | 将来ユースケース4件（micro decision / context relevance / I/O guard 補助 / post-execution verify）は decision_type 名の**予約のみ**（schema・rules・Adapter は作らない） | 名前と責務境界を先に固定し、実装時に既存設計と矛盾しないようにする。特に guard 補助は「解除を返せない」禁止キーを先に置く | 今 schema まで作る |
+| 2026-09-19 | ベンダー公表の性能値（ms・価格比・選択肢上限・学習手法等）を仕様に入れない | 変更され得る値に本体を依存させない。閾値は実測で決める | docs に数値を転記 |

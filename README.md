@@ -35,7 +35,7 @@ node src/cli.mjs usage --by tenant
 | パス | 役割 |
 |---|---|
 | `src/core/` | decision-engine / router / fallback / confidence / errors |
-| `src/adapters/` | adapter-interface と jev / rules / llm / local / human |
+| `src/adapters/` | adapter-interface と jev（+ jev-provider-interface：direct / vercel / cloudflare 経路）/ rules / llm / local / human |
 | `src/registries/` | Project / Skill / Agent / Model Registry の解決（`registries/*.json` を読む） |
 | `src/schemas/` | 依存ゼロの JSON Schema サブセット検証器 + loader |
 | `src/usage/` | metering（JSONL 追記・集計） |
@@ -44,7 +44,7 @@ node src/cli.mjs usage --by tenant
 | `schemas/` | common + ドメイン別 decision_type schema（openmontage / ai-phone / travel-rate-camera / ai-cost-manager / claude-code） |
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
-| `docs/` | architecture / PoC / decision-log |
+| `docs/` | architecture / PoC / decision-log / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
 
 ## 正本
 
