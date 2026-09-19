@@ -23,9 +23,9 @@
 ## 2. 判断の流れ
 
 1. **deterministic rules**（`policies/routing/rules/<decision_type>.json`）で解ければ confidence 1.0 で確定
-2. 解けなければ **probabilistic Adapter**（jev → mock-jev → local → llm）。有料 provider は `options.allow_paid_adapters=true` のときだけ
+2. 解けなければ **probabilistic Adapter**（jev → mock-jev → local → llm）。Jev は低コストGateとして既定で試す。高コストな汎用LLM（`policies/cost/limits.json` の `paid_providers`）は `options.allow_paid_adapters=true` のときだけ
 3. **confidence → tier**：`auto`（≥ auto_min）/ `review`（≥ review_min）/ `human`。閾値は policy、コード固定しない
-4. **Human gate**：`human_review_required=true` なら confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない
+4. **Human gate**：`policies/safety/human-only.json` の `force_human_when_outcome_keys`（`human_review_required` / `needs_human_review` / `human_required`）のいずれかが true なら confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない
 5. chain を使い切れば **Human Adapter** が escalation を返す（承認ではない）
 
 ## 3. なぜ Jev を中心にしないか

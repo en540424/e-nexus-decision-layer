@@ -1,6 +1,10 @@
 {
-  "$comment": "Cost Gate。paid_providers に含まれる provider の Adapter は request.options.allow_paid_adapters=true のときだけ chain に残る。mock / local / rules / human は無料。1判定あたりの推定コスト上限は metering の実測後に設定する（現状は記録のみ）。",
-  "paid_providers": ["typesafe-ai", "anthropic", "openai", "google"],
+  "$comment": "Cost Gate。paid_providers（高コストな汎用LLM）の Adapter は request.options.allow_paid_adapters=true のときだけ chain に残る。Jev（typesafe-ai）は「高額AIを呼ぶ前の低コストGate」が役割なので paid_providers に含めず、APIキーと EDL_ALLOW_NETWORK=true があれば既定で呼ばれる（費用は metering に記録される）。mock / local / rules / human は無料。1判定あたりの推定コスト上限は metering の実測後に設定する（現状は記録のみ）。",
+  "paid_providers": [
+    "anthropic",
+    "openai",
+    "google"
+  ],
   "per_decision_estimated_cost_usd_micros_max": null,
   "note": "有料生成API（fal.ai / WaveSpeedAI 等）の予算ゲートは en-generate-hub が正本。ここでは Decision Layer 自身が使う判定モデルの費用だけを扱う。"
 }

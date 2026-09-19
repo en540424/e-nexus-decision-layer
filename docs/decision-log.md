@@ -8,7 +8,9 @@
 | 2026-09-19 | deterministic rules を chain の先頭に固定 | 監査で見つかった既存判断（Advisor 13条件・AI-Company §6 表・Plan 判定表）はほぼ決定的。Jev は「rules で解けない残り」だけに使う | Jev を先に呼ぶ |
 | 2026-09-19 | tier 語彙を auto / review / human | en-product-hub の pull-plan（auto / claude / human）と概念を揃える | high / medium / low |
 | 2026-09-19 | outcome から承認キーを構造的に排除（forbidden_outcome_keys + closed schema + test） | 「Human Gate を弱めない」を主張ではなく機械で担保する | ドキュメントで禁止するだけ |
-| 2026-09-19 | 有料 provider の Adapter は `allow_paid_adapters=true` のときだけ chain に残す | Decision Layer 自身の判定コストも Cost Gate の対象。既定は無料経路のみ | 常に全 Adapter を試す |
+| 2026-09-19 | 高コストLLM provider（anthropic / openai / google）の Adapter は `allow_paid_adapters=true` のときだけ chain に残す。**Jev は対象外**（既定で呼ぶ） | Jev の役割は「高額AIを呼ぶ前の低コストGate」。Cost Gate で止めると存在意義が消える（Advisor指摘で修正）。LLM は Medium confidence の再判定用なので opt-in | Jev も cost-gate する |
+| 2026-09-19 | 「Humanへ上げる」フラグ名を policy（`force_human_when_outcome_keys`）で一元管理 | ドメインごとに語彙が違う（`human_review_required` / `needs_human_review` / `human_required`）。engine にハードコードすると schema-only の decision_type で human 強制が効かない（Advisor指摘で修正） | 語彙を1つに統一して各schemaを書き換える |
+| 2026-09-19 | `__mock` は `allowMockControl=true`（テスト専用）のときだけ有効 | 本番入力から Mock の経路を操作されないため | schema から `__mock` を外す |
 | 2026-09-19 | PoC は「有料生成直前の Decision Gate」 | docs/poc-paid-generation-gate.md 参照。Model Router は rules で完結するため Jev PoC に不向き | Model Router / Skill Router |
 | 2026-09-19 | metering の通貨単位を USD micros | en-generate-hub budget.mjs と同一単位で転記時の桁ズレ防止 | USD float |
 | 2026-09-19 | `EN-Volt` は登録しない | Vault・ホームディレクトリのどこにも実体が確認できなかった（推測で作らない） | 空エントリ登録 |

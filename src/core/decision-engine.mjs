@@ -32,6 +32,16 @@ export function loadCostPolicy() {
   return readJson('policies/cost/limits.json');
 }
 
+/**
+ * policies/safety/human-only.json の force_human_when_outcome_keys に列挙したキーのいずれかが true なら
+ * confidence に関わらず tier=human。ドメインごとに語彙が違う（human_review_required / needs_human_review / human_required）ため
+ * ここで一元的に読む。返り値は一致したキー名（無ければ null）。
+ */
+export function forcedHumanKey(outcome, safety) {
+  const keys = safety.force_human_when_outcome_keys ?? [];
+  return keys.find((k) => outcome?.[k] === true) ?? null;
+}
+
 function assertNoApprovalKeys(outcome, safety) {
   const forbidden = safety.forbidden_outcome_keys ?? [];
   const found = Object.keys(outcome).filter((k) => forbidden.includes(k));
@@ -109,7 +119,7 @@ export function createDecisionEngine({
     let gateReason = null;
     if (humanOnly) { tier = 'human'; gateReason = 'decision_type is Human-only by safety policy'; }
     else if (escalated) { gateReason = 'escalated: no automated adapter could decide'; }
-    else if (outcome.human_review_required === true) { tier = 'human'; gateReason = 'outcome.human_review_required=true'; }
+    else if (forcedHumanKey(outcome, safetyPolicy)) { tier = 'human'; gateReason = `outcome.${forcedHumanKey(outcome, safetyPolicy)}=true`; }
     else if (tier === 'human') { gateReason = `confidence ${adapterResult.confidence} below review_min ${thresholds.review_min}`; }
 
     // 7. outcome 検証

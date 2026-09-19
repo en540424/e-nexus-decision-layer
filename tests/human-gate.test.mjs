@@ -27,7 +27,7 @@ test('no outcome schema declares an approval-like key; all outcome schemas are c
   for (const file of walkSchemas(join(ROOT, 'schemas'))) {
     const schema = JSON.parse(readFileSync(file, 'utf8'));
     const outcome = schema.properties?.outcome;
-    if (!outcome || file.includes('common')) continue; // common schemas は outcome の外枠だけを定義する
+    if (!outcome?.properties) continue; // common schemas は outcome の外枠（type: object）だけを定義する
     assert.equal(outcome.additionalProperties, false, `${file}: outcome must be closed`);
     const keys = Object.keys(outcome.properties ?? {});
     const bad = keys.filter((k) => safety.forbidden_outcome_keys.includes(k));
@@ -85,4 +85,28 @@ test('human adapter outcome is escalation-only and cannot carry approval', async
   assert.equal(r.outcome.escalated, true);
   assert.equal(r.outcome.human_review_required, true);
   assert.equal(r.confidence, 0);
+});
+
+test('every escalation vocabulary (human_review_required / needs_human_review / human_required) forces tier=human for its decision type', async () => {
+  const cases = [
+    ['ocr-triage', 'travel-rate-camera', { ocr_text: '1,200' }, { currency_type: 'JPY', ocr_confidence: 0.9, needs_retake: false, needs_human_review: true, parsing_route: 'rule-extract' }],
+    ['call-triage', 'ai-phone', { transcript_summary: 'x' }, { call_category: 'complaint', urgency: 'high', sales_lead: false, complaint: true, human_required: true }],
+    ['cost-entry-classify', 'ai-cost-manager', { service_name: 'x' }, { billing_model: 'fixed', cadence: 'monthly', provider_category: 'saas', anomaly: true, review_candidate: 'downgrade' }],
+    ['skill-route', 'en-knowledge-vault', { instruction: 'x' }, { skill_ids: ['common-dev-log'], human_review_required: true }],
+  ];
+  for (const [decision_type, project_id, input, outcome] of cases) {
+    const stub = { id: 'mock-jev', kind: 'probabilistic', provider: 'mock', model: null, supports: () => true, decide: async () => ({ outcome, confidence: 0.99 }) };
+    const { engine } = makeEngine({ adapters: [stub, createHumanAdapter()], routingPolicy: { default_chain: ['mock-jev', 'human'], overrides: {} } });
+    const r = await engine.decide({ decision_type, application_id: 'test', project_id, input });
+    const flagged = ['human_review_required', 'needs_human_review', 'human_required'].some((k) => outcome[k] === true);
+    assert.equal(r.tier, flagged ? 'human' : 'auto', decision_type + ': tier');
+    assert.equal(r.human_gate.required, flagged, decision_type + ': human_gate.required');
+  }
+});
+
+test('mock-jev ignores __mock unless allowMockControl=true (production default)', async () => {
+  const { createMockJevAdapter } = await import('../src/adapters/jev/mock-jev-adapter.mjs');
+  const prod = createMockJevAdapter();
+  const r = await prod.decide({ decisionType: 'paid-generation-gate', input: { asset_kind: 'scene', purpose: 'x', style: 'photoreal', __mock: { outcome: { local_sufficient: true, remotion_suitable: true, paid_generation_required: false, human_review_required: false, recommended_route: 'local' }, confidence: 0.99 } } });
+  assert.equal(r.outcome.paid_generation_required, true, '__mock was ignored');
 });

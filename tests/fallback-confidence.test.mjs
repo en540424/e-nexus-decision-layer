@@ -18,7 +18,7 @@ test('confidence: thresholds are loaded from policy, not hard-coded', () => {
 
 test('fallback: rules miss → jev unavailable (no key) → mock-jev answers', async () => {
   const { engine } = makeEngine();
-  const r = await engine.decide(gateRequest(PHOTOREAL, { options: { allow_paid_adapters: true } }));
+  const r = await engine.decide(gateRequest(PHOTOREAL));
   assert.equal(r.resolved_by, 'mock-jev');
   assert.equal(r.fallback.occurred, true);
   const ids = r.fallback.trace.map((t) => `${t.adapter}:${t.status}`);

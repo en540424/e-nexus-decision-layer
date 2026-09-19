@@ -3,7 +3,7 @@
  * 実APIキーが無くても Decision Layer本体（routing / fallback / confidence / metering / human gate）を検証するための決定的な模擬判定器。
  *
  * 模擬の仕方（優先順）:
- *   1. input.__mock が指定されていればそれに従う（テスト専用の制御フィールド。schema側で additionalProperties を許可している場合のみ通る）
+ *   1. allowMockControl=true のときだけ input.__mock に従う（テスト専用。index.mjs の既定は false）
  *      { "__mock": { "outcome": {...}, "confidence": 0.7 } } / { "__mock": { "unavailable": true } }
  *   2. options.responses[decisionType] があればそれを返す
  *   3. それも無ければ decision_type ごとの既定ヒューリスティック（poc用の簡易な判定）を返す
@@ -32,7 +32,7 @@ const DEFAULT_HEURISTICS = {
   },
 };
 
-export function createMockJevAdapter({ responses = {}, defaultUnavailable = false } = {}) {
+export function createMockJevAdapter({ responses = {}, defaultUnavailable = false, allowMockControl = false } = {}) {
   return {
     id: 'mock-jev',
     kind: 'probabilistic',
@@ -43,7 +43,8 @@ export function createMockJevAdapter({ responses = {}, defaultUnavailable = fals
     },
     async decide({ decisionType, input }) {
       if (defaultUnavailable) throw new AdapterUnavailableError('mock-jev', 'SIMULATED_UNAVAILABLE', { decisionType });
-      const mock = input?.__mock;
+      // __mock はテスト専用。allowMockControl=false（本番既定）では無視する
+      const mock = allowMockControl ? input?.__mock : undefined;
       if (mock?.unavailable) throw new AdapterUnavailableError('mock-jev', 'SIMULATED_UNAVAILABLE', { decisionType });
       const base = mock?.outcome
         ? { outcome: mock.outcome, confidence: mock.confidence ?? 0.9, rationale: 'mock-jev (__mock)' }

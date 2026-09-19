@@ -14,13 +14,13 @@ Rules ／ Jev（stub）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Huma
 - **deterministic rules を先に評価**し、解けないときだけ確率的 Adapter → 最後は必ず Human。
 - **承認はしない**。outcome に `approved` 等の承認キーは構造上存在できず（`policies/safety/human-only.json`）、
   既存の Human-only ゲート（en-generate-hub 承認チェーン・Claude Code permissions・Product Hub 更新ボタン）は一切変更しない。
-- **APIキー不要で動く**。`JEV_API_KEY` が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。
+- **APIキー不要で動く**。`JEV_API_KEY` が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
 - **usage metering** は初日から（`data/usage/usage.jsonl`、USD micros）。
 
 ## 使い方
 
 ```bash
-npm test                                     # 42 tests, 依存ゼロ（node --test）
+npm test                                     # 44 tests, 依存ゼロ（node --test）
 node src/cli.mjs types                       # decision_type 一覧
 node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","application_id":"claude-code","project_id":"openmontage","input":{"asset_kind":"subtitle","purpose":"jp caption"}}'
 node src/cli.mjs registry skills --project travel-rate-camera

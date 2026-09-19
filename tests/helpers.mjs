@@ -14,7 +14,7 @@ export function makeEngine({ adapters, env = {}, ...rest } = {}) {
     adapters: adapters ?? [
       createRulesAdapter(),
       createJevAdapter({ env }),
-      createMockJevAdapter(),
+      createMockJevAdapter({ allowMockControl: true }),
       createLocalAdapterStub(),
       createLlmAdapterStub({ env }),
       createHumanAdapter(),

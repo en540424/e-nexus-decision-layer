@@ -48,10 +48,11 @@ test('engine: model-route rules encode Sonnet First and Advisor conditions', asy
   assert.ok(s.candidates_considered.includes('sonnet') && s.candidates_considered.includes('fable') === true);
 });
 
-test('engine: cost gate removes paid adapters unless allow_paid_adapters=true', async () => {
+test('engine: cost gate removes paid LLM adapters unless allow_paid_adapters=true; jev (low-cost gate) is not cost-gated', async () => {
   const { engine } = makeEngine();
   const r = await engine.decide(gateRequest({ asset_kind: 'scene', purpose: 'x', style: 'photoreal' }));
-  assert.ok(r.fallback.skipped.some((s) => s.adapter === 'jev' && s.reason === 'COST_GATE_PAID_ADAPTER_NOT_ALLOWED'));
+  assert.ok(r.fallback.skipped.some((s) => s.adapter === 'llm' && s.reason === 'COST_GATE_PAID_ADAPTER_NOT_ALLOWED'));
+  assert.ok(r.fallback.trace.some((t) => t.adapter === 'jev' && t.status === 'unavailable' && t.reason === 'JEV_API_KEY_MISSING'), 'jev is tried by default');
   const r2 = await engine.decide(gateRequest({ asset_kind: 'scene', purpose: 'x', style: 'photoreal' }, { options: { allow_paid_adapters: true } }));
-  assert.ok(r2.fallback.trace.some((t) => t.adapter === 'jev' && t.status === 'unavailable'), 'jev tried then unavailable (no key)');
+  assert.ok(!r2.fallback.skipped.some((s) => s.adapter === 'llm'), 'llm allowed when opted in');
 });
