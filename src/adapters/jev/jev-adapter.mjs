@@ -20,10 +20,16 @@
  *
  * outcome schema → Jev questions の写像（2026-09-19 Jev公式API仕様確認済み。詳細は MA-30開発ログ参照）:
  *   boolean                                  → noul   （true/falseの確率。answer.noul >= 0.5 を true とする）
- *   string + enum                            → choice （criteria = 各enum値、説明は無いため null）
+ *   string + enum                            → choice （criteria = 各enum値。説明は schema の x-enum-descriptions[値] があればそれ、無ければ null）
  *   integer + minimum/maximum（2〜10段）      → score  （criteria = 段数ぶんの汎用ラベル。answerは最近傍の段へ丸める）
  *   上記に当てはまらないフィールド（自由文字列・object・配列・範囲が2〜10段でない数値等）は
  *   AdapterUnavailableError('JEV_UNSUPPORTED_OUTCOME_FIELD') とし、推測でquestionを作らない。
+ *
+ * question instructions / state（2026-09-19 Confidence Calibration で確定）:
+ *   instructions = outcome field の schema.description。無ければ汎用文（"Determine <name> for this <type> decision."）だが、
+ *   汎用文は判断基準を一切含まないため実 Jev の confidence を大きく下げる（実測 0.08 の主因候補）。decision_type を
+ *   Jev に任せるなら outcome の各 field に description を書くこと。outcome schema 自体の description があれば
+ *   state.brief として同送する（ドメイン用語・route の定義を Jev に渡す）。特定の答えへ誘導する文言は書かない。
  *
  * confidence:
  *   choice / score は Jev の answer.confidence をそのまま使う。
@@ -59,7 +65,8 @@ function planForField(name, fieldSchema, decisionType) {
     return { question: { type: 'noul', instructions }, plan: { kind: 'noul' } };
   }
   if (fieldSchema?.type === 'string' && Array.isArray(fieldSchema.enum) && fieldSchema.enum.length >= 1) {
-    const criteria = Object.fromEntries(fieldSchema.enum.map((v) => [v, null]));
+    const enumDescriptions = fieldSchema['x-enum-descriptions'] ?? {};
+    const criteria = Object.fromEntries(fieldSchema.enum.map((v) => [v, typeof enumDescriptions[v] === 'string' ? enumDescriptions[v] : null]));
     return { question: { type: 'choice', instructions, criteria }, plan: { kind: 'choice', enumValues: [...fieldSchema.enum] } };
   }
   if (
@@ -97,10 +104,12 @@ export function buildJevRequest({ decisionType, outcomeSchema, input, candidates
   if (unsupported.length) {
     throw new AdapterUnavailableError('jev', 'JEV_UNSUPPORTED_OUTCOME_FIELD', { decisionType, fields: unsupported });
   }
+  const brief = typeof outcomeSchema?.description === 'string' && outcomeSchema.description ? outcomeSchema.description : null;
   const request = {
     model,
     state: {
       task: decisionType,
+      ...(brief ? { brief } : {}),
       input,
       candidates: (candidates ?? []).map((c) => ({ id: c.id, description: c.description ?? '' })),
     },
@@ -176,6 +185,8 @@ export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
   return {
     outcome,
     confidence,
+    // question ごとの confidence（全体は min）。どの question が全体を下げたかを calibration で見るための生値
+    field_confidence: fieldConfidence,
     rationale: Object.entries(fieldConfidence).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(', ') || 'jev',
     usage: {
       input_tokens: inputTokens,
@@ -192,8 +203,10 @@ export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
  * @param {object} opts
  * @param {object} [opts.env]       環境変数（テストでは注入）
  * @param {object} [opts.provider]  Jev Provider（省略時は env.JEV_PROVIDER から解決、既定 direct）
+ * @param {Function} [opts.decisionTypeLoader]  decision_type → { schema } を返す関数（既定 loadDecisionType）。
+ *   calibration の A/B（description を外した baseline question と比較する等）で差し替える。本番では省略する
  */
-export function createJevAdapter({ env = process.env, provider = null } = {}) {
+export function createJevAdapter({ env = process.env, provider = null, decisionTypeLoader = loadDecisionType } = {}) {
   const resolveProvider = () => (provider ? assertJevProviderShape(provider) : resolveJevProvider(env));
   return {
     id: 'jev',
@@ -211,7 +224,7 @@ export function createJevAdapter({ env = process.env, provider = null } = {}) {
       const avail = p.available(env);
       if (!avail.ok) throw new AdapterUnavailableError('jev', avail.reason ?? 'JEV_PROVIDER_UNAVAILABLE', { decisionType, route: p.id });
       if (env[JEV_ENV.allowNetwork] !== 'true') throw new AdapterUnavailableError('jev', 'NETWORK_DISABLED', { decisionType, route: p.id });
-      const dt = loadDecisionType(decisionType);
+      const dt = decisionTypeLoader(decisionType);
       const outcomeSchema = dt?.schema?.properties?.outcome ?? null;
       const model = env[JEV_ENV.model] || DEFAULT_MODEL;
       const { request, fieldPlans } = buildJevRequest({ decisionType, outcomeSchema, input, candidates, model });

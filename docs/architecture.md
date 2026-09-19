@@ -99,7 +99,9 @@ API 仕様が未確認の経路（cloudflare）は `available()` が `JEV_ROUTE_
 Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加なし）。403/422/429/529/5xx/timeoutの分類とリトライ
 （408・429・5xx・timeoutのみ、`Retry-After`尊重、最大2回）、Network Gate二重チェック、Secret非表示はここで完結する。
 outcome schema → Jev questions（noul/choice/score）の写像と confidence 合成は `src/adapters/jev/jev-adapter.mjs`
-（変換層）が持つ。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
+（変換層）が持つ。 question の判断基準は schema 側に書く（outcome field の `description` = instructions、`recommended_route` の
+`x-enum-descriptions` = choice criteria の説明、outcome の `description` = `state.brief`。2026-09-19 Confidence Calibration。
+`docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
 integration test のみで叩く）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
 
 `vercel`（`src/adapters/jev/jev-vercel-provider.mjs`）は Vercel AI Gateway の Evaluation modality

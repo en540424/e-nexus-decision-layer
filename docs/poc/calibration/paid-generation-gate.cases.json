@@ -1,0 +1,68 @@
+{
+  "$comment": "MA-30 PoC Confidence Calibration（2026-09-19）の代表ケース。expected_* は実行前に記録した Human expectation（比較用）であり、Jev にこの答えを出させるためのものではない。Jev 結果と食い違っても即 Jev の誤りとはせず差異を分析する。expected_resolver=rules のケースは Rules First が API call を省略する成功ケースとして別枠で数え、Jev confidence 測定には含めない。秘密情報なし。",
+  "decision_type": "paid-generation-gate",
+  "application_id": "openmontage",
+  "project_id": "openmontage",
+  "cases": [
+    {
+      "case_id": "A1-subtitle-rules",
+      "category": "A: 明確に Local / Remotion 向き（Rules First 想定）",
+      "input": { "asset_kind": "subtitle", "purpose": "Japanese captions for a 90-second tutorial video that already exists", "style": "flat", "duration_sec": 90, "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "rules", "route": "remotion", "human_review": false, "paid_generation": false, "ambiguity": "low", "note": "rule text-only-assets-are-local が先に確定するはず（Jev へ届かない）" }
+    },
+    {
+      "case_id": "A2-local-flat-rules",
+      "category": "A: 明確に Local 向き（Rules First 想定）",
+      "input": { "asset_kind": "image", "purpose": "Flat-style thumbnail composed from our existing logo and screenshots", "style": "flat", "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "rules", "route": "local", "human_review": false, "paid_generation": false, "ambiguity": "low", "note": "rule local-assets-present-and-flat が先に確定するはず" }
+    },
+    {
+      "case_id": "A3-motion-lower-third",
+      "category": "A: 明確に Remotion 向きだが Rules に当たらず Jev へ届く",
+      "input": { "asset_kind": "b-roll", "purpose": "Animated lower-third name plates and simple section transitions for a software tutorial; only text and shapes, no photographic content", "style": "motion-graphics", "duration_sec": 15, "has_reference_media": false, "has_local_assets": false, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "remotion", "human_review": false, "paid_generation": false, "ambiguity": "low", "note": "b-roll + motion-graphics + local assets なし → rules 不一致。Jev が remotion と判断できるかの明確ケース" }
+    },
+    {
+      "case_id": "B1-photoreal-scene-baseline",
+      "category": "B: 明確に有料生成向き（初回実疎通と同一入力＝0.08 の再現用）",
+      "input": { "asset_kind": "scene", "purpose": "Create a short photoreal teaser scene for a product promo video", "style": "photoreal", "duration_sec": 8, "has_reference_media": false, "has_local_assets": false, "estimated_paid_cost_usd_micros": 2000000, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "en-generate-hub", "human_review": "either", "paid_generation": true, "ambiguity": "low", "note": "request-vercel-test.json と同一。confidence≈0.08 の再現・比較基準" }
+    },
+    {
+      "case_id": "B2-photoreal-image",
+      "category": "B: 明確に有料生成向き（静止画・低コスト）",
+      "input": { "asset_kind": "image", "purpose": "Photoreal lifestyle photo of a family cooking together in a bright kitchen, to be used as a hero image; we have no such photo", "style": "photoreal", "has_reference_media": false, "has_local_assets": false, "estimated_paid_cost_usd_micros": 300000, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "en-generate-hub", "human_review": "either", "paid_generation": true, "ambiguity": "low", "note": "高額ルール（$5以上）には当たらない適正 cost estimate" }
+    },
+    {
+      "case_id": "C1-boundary-scene-unspecified",
+      "category": "C: 境界ケース（Jev が本当に不確実になるべき入力）",
+      "input": { "asset_kind": "scene", "purpose": "Opening scene for an internal monthly update video", "style": "unspecified", "duration_sec": 10, "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "human-review", "human_review": true, "paid_generation": false, "ambiguity": "high", "note": "style 未指定・目的が曖昧・素材は一部あり。remotion も human-review も妥当" }
+    },
+    {
+      "case_id": "D1-motion-with-photoreal-rules",
+      "category": "D: Remotion と生成AIの境界（Rules First が先に確定する形）",
+      "input": { "asset_kind": "b-roll", "purpose": "Motion-graphics explainer of our delivery process; needs one photoreal background plate of a city street at dusk that we do not have", "style": "motion-graphics", "duration_sec": 20, "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "rules", "route": "local", "human_review": false, "paid_generation": false, "ambiguity": "medium", "note": "rule local-assets-present-and-flat（has_local_assets=true + motion-graphics）が確定する。purpose の『無い素材が要る』は rules が見ない＝Rules の粗さの観測ケース。Rules を弱めるためではなく記録用" }
+    },
+    {
+      "case_id": "D2-motion-with-photoreal-jev",
+      "category": "D: Remotion と生成AIの境界（Jev へ届く形）",
+      "input": { "asset_kind": "b-roll", "purpose": "Mostly motion-graphics explainer of our delivery process built from our own icons, but it needs one photoreal background plate of a city street at dusk that we do not have", "style": "unspecified", "duration_sec": 20, "has_reference_media": false, "has_local_assets": true, "estimated_paid_cost_usd_micros": 400000, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "either:remotion|en-generate-hub|human-review", "human_review": true, "paid_generation": "either", "ambiguity": "medium", "note": "主体は Remotion、一部だけ有料素材。複数 route が妥当" }
+    },
+    {
+      "case_id": "E1-product-shot-reference",
+      "category": "E: Reference media 依存（brand fidelity）",
+      "input": { "asset_kind": "product-shot", "purpose": "Studio-style product shot of our existing bottle; must match the packaging in the reference images exactly (brand fidelity)", "style": "photoreal", "has_reference_media": true, "has_local_assets": false, "estimated_paid_cost_usd_micros": 800000, "language": "ja" },
+      "expected": { "resolver": "jev", "route": "en-generate-hub", "human_review": true, "paid_generation": true, "ambiguity": "medium", "note": "有料生成向きだが brand fidelity のため human review が妥当" }
+    },
+    {
+      "case_id": "F1-underspecified",
+      "category": "F: 明確な Human review 候補（判断情報不足。schema は壊さない）",
+      "input": { "asset_kind": "other", "purpose": "Something for the intro", "style": "unspecified", "language": "ja" },
+      "expected": { "resolver": "jev", "route": "human-review", "human_review": true, "paid_generation": false, "ambiguity": "high", "note": "必須2項目だけ・内容が曖昧。Jev が human-review を選べるか" }
+    }
+  ]
+}

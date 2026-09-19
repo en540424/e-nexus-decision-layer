@@ -1,7 +1,7 @@
 {
   "$id": "edl/openmontage/paid-generation-gate",
   "title": "PaidGenerationGate",
-  "description": "PoC。有料生成APIを呼ぶ直前の事前トリアージ。outcome には承認を意味するキーを置かない。paid_generation_required=true は『en-generate-hub の Human-only承認フローへ進む価値がある』という意味でしかなく、実行許可ではない。",
+  "description": "PoC。有料生成APIを呼ぶ直前の事前トリアージ。outcome には承認を意味するキーを置かない。paid_generation_required=true は『en-generate-hub の Human-only承認フローへ進む価値がある』という意味でしかなく、実行許可ではない。outcome 配下の description / x-enum-descriptions は Jev Adapter が question instructions / choice criteria としてそのまま送る判断基準（2026-09-19 Confidence Calibration で追加。英語なのは Jev へ渡す文面のため）。特定の答えへ誘導する文言は書かない。",
   "type": "object",
   "properties": {
     "input": {
@@ -21,14 +21,37 @@
     },
     "outcome": {
       "type": "object",
+      "description": "Pre-triage for one requested video/image asset in an OpenMontage project, performed before any paid generative-AI call. Decide which production route fits the request. Routes: 'local' = produce with assets already on hand plus free local tools, no rendering pipeline and no generative API; 'remotion' = render programmatically with Remotion (React-based video: text, captions, slides, motion graphics, compositing of existing media); 'en-generate-hub' = a paid generative-AI request (image/video generation) is worth preparing for separate human approval; 'human-review' = no production route should be chosen yet, a human must clarify or decide. Input fields: asset_kind (type of asset), purpose (free-text description of what is needed), style (visual style; 'unspecified' means the requester did not say), duration_sec, has_reference_media (true = reference images/videos exist that the output must match), has_local_assets (true = usable footage/images/graphics are already on hand), estimated_paid_cost_usd_micros (estimated cost of paid generation; 1,000,000 = 1 USD; may be absent), language. Missing optional fields mean the information is unknown. This decision never approves spending: paid generation is always approved separately by a human.",
       "required": ["local_sufficient", "remotion_suitable", "paid_generation_required", "human_review_required", "recommended_route"],
       "additionalProperties": false,
       "properties": {
-        "local_sufficient": { "type": "boolean" },
-        "remotion_suitable": { "type": "boolean" },
-        "paid_generation_required": { "type": "boolean" },
-        "human_review_required": { "type": "boolean" },
-        "recommended_route": { "type": "string", "enum": ["local", "remotion", "en-generate-hub", "human-review"] }
+        "local_sufficient": {
+          "type": "boolean",
+          "description": "Can the requested asset be produced entirely from assets already on hand using free local tools, without a rendering pipeline and without any generative-AI API? True only if the request can be satisfied this way; false if new footage or imagery has to be rendered or generated."
+        },
+        "remotion_suitable": {
+          "type": "boolean",
+          "description": "Is the requested asset a good fit for programmatic rendering with Remotion (React-based video: text animation, captions, slides, motion graphics, layout and compositing of media that already exists)? True if Remotion can produce what is asked for from the available inputs; false if the request needs newly created photoreal or cinematic footage or imagery that cannot be composed from existing material."
+        },
+        "paid_generation_required": {
+          "type": "boolean",
+          "description": "Does producing the requested asset require a paid generative-AI API (image or video generation), because neither assets on hand nor Remotion rendering can produce it? True means only that a paid request is worth preparing for a human to approve separately; it is not an approval and not an instruction to spend."
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Should a human check this routing decision before anyone acts on it? True if the request is ambiguous or self-contradictory, essential information (what is being asked for, which style, whether inputs exist) is missing, brand or reference fidelity is critical to get right, or more than one route is equally plausible. False if the routing is clear from the input. This is about reviewing the route, not about approving payment: paid generation is always approved separately by a human regardless of this field."
+        },
+        "recommended_route": {
+          "type": "string",
+          "enum": ["local", "remotion", "en-generate-hub", "human-review"],
+          "description": "The single production route that best fits the request, consistent with the other answers: 'local' when assets on hand suffice, 'remotion' when programmatic rendering fits, 'en-generate-hub' when paid generation is needed and worth preparing for human approval, 'human-review' when no route should be chosen yet.",
+          "x-enum-descriptions": {
+            "local": "Produce with assets already on hand and free local tools; no rendering pipeline and no generative-AI API needed.",
+            "remotion": "Render programmatically with Remotion: text animation, captions, slides, motion graphics, or compositing of existing media.",
+            "en-generate-hub": "Prepare a paid generative-AI request (image or video generation) for separate human approval through en-generate-hub; choose only when neither assets on hand nor Remotion rendering can produce the asset.",
+            "human-review": "Do not choose a production route yet; a human must clarify the request or decide."
+          }
+        }
       }
     }
   }

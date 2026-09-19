@@ -20,7 +20,8 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 44 tests, 依存ゼロ（node --test）
+npm test                                     # 126 tests, 依存ゼロ（node --test）
+node scripts/poc-calibration.mjs dry-run     # Confidence Calibration（Rules First 件数と送信予定 questions。ネットワーク無し）
 node src/cli.mjs types                       # decision_type 一覧
 node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","application_id":"claude-code","project_id":"openmontage","input":{"asset_kind":"subtitle","purpose":"jp caption"}}'
 node src/cli.mjs registry skills --project travel-rate-camera
@@ -45,7 +46,8 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | `schemas/` | common + ドメイン別 decision_type schema（openmontage / ai-phone / travel-rate-camera / ai-cost-manager / claude-code） |
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
-| `docs/` | architecture / PoC / decision-log / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
+| `scripts/` | poc-calibration（Jev confidence の実測 runner。run はキー export 済みの Human シェルでのみ動く） |
+| `docs/` | architecture / PoC / decision-log / poc/calibration（ケース定義・結果） / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
 
 ## 正本
 

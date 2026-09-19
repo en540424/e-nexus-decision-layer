@@ -40,7 +40,7 @@ test('direct route: internal default model stays jev-latest regardless of the ve
   assert.equal(seenBody.model, 'jev-latest');
 });
 
-test('toGatewayQuestions: noul→boolean; choice null-description criteria → empty string; score criteria pass through', () => {
+test('toGatewayQuestions: noul→boolean; choice criteria carry x-enum-descriptions (null → empty string when absent); score criteria pass through', () => {
   const { request } = buildJevRequest({
     decisionType: 'paid-generation-gate',
     outcomeSchema: PAID_GATE_OUTCOME_SCHEMA,
@@ -50,7 +50,15 @@ test('toGatewayQuestions: noul→boolean; choice null-description criteria → e
   const gw = toGatewayQuestions(request.questions);
   assert.equal(gw.local_sufficient.type, 'boolean');
   assert.equal(gw.recommended_route.type, 'choice');
-  assert.deepEqual(gw.recommended_route.criteria, { local: '', remotion: '', 'en-generate-hub': '', 'human-review': '' });
+  // 2026-09-19 Confidence Calibration: the real schema now describes every route (x-enum-descriptions)
+  const expectedCriteria = PAID_GATE_OUTCOME_SCHEMA.properties.recommended_route['x-enum-descriptions'];
+  assert.deepEqual(Object.keys(gw.recommended_route.criteria).sort(), ['en-generate-hub', 'human-review', 'local', 'remotion'].sort());
+  assert.deepEqual(gw.recommended_route.criteria, expectedCriteria);
+  for (const v of Object.values(gw.recommended_route.criteria)) assert.ok(typeof v === 'string' && v.length > 0);
+
+  // schema without x-enum-descriptions → internal null → '' (AI SDK expects string descriptions)
+  const bare = buildJevRequest({ decisionType: 'x', outcomeSchema: { properties: { r: { type: 'string', enum: ['a', 'b'] } } }, input: {}, candidates: [] });
+  assert.deepEqual(toGatewayQuestions(bare.request.questions).r.criteria, { a: '', b: '' });
 
   const scoreQuestions = { rating: { type: 'score', instructions: 'x', criteria: ['rating = 1', 'rating = 2'] } };
   assert.deepEqual(toGatewayQuestions(scoreQuestions).rating, { type: 'score', instructions: 'x', criteria: ['rating = 1', 'rating = 2'] });
