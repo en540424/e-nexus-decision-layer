@@ -11,7 +11,9 @@
  *   node scripts/poc-calibration.mjs run --questions improved|baseline [--only A3,B1] [--out <file>]
  *       real Jev。シェルに AI_GATEWAY_API_KEY / JEV_PROVIDER=vercel / EDL_ALLOW_NETWORK=true が export
  *       されているときだけ動く（無ければ exit 4 で止まり、キーの入力は求めない）。各ケース1回・逐次
- *   node scripts/poc-calibration.mjs analyze <results.json...> [--compare <other-results.json>]
+ *   node scripts/poc-calibration.mjs analyze [<results.json | dir>...] [--compare <other-results.json>]
+ *       引数無しなら docs/poc/calibration/results/ の *.json を全部読む（PowerShell はネイティブ実行ファイルに glob を
+ *       展開しないので、Human は引数無しで実行する）。ディレクトリを渡せばその中の *.json。
  *       分布（min / max / median）・route別・ambiguity別・field-level の限界質問・閾値感度を Markdown で出す。
  *       複数ファイルを渡すと variant ごとに統合し（case_id 単位で「最新の成功 record」を採用、失敗 record は成功が無い
  *       case だけ残す）、improved と baseline が両方あれば比較表も出す。成功済み case を再課金せず結果を継ぎ足すための機構
@@ -24,7 +26,7 @@
  * policy・chain は一切変更しない（本番 defaultAdapters と同じ構成で、jev adapter だけ結果を横で写す）。
  * 大量リクエスト禁止：1ケース1回、429 / 認証系エラー / 連続 unavailable で即停止。
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDecisionEngine } from '../src/core/decision-engine.mjs';
@@ -320,6 +322,21 @@ export function mergeResults(outs) {
   return result;
 }
 
+/** analyze の入力解決：引数無し → RESULTS_DIR の *.json、ディレクトリ → その中の *.json、ファイルはそのまま。glob は展開しない */
+export function resolveResultFiles(args = [], resultsDir = RESULTS_DIR) {
+  const inputs = args.length ? args : [resultsDir];
+  const files = [];
+  for (const a of inputs) {
+    const abs = resolve(String(a));
+    if (!existsSync(abs)) throw new Error(`not found: ${a}`);
+    if (statSync(abs).isDirectory()) {
+      for (const name of readdirSync(abs).filter((n) => n.endsWith('.json')).sort()) files.push(join(abs, name));
+    } else files.push(abs);
+  }
+  if (!files.length) throw new Error('no results json found');
+  return files;
+}
+
 // ---------------------------------------------------------------- analyze
 
 function median(xs) {
@@ -540,8 +557,7 @@ async function main() {
       await cmdRun(opts, process.env);
       return;
     case 'analyze': {
-      const files = [...positional, ...(opts.compare ? [String(opts.compare)] : [])];
-      if (!files.length || files.some((f) => !existsSync(f))) throw new Error('analyze <results.json...> [--compare <other.json>]');
+      const files = resolveResultFiles([...positional, ...(opts.compare ? [String(opts.compare)] : [])]);
       const outs = files.map((f) => JSON.parse(readFileSync(f, 'utf8')));
       if (outs.length === 1) { process.stdout.write(`${analyzeToMarkdown(outs[0])}\n`); return; }
       const merged = mergeResults(outs);
@@ -552,7 +568,7 @@ async function main() {
       return;
     }
     default:
-      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] | analyze <results.json...> [--compare other.json]\n');
+      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] | analyze [<results.json|dir>...] [--compare other.json]\n');
       process.exitCode = 2;
   }
 }

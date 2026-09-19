@@ -201,3 +201,12 @@ test('payload shape: the cases that failed in the real run (D2 / E1 / A3 / B1) b
   }
   assert.equal(shapes.size, 1, 'all jev cases send an identical question structure; only state.input differs');
 });
+
+test('analyze with no arguments reads every committed results json (PowerShell does not expand globs for node)', async () => {
+  const { resolveResultFiles, RESULTS_DIR } = await import('../scripts/poc-calibration.mjs');
+  const files = resolveResultFiles([]);
+  assert.ok(files.length >= 3, 'the three first-run result files are committed');
+  assert.ok(files.every((f) => f.endsWith('.json') && f.startsWith(RESULTS_DIR)));
+  assert.deepEqual(resolveResultFiles([RESULTS_DIR]), files, 'a directory argument behaves the same');
+  assert.throws(() => resolveResultFiles(['docs/poc/calibration/results/*.json']), /not found/, 'an unexpanded glob fails loudly instead of silently');
+});

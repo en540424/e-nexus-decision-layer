@@ -131,10 +131,12 @@ node scripts/poc-calibration.mjs run --questions improved --only A3-motion-lower
 # ↑ 1 リクエスト。失敗しても今度は reason / status / retry_count / error_name が results に残る。成功したら続けて：
 node scripts/poc-calibration.mjs run --questions improved --only B2-photoreal-image,C1-boundary-scene-unspecified,D2-motion-with-photoreal-jev,E1-product-shot-reference,F1-underspecified
 node scripts/poc-calibration.mjs run --questions baseline --only D2-motion-with-photoreal-jev,E1-product-shot-reference,F1-underspecified
-node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/*.json
+node scripts/poc-calibration.mjs analyze
 ```
 
-合計 9 リクエスト（improved 6・baseline 3）。既に成功している baseline 4 件・improved B1 は再実行しない（`analyze` が統合する）。
+- `analyze` は引数無しで `docs/poc/calibration/results/` の全 JSON を統合する（PowerShell は glob を展開しないので `*.json` を渡さない）
+- 合計 9 リクエスト（improved 6・baseline 3）は下限。失敗 1 件につき SDK が 3 回送るので、失敗すれば増える。既に成功している baseline 4 件・improved B1 は再実行しない（`analyze` が統合する）
+- **run が `JEV_RATE_LIMITED` で止まったら、それ自体が未確定だった答え（429 = rate limit、5xx ではない）**。数分待って**同じコマンドをもう一度**実行する。成功済み case は再課金されない（`--only` の対象のうち成功したものは結果に残り、`analyze` が統合する）。`JEV_OVERLOADED`（5xx）なら runner が 5 秒置いて次の case へ進み、2 連続で止まる
 
 ### 判定（第1回実測後・暫定のまま）
 
