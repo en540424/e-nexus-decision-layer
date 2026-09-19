@@ -1,0 +1,15 @@
+{
+  "decision_type": "paid-generation-gate",
+  "application_id": "openmontage",
+  "project_id": "openmontage",
+  "input": {
+    "asset_kind": "scene",
+    "purpose": "Create a short photoreal teaser scene for a product promo video",
+    "style": "photoreal",
+    "duration_sec": 8,
+    "has_reference_media": false,
+    "has_local_assets": false,
+    "estimated_paid_cost_usd_micros": 2000000,
+    "language": "ja"
+  }
+}

@@ -34,6 +34,16 @@ outcome: local_sufficient, remotion_suitable, paid_generation_required, human_re
 - `fallback_occurred`・`human_escalation` の比率
 - 閾値調整はこの実測を根拠に行う
 
+## 実接続確認（Vercel経路、2026-09-19）
+
+`request-vercel-test.json`（repo直下）が実疎通用の入力例。photoreal シーン + `paid-generation-gate`。
+
+```
+node src/cli.mjs decide --file request-vercel-test.json
+```
+
+`JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・`EDL_ALLOW_NETWORK=true` をシェルへ export した状態で実行し、Human が成功を確認した（`.env` はCLI から読まれないため、実行前にシェルへ export する。§`.env.example`）。結果：`rules:unavailable(NO_RULE_MATCHED) → jev:ok(confidence≈0.08, tier=human, latency 881ms) → local:unavailable(LOCAL_MODEL_NOT_CONFIGURED) → human:ok`。`resolved_by: human`。`mock-jev` は `NOT_REGISTERED`（`src/index.mjs` の `realJevUsable()` により実 Jev 経路使用時は chain に登録されないことを実測確認。詳細は `docs/decision-log.md`）。
+
 ## 接続（未実装・Human 判断待ち）
 
 OpenMontage の `video_generation` カテゴリ（27ツール）が「支払い前にツール名・Provider・モデル・理由を宣言してターンを終える」設計なので、
