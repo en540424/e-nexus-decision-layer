@@ -9,5 +9,8 @@
     "test": "node --test \"tests/**/*.test.mjs\"",
     "decide": "node src/cli.mjs decide"
   },
+  "optionalDependencies": {
+    "ai": "^7.0.107"
+  },
   "license": "UNLICENSED"
 }

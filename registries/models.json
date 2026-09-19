@@ -37,11 +37,11 @@
       "provider": "typesafe-ai",
       "role": "decision-engine",
       "auto_selectable": true,
-      "status": "direct-provider-implemented",
-      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。到達経路は JEV_PROVIDER（direct / vercel / cloudflare）で切替。direct は2026-09-19に公式API仕様確認のうえ実装済み（APIキー未取得のため実疎通は未実施）。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
+      "status": "direct-and-vercel-provider-implemented",
+      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。到達経路は JEV_PROVIDER（direct / vercel / cloudflare）で切替。direct・vercelは2026-09-19に公式API仕様確認のうえ実装済み（いずれもAPIキー未取得のため実疎通は未実施。vercelはさらにoptionalDependency \"ai\"（AI SDK v7、Node.js 22+）の`npm install`も未実施）。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
       "routes": {
         "direct": "implemented",
-        "vercel": "reserved",
+        "vercel": "implemented",
         "cloudflare": "reserved"
       },
       "pricing": {

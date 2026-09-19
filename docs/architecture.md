@@ -80,11 +80,11 @@ Pre-Decision                 Execution                    Post-Execution Verific
 ```
 Decision Layer → Jev Adapter（変換だけ） → Jev Provider（経路だけ）
                                           ├─ direct     TypeSafe Direct API（実装済み。2026-09-19公式API仕様確認）
-                                          ├─ vercel     Vercel AI Gateway（予約）
+                                          ├─ vercel     Vercel AI Gateway（実装済み。2026-09-19公式仕様確認）
                                           └─ cloudflare Cloudflare 経由（予約）
 ```
 `JEV_PROVIDER` で切替（既定 `direct`）。経路の追加は `src/adapters/jev/jev-provider-interface.mjs` の契約を満たす1ファイルで済み、Adapter・Engine は変更しない。
-API 仕様が未確認の経路（vercel / cloudflare）は `available()` が `JEV_ROUTE_NOT_IMPLEMENTED` を返し、Engine は次の Adapter へ落ちる。
+API 仕様が未確認の経路（cloudflare）は `available()` が `JEV_ROUTE_NOT_IMPLEMENTED` を返し、Engine は次の Adapter へ落ちる。
 
 `direct`（`src/adapters/jev/jev-direct-provider.mjs`）は `POST https://api.typesafe.ai/v1/systemone` へ
 Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加なし）。403/422/429/529/5xx/timeoutの分類とリトライ
@@ -92,6 +92,17 @@ Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加な�
 outcome schema → Jev questions（noul/choice/score）の写像と confidence 合成は `src/adapters/jev/jev-adapter.mjs`
 （変換層）が持つ。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
 integration test のみで叩く）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
+
+`vercel`（`src/adapters/jev/jev-vercel-provider.mjs`）は Vercel AI Gateway の Evaluation modality
+（AI SDK 7 の `experimental_evaluate`。**REST互換エンドポイントには無い**、と公式に明記されている）を経由する。
+Gateway 側の質問型（`boolean`/`choice`/`score`、choice/score の confidence は `providerMetadata.typesafe.confidence`
+側）と Direct の内部形（`noul`/`choice`/`score`、confidence は answer 側）が異なるため、この Provider は
+「経路＋相互変換」を持つ（`jev-adapter.mjs` は変更しない）。依存パッケージ `ai`（AI SDK v7、**Node.js 22+ 必須**）は
+Decision Layer 全体の依存ゼロ方針とは別枠で `package.json` の `optionalDependencies` に置き、動的 `import('ai')` で
+読み込む。未インストールなら `JEV_VERCEL_SDK_MISSING` で unavailable になり、direct/mock/rules 経路や既存テストには
+一切影響しない。**APIキー未取得・`ai` 未インストールのため実疎通は未実施**（unit tests はすべて注入した
+`evaluateImpl` で、実 SDK・実ネットワークを一切使わない）。詳細仕様は 2026-09-19 MA-30開発ログ
+「Vercel AI Gateway経由 Jev 実接続」節を正本とする。
 
 ## 10. 仕様に固定しない情報
 

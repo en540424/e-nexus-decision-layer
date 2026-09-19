@@ -5,12 +5,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createJevAdapter } from '../src/adapters/jev/jev-adapter.mjs';
-import { assertJevProviderShape, resolveJevProvider, createVercelJevProvider, createCloudflareJevProvider, JEV_PROVIDER_IDS } from '../src/adapters/jev/jev-provider-interface.mjs';
+import { assertJevProviderShape, resolveJevProvider, createCloudflareJevProvider, JEV_PROVIDER_IDS } from '../src/adapters/jev/jev-provider-interface.mjs';
 import { AdapterUnavailableError } from '../src/core/errors.mjs';
 import { loadDecisionType, readJson } from '../src/schemas/loader.mjs';
 import { makeEngine } from './helpers.mjs';
 
-test('provider interface: shape is enforced; three routes are reserved', () => {
+test('provider interface: shape is enforced; three routes are named (direct/vercel implemented, cloudflare reserved)', () => {
   assert.deepEqual([...JEV_PROVIDER_IDS], ['direct', 'vercel', 'cloudflare']);
   assert.throws(() => assertJevProviderShape({ id: 'x' }), /available\(\) missing/);
   assert.equal(resolveJevProvider({}).id, 'direct', 'default route is direct');
@@ -18,11 +18,10 @@ test('provider interface: shape is enforced; three routes are reserved', () => {
   assert.throws(() => resolveJevProvider({ JEV_PROVIDER: 'nope' }), (e) => e instanceof AdapterUnavailableError && e.details.route === 'nope');
 });
 
-test('reserved routes (vercel / cloudflare) are unavailable, never sent', async () => {
-  for (const p of [createVercelJevProvider(), createCloudflareJevProvider()]) {
-    assert.equal(p.available({ JEV_API_KEY: 'dummy' }).ok, false);
-    await assert.rejects(() => p.send({ request: {} }), (e) => e.details.reason === 'JEV_ROUTE_NOT_IMPLEMENTED');
-  }
+test('reserved route (cloudflare) is unavailable, never sent', async () => {
+  const p = createCloudflareJevProvider();
+  assert.equal(p.available({ JEV_API_KEY: 'dummy' }).ok, false);
+  await assert.rejects(() => p.send({ request: {} }), (e) => e.details.reason === 'JEV_ROUTE_NOT_IMPLEMENTED');
   const viaEnv = createJevAdapter({ env: { JEV_API_KEY: 'dummy', EDL_ALLOW_NETWORK: 'true', JEV_PROVIDER: 'cloudflare' } });
   assert.equal(viaEnv.route, 'cloudflare');
   await assert.rejects(() => viaEnv.decide({ decisionType: 'x' }), (e) => e.details.reason === 'JEV_ROUTE_NOT_IMPLEMENTED' && e.details.route === 'cloudflare');

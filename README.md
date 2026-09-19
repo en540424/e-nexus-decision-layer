@@ -7,14 +7,14 @@ App / Agent / IDE（Claude Code・Cursor・Hermes・各アプリ）
   ↓  CLI（src/cli.mjs）または SDK（src/index.mjs）
 E-NEXUS Decision Layer（core: engine / router / fallback / confidence）
   ↓  Adapter Interface（src/adapters/adapter-interface.mjs）
-Rules ／ Jev（stub）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
+Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
 ```
 
 - **Jev（TypeSafe AI）は Adapter の1つ**。本体は Jev を知らない。差し替え・併用できる。
 - **deterministic rules を先に評価**し、解けないときだけ確率的 Adapter → 最後は必ず Human。
 - **承認はしない**。outcome に `approved` 等の承認キーは構造上存在できず（`policies/safety/human-only.json`）、
   既存の Human-only ゲート（en-generate-hub 承認チェーン・Claude Code permissions・Product Hub 更新ボタン）は一切変更しない。
-- **APIキー不要で動く**。`JEV_API_KEY` が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
+- **APIキー不要で動く**。`JEV_API_KEY`（direct）／`AI_GATEWAY_API_KEY`（vercel、`JEV_PROVIDER=vercel`のときのみ。加えて`npm install`でoptionalDependencyの`ai`が要る）が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
 - **usage metering** は初日から（`data/usage/usage.jsonl`、USD micros）。
 
 ## 使い方
