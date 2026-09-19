@@ -34,4 +34,6 @@
 | 2026-09-19 | fallback.mjs の「ok だが human 相当なら次の Adapter へ進む」継続設計は**変更しない** | docstring・architecture §2-5・既存テストで明示された正式設計で、llm Adapter（Medium confidence 時の再判定差し込み口）の前提でもある。今回の欠陥は継続そのものではなく mock が割り込む位置の問題 | 正常応答＋低confidence で chain を止め、Jev の outcome を tier=human で返す（設計変更。llm 再判定経路が死ぬ） |
 | 2026-09-19 | 残課題として記録（今回は修正しない）：chain 継続時、実 Jev の confidence／usage が `result`・metering に出ない（trace のみ）。課金された実呼び出しが usage.jsonl に載らない | metering は「1判定=1行、chosen の Adapter だけ」設計。直すには metering 設計の変更（試行ごとの行、または trace 由来の合算）が要り、今回の最小修正の範囲を超える | 今回まとめて metering を変更 |
 | 2026-09-19 | Vercel Provider で 403 を 401 と分け `JEV_FORBIDDEN`（再試行なし）にする。Direct の 403→`JEV_HTTP_ERROR` は今回触らない | 実作業で 403 がカード未認証・モデル権限・Gatewayポリシーでも返ると分かり、`JEV_AUTH_FAILED` に混ぜると原因追跡を誤らせる。response body はログへ出さない | 401/403 を同一扱いのまま |
+| 2026-09-19 | `package-lock.json` を commit する（`ai@7` を optionalDependencies のまま固定） | Human の `npm install` 結果を再現可能にする。注意：`npm ci` するマシンでは `ai@7` が入るため、その経路では実質 Node.js 22+ が要る（`engines.node: >=20` は direct/mock/rules だけで使う環境向けの下限として残す） | lock を commit しない |
+| 2026-09-19 | CLI／SDK は `.env` ファイルを読まない（依存ゼロのまま）。実行時の env はシェルに export された値だけ | `realJevUsable()` と jev adapter は同じ `process.env` を見るので、シェルにキーが無ければ jev unavailable → mock が残り、あれば jev が呼ばれ mock は外れる、と常に整合する。`.env` を読む機構を足すと Secret の読み込み経路が増える | dotenv 相当の自前ローダーを追加 |
 

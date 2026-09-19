@@ -49,6 +49,14 @@ test('defaultAdapters: mock-jev is present only when the real Jev route is NOT u
   assert.deepEqual(ids({ JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'false' }), ['rules', 'jev', 'mock-jev', 'local', 'llm', 'human'], 'network gate closed → mock stays');
 });
 
+test('defaultAdapters() with no argument reads process.env (the CLI never loads .env — keys must be exported in the shell)', () => {
+  // realJevUsable() と jev adapter 本体は同じ env（既定 process.env）を見るので、
+  // 「jev が実際に呼べる」ときだけ mock が外れ、キーがシェルに無ければ jev unavailable → mock が残る（整合）。
+  const ids = defaultAdapters().map((a) => a.id);
+  assert.ok(ids.includes('jev') && ids.includes('human'));
+  assert.equal(ids.includes('mock-jev'), !realJevUsable(process.env));
+});
+
 // ---- 正常応答 + confidence（unavailable と混同しない） ----
 
 test('real provider ok + high confidence → auto, resolved by the real provider', async () => {
