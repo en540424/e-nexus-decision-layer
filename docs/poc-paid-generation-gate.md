@@ -77,12 +77,14 @@ OpenMontage 本体・en-generate-hub 本体は変更しない（wrapper / integr
 
 ```
 node scripts/poc-calibration.mjs dry-run --questions improved      # ネットワーク無し。Rules First 3 件 / Jev 7 件を確認
+node scripts/poc-calibration.mjs run --questions improved --only B1-photoreal-scene-baseline   # smoke：1 リクエスト。実経路（ai SDK→Gateway）が動くことと 0.08 との比較を先に確認
 node scripts/poc-calibration.mjs run --questions baseline           # 初回実疎通と同じ汎用 instructions（比較基準）
-node scripts/poc-calibration.mjs run --questions improved           # 改善後 question
+node scripts/poc-calibration.mjs run --questions improved           # 改善後 question（B1 は smoke と合わせて 2 回になるが許容）
 node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/<improved>.json --compare docs/poc/calibration/results/<baseline>.json
 ```
 
-- 前提：`JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・`EDL_ALLOW_NETWORK=true` が **Human のシェルに export 済み**（CLI は `.env` を読まない）。無ければ exit 4 で止まり何も送らない
+- 前提：`JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・`EDL_ALLOW_NETWORK=true` が **Human のシェルに export 済み**（CLI は `.env` を読まない。初回実疎通に使った PowerShell セッションは残っていないので、使うシェルで再 export する）。無ければ exit 4 で止まり何も送らない
+- 注意：runner の実経路（`realJevUsable` 通過後の `import('ai')` → `createGateway` → `evaluationModel` → `experimental_evaluate`）は Claude Code セッションでは未実行（キー無し）。smoke の 1 リクエストが失敗したら、その出力（キーは含まれない）を次セッションへ
 - 規模：代表 10 ケース（A〜F）。Rules First 3 件は API を呼ばず、Jev 7 件 × 2 variant = 14 リクエスト（Jev 公表単価 $0.042/M input tokens → 合計 1 セント未満の見込み）。429 / 認証系 / 連続 unavailable で即停止
 - 結果は `docs/poc/calibration/results/<UTC>-<variant>.json`（secret 混入を保存前に検査）。usage.jsonl にも本番同様に 1 判定 1 行（`attempts[]` に Jev attempt）で残る
 - ケース定義と Human expectation（実行前記録）：`docs/poc/calibration/paid-generation-gate.cases.json`

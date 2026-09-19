@@ -92,3 +92,38 @@ test('createJevAdapter: decisionTypeLoader injection changes the questions sent;
   assert.ok(!('brief' in seen[1].state));
   assert.notEqual(seen[0].questions.local_sufficient.instructions, seen[1].questions.local_sufficient.instructions);
 });
+
+test('semantics pinned: real provider answering paid_generation_required=true + human_review_required=false with high confidence → tier auto on route en-generate-hub; this is NOT an approval (Human Gate preserved, no approval keys, spending still gated by en-generate-hub)', async () => {
+  const { createDecisionEngine } = await import('../src/core/decision-engine.mjs');
+  const { createRulesAdapter } = await import('../src/adapters/rules/rules-adapter.mjs');
+  const { createHumanAdapter } = await import('../src/adapters/human/human-adapter.mjs');
+  const { createMemoryMeter } = await import('../src/usage/metering.mjs');
+  const provider = {
+    id: 'fake',
+    available: () => ({ ok: true }),
+    async send({ request }) {
+      const answers = {};
+      for (const [name, q] of Object.entries(request.questions)) {
+        if (q.type === 'choice') answers[name] = { type: 'choice', choice: 'en-generate-hub', confidence: 0.93 };
+        else answers[name] = { type: 'noul', noul: name === 'paid_generation_required' ? 0.97 : 0.03 };
+      }
+      return { model: 'fake-jev', answers, usage: { input_tokens: 400, output_tokens: 10 } };
+    },
+  };
+  const env = { EDL_ALLOW_NETWORK: 'true' };
+  const engine = createDecisionEngine({ adapters: [createRulesAdapter(), createJevAdapter({ env, provider }), createHumanAdapter()], meter: createMemoryMeter() });
+  const r = await engine.decide({ decision_type: 'paid-generation-gate', application_id: 'openmontage', project_id: 'openmontage', input: { asset_kind: 'image', purpose: 'photoreal hero image we do not have', style: 'photoreal', has_local_assets: false, estimated_paid_cost_usd_micros: 300000 } });
+  assert.equal(r.resolved_by, 'jev');
+  assert.equal(r.outcome.paid_generation_required, true);
+  assert.equal(r.outcome.human_review_required, false);
+  assert.equal(r.outcome.recommended_route, 'en-generate-hub');
+  assert.equal(r.tier, 'auto', 'clear paid routing may be auto-tier: the route is a recommendation, not spending approval');
+  assert.equal(r.human_gate.required, false);
+  assert.equal(r.human_gate.preserved, true);
+  for (const k of ['approved', 'approval', 'approve', 'authorized', 'bypass_human_gate', 'override_budget', 'skip_human_review']) assert.ok(!(k in r.outcome), k);
+  assert.match(r.human_gate.note, /never approves/);
+  // the $5+ deterministic rule still forces human regardless of any Jev answer
+  const high = await engine.decide({ decision_type: 'paid-generation-gate', application_id: 'openmontage', project_id: 'openmontage', input: { asset_kind: 'image', purpose: 'x', style: 'photoreal', estimated_paid_cost_usd_micros: 5000000 } });
+  assert.equal(high.resolved_by, 'rules');
+  assert.equal(high.tier, 'human');
+});
