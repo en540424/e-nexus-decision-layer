@@ -31,6 +31,11 @@
  *   全体confidenceは「最も不確かなquestionの値」（各questionの最小値）とし、楽観的合成をしない。
  *
  * APIキーの値をログ・例外メッセージ・結果へ含めない。
+ *
+ * attempt metering（2026-09-19）:
+ *   正常応答は networked:true・route（direct/vercel）・model（応答の実モデルID）・retry_count（Provider が meta に書いた場合のみ）を
+ *   AdapterResult に付ける。送信後の失敗（HTTP/timeout/応答不正）は Provider／parseJevResponse が details.networked=true を付けて throw し、
+ *   送信前のゲート（NETWORK_DISABLED / *_KEY_MISSING / JEV_UNSUPPORTED_OUTCOME_FIELD 等）は付けない（core が false と扱う）。
  */
 import { AdapterUnavailableError } from '../../core/errors.mjs';
 import { assertJevProviderShape, resolveJevProvider } from './jev-provider-interface.mjs';
@@ -127,36 +132,36 @@ function estimateCostUsdMicros(inputTokens) {
  */
 export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
   if (!raw || typeof raw !== 'object' || !raw.answers || typeof raw.answers !== 'object') {
-    throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: 'missing answers' });
+    throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: 'missing answers', networked: true });
   }
   const outcome = {};
   const fieldConfidence = {};
   for (const [name, plan] of Object.entries(fieldPlans)) {
     const answer = raw.answers[name];
     if (!answer || typeof answer !== 'object' || answer.type !== plan.kind) {
-      throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `answer missing or wrong type: ${name}` });
+      throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `answer missing or wrong type: ${name}`, networked: true });
     }
     if (plan.kind === 'noul') {
       if (typeof answer.noul !== 'number' || answer.noul < 0 || answer.noul > 1) {
-        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid noul: ${name}` });
+        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid noul: ${name}`, networked: true });
       }
       outcome[name] = answer.noul >= 0.5;
       fieldConfidence[name] = noulConfidence(answer.noul);
     } else if (plan.kind === 'choice') {
       if (typeof answer.choice !== 'string' || !plan.enumValues.includes(answer.choice)) {
-        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid choice: ${name}` });
+        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid choice: ${name}`, networked: true });
       }
       if (typeof answer.confidence !== 'number' || answer.confidence < 0 || answer.confidence > 1) {
-        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `missing confidence: ${name}` });
+        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `missing confidence: ${name}`, networked: true });
       }
       outcome[name] = answer.choice;
       fieldConfidence[name] = answer.confidence;
     } else if (plan.kind === 'score') {
       if (typeof answer.score !== 'number') {
-        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid score: ${name}` });
+        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid score: ${name}`, networked: true });
       }
       if (typeof answer.confidence !== 'number' || answer.confidence < 0 || answer.confidence > 1) {
-        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `missing confidence: ${name}` });
+        throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `missing confidence: ${name}`, networked: true });
       }
       const levelIndex = Math.min(Math.max(Math.round(answer.score), 0), plan.levels - 1);
       outcome[name] = plan.minimum + levelIndex;
@@ -177,6 +182,9 @@ export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
       output_tokens: outputTokens,
       estimated_cost_usd_micros: estimateCostUsdMicros(inputTokens),
     },
+    // 応答を parse できた＝実際に送信した。model は provider が実際に使ったID（応答に無ければ付けない＝adapter.model のまま）
+    networked: true,
+    ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {}),
   };
 }
 
@@ -207,8 +215,26 @@ export function createJevAdapter({ env = process.env, provider = null } = {}) {
       const outcomeSchema = dt?.schema?.properties?.outcome ?? null;
       const model = env[JEV_ENV.model] || DEFAULT_MODEL;
       const { request, fieldPlans } = buildJevRequest({ decisionType, outcomeSchema, input, candidates, model });
-      const raw = await p.send({ request, env });
-      return parseJevResponse(raw, { fieldPlans });
+      // meta は Provider が書き戻す attempt 情報（retry_count 等。取得できる Provider だけが書く。捏造しない）
+      const meta = {};
+      let raw;
+      try {
+        raw = await p.send({ request, env, meta });
+      } catch (err) {
+        if (err instanceof AdapterUnavailableError) {
+          err.details.route ??= p.id;
+          if (Number.isInteger(meta.retry_count)) err.details.retry_count ??= meta.retry_count;
+        }
+        throw err;
+      }
+      let parsed;
+      try {
+        parsed = parseJevResponse(raw, { fieldPlans });
+      } catch (err) {
+        if (err instanceof AdapterUnavailableError) err.details.route ??= p.id;
+        throw err;
+      }
+      return { ...parsed, route: p.id, ...(Number.isInteger(meta.retry_count) ? { retry_count: meta.retry_count } : {}) };
     },
   };
 }

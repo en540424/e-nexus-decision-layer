@@ -60,12 +60,12 @@ async function safeJson(res) {
 /** HTTPレスポンスを分類し、成功なら raw JSON を返し、失敗なら AdapterUnavailableError を投げる（details.retryable で再試行可否を示す） */
 async function classifyResponse(res) {
   if (res.status === 401) {
-    throw new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'direct', status: 401, retryable: false });
+    throw new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'direct', networked: true, status: 401, retryable: false });
   }
   if (res.status === 422) {
     const body = await safeJson(res);
     throw new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', {
-      route: 'direct',
+      route: 'direct', networked: true,
       status: 422,
       problem: body?.error?.field ?? body?.field ?? null,
       retryable: false,
@@ -73,20 +73,20 @@ async function classifyResponse(res) {
   }
   if (res.status === 429) {
     throw new AdapterUnavailableError('jev', 'JEV_RATE_LIMITED', {
-      route: 'direct', status: 429, retryable: true, retryAfterMs: parseRetryAfterMs(res.headers),
+      route: 'direct', networked: true, status: 429, retryable: true, retryAfterMs: parseRetryAfterMs(res.headers),
     });
   }
   if (res.status === 408 || res.status === 529 || (res.status >= 500 && res.status <= 599)) {
     throw new AdapterUnavailableError('jev', 'JEV_OVERLOADED', {
-      route: 'direct', status: res.status, retryable: true, retryAfterMs: parseRetryAfterMs(res.headers),
+      route: 'direct', networked: true, status: res.status, retryable: true, retryAfterMs: parseRetryAfterMs(res.headers),
     });
   }
   if (!res.ok) {
-    throw new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'direct', status: res.status, retryable: false });
+    throw new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'direct', networked: true, status: res.status, retryable: false });
   }
   const json = await safeJson(res);
   if (json === null || typeof json !== 'object') {
-    throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { route: 'direct', detail: 'invalid JSON body', retryable: false });
+    throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { route: 'direct', networked: true, detail: 'invalid JSON body', retryable: false });
   }
   return json;
 }
@@ -108,7 +108,7 @@ async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs }) {
   } catch (err) {
     if (err instanceof AdapterUnavailableError) throw err;
     const isAbort = err?.name === 'AbortError';
-    throw new AdapterUnavailableError('jev', isAbort ? 'JEV_TIMEOUT' : 'JEV_NETWORK_ERROR', { route: 'direct', retryable: true });
+    throw new AdapterUnavailableError('jev', isAbort ? 'JEV_TIMEOUT' : 'JEV_NETWORK_ERROR', { route: 'direct', retryable: true, networked: true });
   } finally {
     clearTimeout(timer);
   }
@@ -126,7 +126,7 @@ export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImp
       if (!env.JEV_API_KEY) return { ok: false, reason: 'JEV_API_KEY_MISSING' };
       return { ok: true };
     },
-    async send({ request, env }) {
+    async send({ request, env, meta }) {
       // Adapter 側で EDL_ALLOW_NETWORK / JEV_API_KEY を既にチェックしているが、
       // Provider が単独で呼ばれても迂回できないよう、ここでも同じゲートを再確認する（二重チェック）。
       if (env.EDL_ALLOW_NETWORK !== 'true') {
@@ -145,6 +145,8 @@ export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImp
 
       let lastError = null;
       for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt += 1) {
+        // attempt metering：ここで実際に送信する。retry_count は「再送した回数」（初回は 0）。meta を渡さない呼び出しでも動く
+        if (meta && typeof meta === 'object') meta.retry_count = attempt;
         try {
           // eslint-disable-next-line no-await-in-loop
           return await attemptOnce({ fetchImpl, url, apiKey: env.JEV_API_KEY, request, timeoutMs });

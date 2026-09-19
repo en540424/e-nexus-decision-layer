@@ -9,7 +9,7 @@
  *     ↓ 5. fallback chain 実行 → confidence → tier
  *     ↓ 6. human gate 保護（outcome に承認を意味するキーがあれば例外。human_review_required=true は tier を human に固定）
  *     ↓ 7. outcome を decision_type schema で検証
- *     ↓ 8. usage metering
+ *     ↓ 8. usage metering（final resolver の usage ＋ attempts[]：途中で実際に呼んだ provider の usage も失わない）
  *   result（typed decision）
  *
  * Engine は Jev を知らない。知っているのは Adapter Interface だけ。
@@ -152,8 +152,8 @@ export function createDecisionEngine({
     };
     assertValid(resultSchema, result, 'decision-result');
 
-    // 8. metering
-    result.usage = meter.record(buildUsageRecord({ request, result, adapter, adapterResult, fallbackOccurred: fallback_occurred }));
+    // 8. metering（top-level = final resolver の usage。attempts[] / usage_total = 途中 attempt を含む全体。fallback.trace と同じ record）
+    result.usage = meter.record(buildUsageRecord({ request, result, adapter, adapterResult, fallbackOccurred: fallback_occurred, trace }));
     return result;
   }
 

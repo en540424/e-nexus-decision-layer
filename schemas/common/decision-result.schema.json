@@ -32,12 +32,20 @@
       "required": ["occurred", "trace"],
       "properties": {
         "occurred": { "type": "boolean" },
-        "trace": { "type": "array", "items": { "type": "object", "required": ["adapter", "status"] } },
+        "trace": {
+          "description": "attempt record の配列（1要素 = adapter.decide() 1回）。adapter/status に加え provider/model/route/confidence/tier/reason/ms/latency_ms/networked/usage_known/input_tokens/output_tokens/estimated_cost_usd_micros/retry_count/final/continue_reason を持つ（src/core/fallback.mjs 参照）。final が human でも途中の real provider の usage はここに残る",
+          "type": "array",
+          "items": { "type": "object", "required": ["adapter", "status"] }
+        },
         "skipped": { "type": "array" }
       }
     },
     "candidates_considered": { "type": "array", "items": { "type": "string" } },
     "thresholds": { "type": "object" },
-    "timestamp": { "type": "string" }
+    "timestamp": { "type": "string" },
+    "usage": {
+      "description": "metering record（schema 検証後に付与される）。top-level の provider/model/tokens/cost は final resolver の usage、attempts[] は全 attempt、usage_total は attempts の合計（final 分を含む。top-level と足すと二重計上）。src/usage/metering.mjs 参照",
+      "type": "object"
+    }
   }
 }

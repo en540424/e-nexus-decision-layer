@@ -15,7 +15,7 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 - **承認はしない**。outcome に `approved` 等の承認キーは構造上存在できず（`policies/safety/human-only.json`）、
   既存の Human-only ゲート（en-generate-hub 承認チェーン・Claude Code permissions・Product Hub 更新ボタン）は一切変更しない。
 - **APIキー不要で動く**。`JEV_API_KEY`（direct）／`AI_GATEWAY_API_KEY`（vercel、`JEV_PROVIDER=vercel`のときのみ。加えて`npm install`でoptionalDependencyの`ai`が要る）が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
-- **usage metering** は初日から（`data/usage/usage.jsonl`、USD micros）。
+- **usage metering** は初日から（`data/usage/usage.jsonl`、USD micros）。1行 = 1判定で、top-level は final resolver の usage、`attempts[]` / `usage_total` は途中で実際に呼んだ provider（低confidenceで human へ落ちた実 Jev 等）の usage も含む（docs/architecture.md §11）。
 
 ## 使い方
 
@@ -26,6 +26,7 @@ node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","applica
 node src/cli.mjs registry skills --project travel-rate-camera
 node src/cli.mjs registry-check
 node src/cli.mjs usage --by tenant
+node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が human でも途中の real provider を数える）
 ```
 
 終了コード: `0` 成功 / `2` schema・入力エラー / `3` Human Gate 違反 / `1` その他。

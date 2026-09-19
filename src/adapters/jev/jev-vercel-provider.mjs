@@ -123,32 +123,34 @@ export function toDirectShapedResponse(result, { questions }) {
   };
 }
 
-/** AI SDK / Gateway のエラーを Direct Provider と同じ reason 語彙へ分類する（duck-typing。isInstance()には依存しない） */
+/** AI SDK / Gateway のエラーを Direct Provider と同じ reason 語彙へ分類する（duck-typing。isInstance()には依存しない）。
+ *  evaluate() 呼び出し後にだけ使うため HTTP/ネットワーク系は networked:true（送信後の失敗）。判別できない SDK エラーは null */
 export function classifyGatewayError(err) {
   if (typeof err?.statusCode === 'number') {
     const status = err.statusCode;
     if (status === 401) {
-      return new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'vercel', status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'vercel', networked: true, status, retryable: false });
     }
     if (status === 403) {
       // キーは通ったが拒否された（カード未認証・モデル権限・Gatewayポリシー等）。原因はGateway側で確認する
-      return new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'vercel', status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'vercel', networked: true, status, retryable: false });
     }
     if (status === 422 || status === 400) {
-      return new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', { route: 'vercel', status, retryable: false });
+      return new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', { route: 'vercel', networked: true, status, retryable: false });
     }
     if (status === 429) {
-      return new AdapterUnavailableError('jev', 'JEV_RATE_LIMITED', { route: 'vercel', status, retryable: err.isRetryable !== false });
+      return new AdapterUnavailableError('jev', 'JEV_RATE_LIMITED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false });
     }
     if (status === 408 || status === 529 || (status >= 500 && status <= 599)) {
-      return new AdapterUnavailableError('jev', 'JEV_OVERLOADED', { route: 'vercel', status, retryable: err.isRetryable !== false });
+      return new AdapterUnavailableError('jev', 'JEV_OVERLOADED', { route: 'vercel', networked: true, status, retryable: err.isRetryable !== false });
     }
-    return new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'vercel', status, retryable: !!err.isRetryable });
+    return new AdapterUnavailableError('jev', 'JEV_HTTP_ERROR', { route: 'vercel', networked: true, status, retryable: !!err.isRetryable });
   }
   if (err?.name === 'AbortError' || err?.code === 'ETIMEDOUT' || err?.code === 'ECONNRESET') {
-    return new AdapterUnavailableError('jev', 'JEV_NETWORK_ERROR', { route: 'vercel', retryable: true });
+    return new AdapterUnavailableError('jev', 'JEV_NETWORK_ERROR', { route: 'vercel', networked: true, retryable: true });
   }
-  return new AdapterUnavailableError('jev', 'JEV_VERCEL_SDK_ERROR', { route: 'vercel', detail: err?.name ?? 'unknown', retryable: false });
+  // SDK 内部エラーは送信前（引数不正等）か送信後か判別できない → networked: null（不明。true と偽らない）
+  return new AdapterUnavailableError('jev', 'JEV_VERCEL_SDK_ERROR', { route: 'vercel', networked: null, detail: err?.name ?? 'unknown', retryable: false });
 }
 
 /** createGateway() が返すインスタンスから evaluationModel を安全に解決する。無ければ推測せず即座に失敗する */
@@ -212,6 +214,7 @@ export function createVercelJevProvider({ evaluateImpl, gatewayFactory } = {}) {
         evaluateFn = sdk.experimental_evaluate;
       }
 
+      // AI SDK が内部で最大2回リトライするが回数は観測できないため、retry_count は meta に書かない（捏造しない）
       let result;
       try {
         result = await evaluateFn({ model, state: request.state, questions, providerOptions, maxRetries: 2 });

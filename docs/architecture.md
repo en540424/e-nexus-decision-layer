@@ -27,7 +27,8 @@
    **mock-jev は「実 Jev 経路が使えない（キー無し／Network Gate OFF）とき」だけ既定 chain に入る**（`src/index.mjs` `defaultAdapters` が `realJevUsable(env)` で判定）。実 Jev が正常応答した結果を mock のヒューリスティックが上書きすることはない（2026-09-19 実疎通で観測した欠陥の修正。詳細は decision-log）
 3. **confidence → tier**：`auto`（≥ auto_min）/ `review`（≥ review_min）/ `human`。閾値は policy、コード固定しない。
    Adapter が**正常応答したが human 相当**の場合は trace に `status:'ok'` として残し（unavailable とは区別）、chain の次（local → llm の再判定差し込み口 → human escalation）へ進む。正常応答は provider 失敗ではない。
-   既知の残課題：chain が継続した場合、実 Jev の confidence / usage は `fallback.trace` にだけ残り、`result` と metering には出ない（2026-09-19 記録。修正は未着手）
+   chain が継続した場合も、実 Jev の confidence / usage / latency / model は attempt record として `fallback.trace` と
+   metering（`usage.jsonl` の `attempts[]` / `usage_total`）の両方に残る（2026-09-19 Intermediate Adapter Metering で解消。§11）
 4. **Human gate**：`policies/safety/human-only.json` の `force_human_when_outcome_keys`（`human_review_required` / `needs_human_review` / `human_required`）のいずれかが true なら confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない
 5. chain を使い切れば **Human Adapter** が escalation を返す（承認ではない）
 
@@ -47,6 +48,11 @@ Vault 側の人間向け台帳（Skill台帳・managed-repos.json・Advisor正�
 
 1判定 = 1行 JSONL。`application_id / project_id / tenant / provider / model / decision_type / tokens / estimated_cost_usd_micros / fallback_occurred / human_escalation`。
 販売版では tenant 別に集計し料金設計・原価管理へ使う。有料生成そのものの費用は en-generate-hub 課金台帳が正本（二重管理しない）。
+
+1行の中に**2つの意味**がある（§11）。top-level の `provider / model / resolved_by / input_tokens / output_tokens / estimated_cost_usd_micros`
+は **final resolver**（decision を確定した Adapter）の usage で、final が human なら 0。`attempts[]` は decision を解くために
+呼んだ全 attempt、`usage_total` はその合計（final 分を含む）。**top-level と `usage_total` を足すと二重計上**になるので片方だけを使う。
+`usage_total.unknown_usage_attempts > 0` のときは実コストが合計より大きい可能性がある（送信後に失敗し usage が取れなかった attempt。0 ではなく unknown）。
 
 ## 6. 販売Application
 
@@ -114,3 +120,35 @@ unit tests はすべて注入した `evaluateImpl` で、実 SDK・実ネット�
 
 レイテンシ（ms）・上位モデル比の速度／価格・選択肢数上限・学習手法の詳細・ベンチマーク順位などの**ベンダー公表値は Decision Layer の仕様にしない**。
 閾値・chain・Cost Gate はすべて policy と usage.jsonl の実測で決める。参考値を残す場合は出典付きで `docs/` に置くだけにする（本 repo には現時点で出典確認済みの値が無いため記録していない）。
+
+## 11. final decision と execution attempts は別（Intermediate Adapter Metering、2026-09-19）
+
+```
+decision（1件）
+ ├─ final result   : resolved_by / provider / model / outcome / confidence / tier   ← 「誰が確定したか」。従来どおり
+ └─ attempts[]     : adapter.decide() を呼んだ回数ぶんの attempt record               ← 「解く過程で何を試し、何を消費したか」
+       { adapter, status, provider, model, route, confidence, tier, reason, latency_ms(=ms),
+         networked, usage_known, input_tokens, output_tokens, estimated_cost_usd_micros, retry_count, final, continue_reason }
+```
+
+- attempt record は `src/core/fallback.mjs` が1か所で作り、`result.fallback.trace`（表示・デバッグ）と `usage.jsonl` の `attempts[]`
+  （metering。`ms` を落とした射影）が**同じ record**を使う。二重管理しない
+- 実疎通で観測した `rules → jev: ok(0.08) → local: unavailable → human` は、final が human（provider null・usage 0）のまま、
+  `attempts[]` に Jev の `provider=typesafe-ai / model（実応答）/ route=vercel / confidence=0.08 / latency_ms / tokens / cost / networked=true`
+  が残り、`usage_total` に Jev 分の cost が入る。final の confidence を 0.08 に書き換えたりはしない
+- **`networked`（外部 provider へ実際に送ったか）は throw / return する側が決める。core は Jev を知らない**：
+  - ok → `AdapterResult.networked`（rules / human / mock / local は `false` を明示、Jev は `true`）。無ければ `null`（不明）
+  - unavailable → `AdapterUnavailableError.details.networked`。送信後の失敗（401/403/422/429/5xx/timeout/応答不正）は Provider が `true` を付ける。
+    送信前のゲート（`NETWORK_DISABLED` / `*_KEY_MISSING` / `JEV_UNSUPPORTED_OUTCOME_FIELD` / `NO_RULE_MATCHED` / stub）は付けず `false`。
+    SDK 内部エラーのように判別できないものは `null`
+  - generic error → `null`
+- **unknown ≠ 0**：送っていないと確定できるときだけ cost 0 を `usage_known:true` で書く。送った可能性があるのに usage が無い attempt は
+  `usage_known:false`・tokens/cost `null` とし、`usage_total.unknown_usage_attempts` に数える（捏造しない）
+- **1 attempt = `adapter.decide()` 1回**。Provider 内部の HTTP 再試行は `retry_count`（Direct は実カウント、Vercel は SDK 内部で観測不能なので `null`）
+  であり attempt を増やさない。usage は最終応答の1回分だけ（二重計上しない）
+- 価格は `registries/models.json` の `pricing` だけを使う（コードに価格を固定しない）。attempt ごとの cost と decision 合計（`usage_total`）を区別する
+- Human Gate は無関係：attempt を記録するだけで承認・予算・課金の判断には一切使わない
+- 後方互換：top-level の意味は変えない。旧 record（`attempts` 無し）は `attemptsOf()` が「final resolver 1 attempt（networked 不明）」として読み、migration 不要。
+  `summarize()` の既存フィールドは final resolver 基準のまま、`total_*` / `attempts_by_provider` が全 attempt 基準。`usage --attempts` で attempt 単位集計
+- AI Cost Manager 連携（将来）は `attempts[]` を provider 非依存の入力とする：provider / model / route / application_id / project_id / decision_type /
+  timestamp / tokens / cost / status / networked / final / human_escalation がすべて機械可読で揃う。本 repo から AI Cost Manager 本体は変更しない

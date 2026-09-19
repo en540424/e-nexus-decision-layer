@@ -32,6 +32,7 @@ outcome: local_sufficient, remotion_suitable, paid_generation_required, human_re
 - `resolved_by` の分布（rules で何割解けたか＝Jev を呼ばずに済んだ割合）
 - `tier` の分布（auto / review / human）
 - `fallback_occurred`・`human_escalation` の比率
+- `attempts[]`／`usage_total`：Jev を実際に呼んだ件数（`networked`）・その cost・confidence 分布（final が human でも残る。architecture §11）
 - 閾値調整はこの実測を根拠に行う
 
 ## 実接続確認（Vercel経路、2026-09-19）

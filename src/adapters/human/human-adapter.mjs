@@ -25,6 +25,7 @@ export function createHumanAdapter() {
         confidence: 0,
         rationale: 'escalated to human',
         usage: { input_tokens: 0, output_tokens: 0, estimated_cost_usd_micros: 0 },
+        networked: false,
       };
     },
   };

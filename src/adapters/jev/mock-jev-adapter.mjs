@@ -57,6 +57,7 @@ export function createMockJevAdapter({ responses = {}, defaultUnavailable = fals
       return {
         ...base,
         usage: base.usage ?? { input_tokens: inputTokens, output_tokens: 16, estimated_cost_usd_micros: 0 },
+        networked: false, // 模擬。real provider の usage と混同しない（provider:'mock'・cost 0）
       };
     },
   };

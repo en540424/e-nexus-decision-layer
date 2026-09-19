@@ -60,6 +60,7 @@ export function createRulesAdapter({ rulesDir = 'policies/routing/rules' } = {})
         confidence: 1.0,
         rationale: `rule:${matched.id}${matched.rationale ? ` — ${matched.rationale}` : ''}`,
         usage: { input_tokens: 0, output_tokens: 0, estimated_cost_usd_micros: 0 },
+        networked: false,
       };
     },
   };

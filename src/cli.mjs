@@ -8,11 +8,14 @@
  *   node src/cli.mjs registry <projects|skills|agents|models> [--project <id>]
  *   node src/cli.mjs registry-check              4台帳の整合チェック
  *   node src/cli.mjs usage [--by application_id|project_id|tenant|provider|decision_type]
+ *                               既存の final-resolver 集計＋ total_*／attempts_by_provider（途中 attempt を含む全 attempt 集計）
+ *   node src/cli.mjs usage --attempts [--by provider|model|adapter|route|status|application_id|project_id|tenant|decision_type]
+ *                               attempt 単位の集計（final が human でも途中で呼んだ real provider の usage を数える）
  *
  * 出力は常に JSON（機械可読）。終了コード: 0=成功 / 2=入力・schema エラー / 3=Human Gate 違反 / 1=その他。
  */
 import { readFileSync } from 'node:fs';
-import { createDecisionLayer, listDecisionTypes, loadRegistry, resolveCandidates, checkRegistries, createFileMeter, summarize } from './index.mjs';
+import { createDecisionLayer, listDecisionTypes, loadRegistry, resolveCandidates, checkRegistries, createFileMeter, summarize, summarizeAttempts } from './index.mjs';
 import { HumanGateViolationError, SchemaValidationError, DecisionLayerError } from './core/errors.mjs';
 
 function parseArgs(argv) {
@@ -62,6 +65,10 @@ async function main() {
     }
     case 'usage': {
       const meter = createFileMeter();
+      if (opts.attempts) {
+        out({ path: meter.path, unit: 'attempt', summary: summarizeAttempts(meter.readAll(), opts.by ?? 'provider') });
+        return;
+      }
       out({ path: meter.path, summary: summarize(meter.readAll(), opts.by ?? 'application_id') });
       return;
     }
