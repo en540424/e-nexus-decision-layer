@@ -47,7 +47,7 @@ MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Lay
 - 既存との対応：Product Hub pull-plan（auto / claude / human）、en-sns-hub（confirmed / needs_review）、Codex / independent-inspector の検品と語彙を写像できるようにする（既存側の語彙は変えない）
 - 図と責務説明は `docs/architecture.md` §8
 
-## 5. Growth / CRM 向け decision_type（2026-09-23 追記・予約のみ・MA-31 仮）
+## 5. Growth / CRM 向け decision_type（2026-09-23 追記・予約のみ・MA-31）
 
 Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_E-NEXUS-Growth-CRM-Automation-Layer構想_2026-09-23.md` §8 で確定した予約。Growth / CRM Automation Layer は Decision Layer の**外**（利用側）であり、Growth のロジックを本 repo に実装しない。ここでは decision_type の名前と境界だけを持つ。
 
