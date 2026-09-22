@@ -10,6 +10,12 @@ MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Lay
 | 2 | Context Relevance Filter | `context-relevance` | Claude Code・Cursor・Hermes（上位LLM投入前） | 予約のみ |
 | 3 | Input / Output Guard 補助 | `io-guard-assist` | 全呼び出し元 | 予約のみ（禁止キー先置き） |
 | 4 | Post-Execution Verification | `post-execution-verify` | 全呼び出し元 | 予約のみ |
+| 5 | Growth：公開候補ゲート | `content-publish-gate` | Claude Code 本体（note-check 後）・将来 Hermes | 予約のみ（2026-09-23） |
+| 6 | Growth：チャネル選定 | `channel-selection` | Claude Code 本体・将来 Hermes | 予約のみ（2026-09-23） |
+| 7 | Growth：Lead トリアージ | `lead-triage` | 電話AI・公式サイト Contact・ココナラ問い合わせ | 予約のみ（2026-09-23） |
+| 8 | Growth：次アクション | `next-best-action` | AI Company V1 §8 Growth 手順 | 予約のみ（2026-09-23） |
+| 9 | Growth：返信ゲート | `customer-reply-gate` | AI Company V1 §9 Customer 手順 | 予約のみ（2026-09-23） |
+| 10 | Growth：自動化安全ゲート | `automation-safety-gate` | 将来の n8n / Hermes 連携 | 予約のみ（2026-09-23） |
 
 予約は `schemas/common/decision-types.json` の `reserved_decision_types`。schema が無いため `decide()` は `UNKNOWN_DECISION_TYPE` を返す（誤って動かない）。
 
@@ -40,6 +46,25 @@ MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Lay
 - Post-Execution の verdict：`PASS / RETRY / REVIEW / ESCALATE / HUMAN`。「次に誰が見るか」を表すだけで、HUMAN / ESCALATE を confidence で PASS に変えることはできない（`force_human_when_outcome_keys` と同じ扱いにする）
 - 既存との対応：Product Hub pull-plan（auto / claude / human）、en-sns-hub（confirmed / needs_review）、Codex / independent-inspector の検品と語彙を写像できるようにする（既存側の語彙は変えない）
 - 図と責務説明は `docs/architecture.md` §8
+
+## 5. Growth / CRM 向け decision_type（2026-09-23 追記・予約のみ・MA-31 仮）
+
+Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_E-NEXUS-Growth-CRM-Automation-Layer構想_2026-09-23.md` §8 で確定した予約。Growth / CRM Automation Layer は Decision Layer の**外**（利用側）であり、Growth のロジックを本 repo に実装しない。ここでは decision_type の名前と境界だけを持つ。
+
+| decision_type | 用途 | 境界（変えない） |
+|---|---|---|
+| `content-publish-gate` | 公開候補の content_risk / duplicate_risk / brand・legal-risk 候補 / human_attention_candidate | 公開は Human-only（Safety台帳 L4/L5）。tier=auto は「投稿してよい」を意味しない |
+| `channel-selection` | recommended_channels / channel_suitability / content_value / localization_value / video_conversion_value / repost_value | 候補提示のみ。planned / future / excluded の媒体（Vault 正本 §7）は rules で候補から外す |
+| `lead-triage` | lead_intent / lead_priority / service_fit / b2b_b2c / reply_classification | `call-triage`（ai-phone）と併存。PII を input / context に入れない（reference ID と件数のみ） |
+| `next-best-action` | nurture vs sales / next_best_action / cross_sell_fit | AI Company V1 §8 の補助。実行は Human |
+| `customer-reply-gate` | 返信案の要 Human 確認 / トーン / リスク | AI Company V1 §9 の補助。送信は Human |
+| `automation-safety-gate` | 自動化候補の安全区分・escalation 推奨 | `io-guard-assist` と同じ「怪しい → Escalate」のみ。解除・承認キーは `forbidden_outcome_keys` で禁止済み |
+
+- 共通の context 命名規約（schema 変更なし。schema 化時に input へ昇格）：`source_product / event_type / subject_ref / channel / policy_context / consent_context / action_candidates / correlation_id`。PII は入れない
+- Final Human Requirement は Jev 単独で決めない（Calibration の `human_review_required` = D の結論をそのまま適用。policy + consent + confidence + risk + frequency rules から Decision Layer が決定的に導く）
+- deterministic policy（unsubscribe / consent / frequency cap / duplicate block / budget / permission / cooldown / external-send prohibition）は Jev に判断させず、Growth Core 側の policy JSON に置く（本 repo の `policies/` にも置かない）
+- 予約しないもの：`sales-readiness` / `cross-sell-routing` / `churn-response`（sale・retention の実データが継続して出るまで）
+- schema 化の順序：Vault 正本 §16 の G3（`content-publish-gate` → `channel-selection`、Rules First）。MA-30 follow-up ①②の後。本追記は MA-30 の状態（基盤完成 / Calibration 完了 / 次統合待ち）を変えない
 
 ## 仕様に固定しない情報
 

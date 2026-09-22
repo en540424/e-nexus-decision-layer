@@ -73,7 +73,7 @@ test('a custom provider can be injected without touching the adapter or the engi
 
 test('reserved decision types exist by name only and cannot be decided', async () => {
   const idx = readJson('schemas/common/decision-types.json');
-  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify']) {
+  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify', 'content-publish-gate', 'channel-selection', 'lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
     assert.ok(idx.reserved_decision_types[id], `${id} reserved`);
     assert.equal(loadDecisionType(id), null, `${id} has no schema yet`);
   }

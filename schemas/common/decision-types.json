@@ -64,6 +64,30 @@
     "post-execution-verify": {
       "domain": "harness",
       "description": "実行後の型付き検証。verdict = PASS / RETRY / REVIEW / ESCALATE / HUMAN。Human-only承認の代替ではない。同 §4"
+    },
+    "content-publish-gate": {
+      "domain": "growth",
+      "description": "公開候補の content_risk / duplicate_risk / brand・legal-risk 候補 / human_attention_candidate。公開そのものは Human-only（Safety台帳 L4/L5）で、tier=auto でも投稿しない。docs/roadmap-future-use-cases.md §5"
+    },
+    "channel-selection": {
+      "domain": "growth",
+      "description": "recommended_channels / channel_suitability / content_value / localization_value / video_conversion_value / repost_value。候補提示のみ。Vault 正本の Channel 方針表で planned / future / excluded の媒体は候補に出さない（rules）。同 §5"
+    },
+    "lead-triage": {
+      "domain": "growth",
+      "description": "lead_intent / lead_priority / service_fit / b2b_b2c / reply_classification。call-triage（ai-phone）と併存。PII を input / context に入れず reference ID と件数だけ。同 §5"
+    },
+    "next-best-action": {
+      "domain": "growth",
+      "description": "nurture vs sales / next_best_action / cross_sell_fit。AI Company V1 §8 Growth 手順の補助。実行は Human、improvement への記録は Claude Code 本体。同 §5"
+    },
+    "customer-reply-gate": {
+      "domain": "growth",
+      "description": "返信案の要 Human 確認 / トーン / リスク。AI Company V1 §9 Customer 手順の補助。送信は必ず Human。同 §5"
+    },
+    "automation-safety-gate": {
+      "domain": "growth",
+      "description": "自動化候補（n8n workflow 等）の安全区分と escalation 推奨。io-guard-assist と同じく「怪しい → Escalate」のみで、解除・承認・ブロック解除は返せない（forbidden_outcome_keys）。同 §5"
     }
   }
 }
