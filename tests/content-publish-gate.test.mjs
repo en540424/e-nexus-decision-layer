@@ -104,8 +104,8 @@ test('content-publish-gate is registered (moved out of reserved) with a closed s
   assert.equal(DT.final_action, 'human-only');
   assert.equal(DT.schema.properties.input.additionalProperties, false, 'input is closed (no arbitrary PII / full body fields)');
   assert.equal(OUTCOME.additionalProperties, false);
-  // 他の Growth 予約は予約のまま
-  for (const id of ['channel-selection', 'lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
+  // channel-selection は 2026-09-23 MA-31 G3後半で実装済みへ移動（tests/channel-selection.test.mjs）。他の Growth 予約は予約のまま
+  for (const id of ['lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
     assert.ok(idx.reserved_decision_types[id], id);
     assert.equal(loadDecisionType(id), null, id);
   }

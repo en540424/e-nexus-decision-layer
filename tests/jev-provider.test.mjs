@@ -73,13 +73,15 @@ test('a custom provider can be injected without touching the adapter or the engi
 
 test('reserved decision types exist by name only and cannot be decided', async () => {
   const idx = readJson('schemas/common/decision-types.json');
-  // content-publish-gate は 2026-09-23 MA-31 G3 で実装済みへ移動（tests/content-publish-gate.test.mjs）
-  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify', 'channel-selection', 'lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
+  // content-publish-gate / channel-selection は 2026-09-23 MA-31 G3 で実装済みへ移動（tests/content-publish-gate.test.mjs・tests/channel-selection.test.mjs）
+  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify', 'lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
     assert.ok(idx.reserved_decision_types[id], `${id} reserved`);
     assert.equal(loadDecisionType(id), null, `${id} has no schema yet`);
   }
-  assert.ok(!idx.reserved_decision_types['content-publish-gate'], 'content-publish-gate is no longer reserved');
-  assert.ok(idx.decision_types['content-publish-gate'], 'content-publish-gate is implemented');
+  for (const id of ['content-publish-gate', 'channel-selection']) {
+    assert.ok(!idx.reserved_decision_types[id], `${id} is no longer reserved`);
+    assert.ok(idx.decision_types[id], `${id} is implemented`);
+  }
   const { engine } = makeEngine();
   await assert.rejects(() => engine.decide({ decision_type: 'io-guard-assist', application_id: 'a', project_id: 'openmontage', input: {} }), (e) => e.code === 'UNKNOWN_DECISION_TYPE');
 });

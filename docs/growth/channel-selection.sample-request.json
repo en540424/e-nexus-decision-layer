@@ -1,0 +1,17 @@
+{
+  "decision_type": "channel-selection",
+  "application_id": "claude-code",
+  "project_id": "en-knowledge-vault",
+  "input": {
+    "content_id": "sample:channel-selection-smoke-001",
+    "source_type": "note-draft",
+    "content_type": "article",
+    "channel": "note",
+    "channel_registered": true,
+    "channel_publication_state": "not-published",
+    "title": "足場屋がAIで見積もりを速くした話",
+    "summary": "現場の見積もり作業をAIで半自動化した経緯と、うまくいかなかった点を振り返る無料記事。",
+    "excerpt": "最初は表計算の関数だけで済むと思っていた。実際に困ったのは、現場ごとに言い方が違う部材名だった。",
+    "language": "ja"
+  }
+}

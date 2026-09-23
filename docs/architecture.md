@@ -70,8 +70,8 @@ Client App に Jev API Key を持たせない。metering の tenant はここで
 | 新しい呼び出し元 | `integrations/<name>/` | core |
 | 閾値変更 | `policies/routing/confidence-thresholds.json` | core |
 
-実例：`content-publish-gate`（MA-31 G3・2026-09-23）は上表どおり schema（`schemas/growth/`）＋ index ＋ rules ＋ tests だけで追加し、core は無変更。
-後続の実行（公開）が Human-only の decision_type は index に `final_action: "human-only"` を宣言し、outcome に実行・許可キーを置かない（`forbidden_outcome_keys`）。`docs/growth-content-publish-gate.md`
+実例：`content-publish-gate`（MA-31 G3・2026-09-23）・`channel-selection`（MA-31 G3後半・2026-09-23）は上表どおり schema（`schemas/growth/`）＋ index ＋ rules ＋ tests だけで追加し、core は無変更。
+後続の実行（公開）が Human-only の decision_type は index に `final_action: "human-only"` を宣言し、outcome に実行・許可キーを置かない（`forbidden_outcome_keys`）。`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`
 
 ## 8. 責務の3段構造（Pre-Decision / Execution / Post-Execution Verification）
 

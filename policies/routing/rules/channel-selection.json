@@ -1,0 +1,95 @@
+{
+  "$comment": "channel-selection（MA-31 G3後半・2026-09-23）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定する（Rules First）。順序：①媒体方針（名前で固定の3媒体）→②公開済み・有料listingのscope mismatch・Humanの明示除外→③未登録・公開状態不明・X/Threads opt-in無し（unavailable/hold）→④情報不足（title/summary欠落。Humanの明示優先より先に評価し、優先指定が情報不足を上書きしないようにする）→⑤Humanの明示優先。どれにも一致しなければ Jev（content_channel_fit の soft judgment）へ渡す。ここに置くのは『caller が渡した事実 → outcome』の写像だけで、Growth Core側のpolicy状態（consent・cooldown・frequency cap等）は持たない（G4）。媒体の状態表の正本は Vault MA-31 正本§7 で、ここへ複製しない：facebook=excluded／linkedin=future／discord=internal は同§19 Decision Log で固定済みの方針なので名前で止め、それ以外（planned／manual）は時間で変わるため caller の channel_registered で判定する。rule outcome の content_channel_fit『none』は『内容を読む前に決定的理由で止めた』を表す。どの outcome も投稿を意味しない（投稿は常に Human。content-publish-gate と Human review を経る）。",
+  "rules": [
+    {
+      "id": "channel-facebook-excluded",
+      "when": { "channel": "facebook" },
+      "outcome": { "channel_status": "excluded", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "Facebook は excluded（個人アカウント・知人・個人特定との結びつきを避ける。MA-31 正本§7・§7-1）"
+    },
+    {
+      "id": "channel-discord-internal",
+      "when": { "channel": "discord" },
+      "outcome": { "channel_status": "internal", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "Discord は internal（Internal Ops / Agent 通知 / Approval 用。External Channel ではない。MA-31 正本§12）"
+    },
+    {
+      "id": "channel-linkedin-future",
+      "when": { "channel": "linkedin" },
+      "outcome": { "channel_status": "future", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "LinkedIn は future（外部公開に耐える実績が揃った段階で Human が導入判断。MA-31 正本§7）"
+    },
+    {
+      "id": "channel-publication-state-published",
+      "when": { "channel_publication_state": "published" },
+      "outcome": { "channel_status": "excluded", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "同一 content は同一 channel で公開済み。二重公開候補にしない"
+    },
+    {
+      "id": "human-channel-excluded",
+      "when": { "human_channel_preference": "excluded" },
+      "outcome": { "channel_status": "excluded", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "Human がこの媒体を今回使わないと明示した（MA-31 正本§10）"
+    },
+    {
+      "id": "paid-listing-out-of-scope",
+      "when": { "paid_listing": true },
+      "outcome": { "channel_status": "excluded", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "not-a-candidate" },
+      "rationale": "有料 listing は content distribution の対象外（Distribution D1 §4-2。content flow と listing flow を混同しない。MA-31 正本§12）"
+    },
+    {
+      "id": "channel-not-registered",
+      "when": { "channel_registered": false },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Product Hub に実物の channel が無い（planned 媒体・アカウント未確認）。アカウント実在確認と channel_created は Human（MA-31 正本§18-4）"
+    },
+    {
+      "id": "channel-publication-state-unknown",
+      "when": { "channel_publication_state": "unknown" },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "公開済みかどうか不明。推測で候補にも除外にもしない（投稿済みログ / Hub content で確認してから再判定）"
+    },
+    {
+      "id": "x-opt-in-missing",
+      "when": { "channel": "x", "human_opt_in": { "exists": false } },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "X は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "x-opt-in-false",
+      "when": { "channel": "x", "human_opt_in": false },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "X は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "threads-opt-in-missing",
+      "when": { "channel": "threads", "human_opt_in": { "exists": false } },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "threads-opt-in-false",
+      "when": { "channel": "threads", "human_opt_in": false },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "title-missing",
+      "when": { "title": { "exists": false } },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "title が無い（情報不足。推測で fit を判断しない。Human の明示優先があっても情報不足を上書きしない）"
+    },
+    {
+      "id": "summary-missing",
+      "when": { "summary": { "exists": false } },
+      "outcome": { "channel_status": "unavailable", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "summary が無い（情報不足。推測で fit を判断しない。Human の明示優先があっても情報不足を上書きしない）"
+    },
+    {
+      "id": "human-channel-preferred",
+      "when": { "human_channel_preference": "preferred" },
+      "outcome": { "channel_status": "primary", "content_channel_fit": "none", "human_review_required": false, "recommended_route": "channel-candidate-review" },
+      "rationale": "Human がこの媒体を優先してほしいと明示した（policy block・未登録・opt-in無し・情報不足等は既に上の rule で止まっているのでここへは届かない。fit は内容を読んで判断するものではなく Human の指定をそのまま尊重するため none のまま。MA-31 正本§10）"
+    }
+  ]
+}

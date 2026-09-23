@@ -1,5 +1,5 @@
 {
-  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）と content-publish-gate（MA-31 G3・2026-09-23）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）・content-publish-gate（MA-31 G3・2026-09-23）・channel-selection（MA-31 G3後半・2026-09-23）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
   "decision_types": {
     "paid-generation-gate": {
       "domain": "openmontage",
@@ -55,6 +55,15 @@
       "final_action": "human-only",
       "final_action_ref": "外部公開は常に Human（Safety台帳§2 L4/L5・policies/safety/human-only.json の external-send-approval）。本 decision_type は公開前判定のみで、tier・route に関わらず公開を実行・承認しない",
       "description": "MA-31 G3（2026-09-23）。外部公開前のコンテンツ1件×1媒体の次段階（human-publish-review / needs-revision / hold / blocked）を型付きで返す。Rules First（媒体方針・公開済み・重複・policy 状態・opt-in・risk flag・情報不足）→ Jev。docs/growth-content-publish-gate.md"
+    },
+    "channel-selection": {
+      "domain": "growth",
+      "schema": "schemas/growth/channel-selection.schema.json",
+      "status": "gate",
+      "candidates": null,
+      "final_action": "human-only",
+      "final_action_ref": "外部公開は常に Human（Safety台帳§2 L4/L5・policies/safety/human-only.json の external-send-approval）。本 decision_type は投稿先の候補提示のみで、tier・route に関わらず投稿を実行・承認しない",
+      "description": "MA-31 G3後半（2026-09-23）。コンテンツ1件×候補媒体1件が distribution candidate として妥当かを型付きで返す（channel_status / content_channel_fit / human_review_required / recommended_route）。Rules First（媒体方針・公開済み・有料listing・Human除外・未登録・opt-in・情報不足）→ Jev。content-publish-gate（公開前readiness/risk判定）とは責務分離。docs/growth-channel-selection.md"
     }
   },
   "reserved_decision_types": {
@@ -73,10 +82,6 @@
     "post-execution-verify": {
       "domain": "harness",
       "description": "実行後の型付き検証。verdict = PASS / RETRY / REVIEW / ESCALATE / HUMAN。Human-only承認の代替ではない。同 §4"
-    },
-    "channel-selection": {
-      "domain": "growth",
-      "description": "recommended_channels / channel_suitability / content_value / localization_value / video_conversion_value / repost_value。候補提示のみ。Vault 正本の Channel 方針表で planned / future / excluded の媒体は候補に出さない（rules）。同 §5"
     },
     "lead-triage": {
       "domain": "growth",

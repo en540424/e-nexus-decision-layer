@@ -20,11 +20,12 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 160 tests, 依存ゼロ（node --test）
+npm test                                     # 185 tests, 依存ゼロ（node --test）
 node scripts/poc-calibration.mjs dry-run     # Confidence Calibration（Rules First 件数と送信予定 questions。ネットワーク無し）
 node src/cli.mjs types                       # decision_type 一覧
 node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","application_id":"claude-code","project_id":"openmontage","input":{"asset_kind":"subtitle","purpose":"jp caption"}}'
 node src/cli.mjs decide --file docs/growth/content-publish-gate.sample-request.json   # MA-31 G3 公開前判定（公開はしない）
+node src/cli.mjs decide --file docs/growth/channel-selection.sample-request.json      # MA-31 G3後半 候補媒体選定（投稿はしない）
 node src/cli.mjs registry skills --project travel-rate-camera
 node src/cli.mjs registry-check
 node src/cli.mjs usage --by tenant
@@ -44,11 +45,11 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | `src/usage/` | metering（JSONL 追記・集計） |
 | `registries/` | 4台帳（Vault側正本の派生スナップショット） |
 | `policies/` | routing（chain・閾値・rules）/ safety（Human-only）/ human-approval / cost |
-| `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate` は公開前判定ゲートで公開実行はしない（`docs/growth-content-publish-gate.md`） |
+| `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate`（公開前判定）・`channel-selection`（候補媒体選定）はどちらも実行はしない（`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`） |
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
 | `scripts/` | poc-calibration（Jev confidence の実測 runner。run はキー export 済みの Human シェルでのみ動く） |
-| `docs/` | architecture / PoC / decision-log / poc/calibration（ケース定義・結果） / growth-content-publish-gate（MA-31 G3）＋ growth/（Human smoke 用サンプル） / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
+| `docs/` | architecture / PoC / decision-log / poc/calibration（ケース定義・結果） / growth-content-publish-gate（MA-31 G3）・growth-channel-selection（MA-31 G3後半）＋ growth/（Human smoke 用サンプル） / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
 
 ## 正本
 

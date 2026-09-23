@@ -1,0 +1,86 @@
+{
+  "$id": "edl/growth/channel-selection",
+  "title": "ChannelSelection",
+  "description": "MA-31 G3後半（2026-09-23）。1件のコンテンツ×1候補媒体について「この媒体をdistribution candidateとして進めるべきか」を型付きで返す候補提示ゲート。**投稿実行装置ではない**：ここでの primary / secondary はどの媒体にも投稿してよいという意味にはならない（投稿は常に Human。content-publish-gate と Human review を経る）。content-publish-gate（公開前のcontent readiness / risk判定）とは責務を分ける：本 decision_type は「どの媒体が候補か」だけを判断し、公開可否・修正要否・riskは判断しない。outcome に投稿実行・承認を意味するキーは置かない（forbidden_outcome_keys で機械的に禁止）。input は閉じている（additionalProperties:false）。本文全文・氏名・メール・電話・住所・顧客個人情報を入れず、reference ID と短い抜粋・caller 判定済みのフラグだけを渡す（input 全体が Jev の state.input に載るため）。outcome 配下の description / x-enum-descriptions は Jev Adapter が question instructions / choice criteria としてそのまま送る判断基準（英語なのは Jev へ渡す文面のため。paid-generation-gate / content-publish-gate の Calibration 方式に従う）。特定の答えへ誘導する文言は書かない。Vault 正本 MA-31 §7 の Channel方針表（planned/future/excluded/internal）は複製しない：facebook（excluded）/ linkedin（future）/ discord（internal）は同§19 Decision Log で固定済みの方針なので rules が名前で止め、それ以外（planned/manual）は時間で変わるため caller の channel_registered で判定する。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["content_id", "channel", "channel_registered", "channel_publication_state"],
+      "additionalProperties": false,
+      "properties": {
+        "content_id": { "type": "string", "minLength": 1, "maxLength": 120, "description": "参照ID（Hub content id・Vault ノート相対パス・下書きID等）。PII を含めない" },
+        "source_type": { "type": "string", "enum": ["vault-note", "dev-log", "note-draft", "sns-draft", "video-project", "product-page", "other"] },
+        "content_type": { "type": "string", "enum": ["article", "post", "video", "page", "other"], "description": "Product Hub content.kind（article/post/video/page）＋other。新しい kind は Hub 側 enums.json が先（MA-31 正本§6）" },
+        "media_type": { "type": "string", "enum": ["text", "image", "video", "audio", "mixed"], "description": "コンテンツの主形態。画像中心／動画中心の判断に使う補助情報（channel fit の soft judgment 用）" },
+        "channel": {
+          "type": "string",
+          "enum": ["note", "x", "threads", "youtube", "instagram", "tiktok", "tales", "substack", "medium", "pinterest", "pixiv", "linkedin", "facebook", "discord"],
+          "description": "評価対象の候補媒体名。状態（manual/planned/future/excluded/internal）は MA-31 正本§7 が正本で、ここでは持たない。facebook（excluded）/ linkedin（future）/ discord（internal）は rules が名前で止める"
+        },
+        "channel_registered": { "type": "boolean", "description": "Product Hub に実物の channel（chn_*）が登録済みか。planned 媒体（アカウント未確認）は false。caller が Hub / 正本§7 から渡す（本 repo は Channel Registry を持たない）" },
+        "channel_publication_state": { "type": "string", "enum": ["not-published", "published", "unknown"], "description": "同一 content が同一 channel で既に公開済みか。unknown は rules が unavailable/hold（推測で候補から外す／候補にするのどちらもしない）" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "excerpt": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "短い抜粋（redaction 済み）。本文全文は渡さない" },
+        "language": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "paid_listing": { "type": "boolean", "description": "この content が有料 listing（note の有料記事等。Distribution D1 §4-2 の listing 扱い）であり、通常の content distribution 対象ではないか。true なら rules が全 channel で excluded にする（content flow と listing flow を混同しない。MA-31 正本§12）" },
+        "human_opt_in": { "type": "boolean", "description": "X / Threads のみ：Human が明示的にこの投稿を追跡対象にすると指示したか（16_Threads運用ルール§7）。X / Threads で true でなければ rules が unavailable/hold" },
+        "human_channel_preference": {
+          "type": "string",
+          "enum": ["preferred", "excluded", "none"],
+          "description": "Human がこの媒体について明示した意向。preferred＝この媒体を優先してほしいと明示指定、excluded＝この媒体は今回使わないでほしいと明示指定、none／省略＝意向なし。policy block（facebook等）は preferred でも突破しない（MA-31 正本§10）"
+        },
+        "campaign_ref": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "project_ref": { "type": "string", "minLength": 1, "maxLength": 120 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Distribution channel fit check for one piece of E-NEXUS content against one candidate external channel, performed before any content-readiness or publishing review. This decision never selects a channel to publish to and is never a publishing approval or a content-safety judgment: whether this content is actually published on this channel is always decided later by a human, and whether the content itself is ready to publish (revision, risk) is a separate decision (content-publish-gate). Decide whether this channel is worth carrying forward as a distribution candidate for this content. Statuses: 'primary' = the best-fitting candidate for this content among channels like it; 'secondary' = a workable candidate but not the best fit; 'not_recommended' = the channel is usable in general but this content does not fit it well; 'excluded' = this channel is not used for this content for a reason unrelated to content fit (a fixed channel policy, an explicit human exclusion, a duplicate, or a scope mismatch such as a paid listing); 'future' = the channel is not adopted for external distribution yet; 'internal' = the channel is for internal use only, not external distribution; 'unavailable' = the channel cannot be evaluated yet because something required is missing. Input fields: content_id (a reference ID only), source_type, content_type (article, post, video, page), media_type (text, image, video, audio, mixed), channel, channel_registered (true = a real account for this channel already exists), channel_publication_state (whether this content is already published on this channel), title, summary, excerpt (a short excerpt, not the full text), language, paid_listing (true = this is a paid listing, not ordinary distributable content), human_opt_in (for X and Threads only: has a human explicitly opted this post in for tracking), human_channel_preference (preferred, excluded, or none). Missing optional fields mean the information is unknown.",
+      "required": ["channel_status", "content_channel_fit", "human_review_required", "recommended_route"],
+      "additionalProperties": false,
+      "properties": {
+        "channel_status": {
+          "type": "string",
+          "enum": ["primary", "secondary", "not_recommended", "excluded", "future", "internal", "unavailable"],
+          "description": "Where does this specific candidate channel stand for this specific content, compared to other channels this same content could go to? Judge only from the given input.",
+          "x-enum-descriptions": {
+            "primary": "This channel is the best fit for this content among the kinds of channels it could go to: the content type, format and audience match this channel well.",
+            "secondary": "This channel is a workable candidate for this content but not the best fit: it could carry this content, though another channel likely fits better.",
+            "not_recommended": "This channel is usable in general, but this particular content does not fit its format, audience or purpose well enough to recommend it.",
+            "excluded": "This channel is not used for this content, for a reason unrelated to how well the content fits it: a fixed channel policy, an explicit human exclusion for this channel, this content is already published here, or this content is out of scope for this channel (for example a paid listing routed through a content channel).",
+            "future": "This channel is not adopted for external distribution yet; it is a candidate for later, not now.",
+            "internal": "This channel is for internal use only (notifications, approvals, monitoring) and is not an external distribution target.",
+            "unavailable": "This channel cannot be evaluated yet because something required is missing: the channel is not registered, an explicit human opt-in is required and missing, or essential content information (title or summary) is missing."
+          }
+        },
+        "content_channel_fit": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "none"],
+          "description": "How well does this content's type, format and subject fit this channel's typical use, judging only from content_type, media_type, title, summary and excerpt?",
+          "x-enum-descriptions": {
+            "high": "The content's format and subject are a strong, natural match for what this channel is typically used for.",
+            "medium": "The content could work on this channel but is not an obvious or ideal match.",
+            "low": "The content's format or subject is a poor match for what this channel is typically used for.",
+            "none": "Fit was not assessed: a fixed channel policy, missing information, or an explicit human channel preference decided the outcome before the content itself was read."
+          }
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Does this specific content-to-channel pairing need a human to look closely before it is treated as a candidate or ruled out? True if the fit is genuinely unclear from the input, if the content type is unusual for this channel, or if the available signals point in different directions. False if the fit, good or bad, is reasonably clear from the input. This field is not about whether posting to this channel needs human approval: posting is always a separate human action."
+        },
+        "recommended_route": {
+          "type": "string",
+          "enum": ["channel-candidate-review", "not-a-candidate", "hold"],
+          "description": "The single next step for this content-to-channel pairing, consistent with the other answers: 'channel-candidate-review' when this channel should be carried forward as a distribution candidate for a human (and, before publishing, content-publish-gate) to consider; 'not-a-candidate' when this channel should not be carried forward for this content, whether because of poor fit or a fixed policy; 'hold' when the pairing cannot be evaluated yet and a human must resolve what is missing first. None of these steps selects a channel to publish to or publishes anything.",
+          "x-enum-descriptions": {
+            "channel-candidate-review": "Carry this channel forward as a distribution candidate for this content; a human, and content-publish-gate before any publishing, still decides what happens next.",
+            "not-a-candidate": "Do not carry this channel forward as a distribution candidate for this content.",
+            "hold": "Do not decide yet: a human must first resolve something missing, such as channel registration, an explicit opt-in, or essential content information."
+          }
+        }
+      }
+    }
+  }
+}
