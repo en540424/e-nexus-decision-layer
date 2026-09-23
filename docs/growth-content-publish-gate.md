@@ -80,6 +80,7 @@ reason code 専用 field は置かない（Jev が全 field に答える設計�
 - `human_review_required` は Calibration で limiting field になった経緯（MA-30 分類 D）を踏まえ、「人が見るべきか」という抽象的な問いではなく**観察可能なトリガー**（特定可能な第三者・法務/医療/税務/金融の主張・会社代表の表明・価格/販売条件・個人情報・検証不能な事実）で定義した。caller がフラグで分かっているものは rules が決定的に true にする
 - confidence 合成（min）・閾値（0.85 / 0.60）は**変更していない**。field 数は 5（paid-generation-gate と同数）に抑えた
 - **MA-30 follow-up ②（`human_review_required` の Hybrid 化：Jev＋policy＋他 field confidence＋矛盾検出から決定的に導く）は未実装のまま**。route と他 field の矛盾検出もその範囲
+- **既知のギャップ（Hybrid で閉じる対象）**：Jev が `risk_level=high` かつ `human_review_required=false` を高 confidence で返すと tier=auto になる（field 間の整合チェックが無いため）。公開は常に Human なので安全側ではあるが、「high なのに要注意フラグが立たない」状態を今は検出しない（tests で現状を固定）
 
 ## 5. Human-only publish の扱い（別レイヤで分離）
 
@@ -92,6 +93,7 @@ reason code 専用 field は置かない（Jev が全 field に答える設計�
 - `forbidden_outcome_keys` に `publish_now` / `auto_publish` / `publish_approved` / `publish_allowed` / `allow_publish` / `post_now` を追加（outcome に現れたら `HumanGateViolationError`）
 - `decision-types.json` の entry に `final_action: "human-only"` を宣言（engine は読まない。docs / tests 用）
 - **tier=auto ＋ `human-publish-review` は「この事前判定に確信がある」であって公開許可ではない**（paid-generation-gate の「tier=auto は承認ではない」と同じ意味論。tests で固定）
+- **caller は `recommended_route` で次の段階を決め、`human_gate.required` では決めない**：rules の `blocked` / `hold`（opt-in 無し・未登録 channel・公開状態不明等）は内容の懸念が無いので tier=auto・`human_gate.required=false` で返る。「進めない」という意味は route が持つ（tests で固定）
 
 ## 6. fallback / metering
 

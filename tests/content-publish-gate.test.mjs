@@ -10,6 +10,7 @@ import { assertValid } from '../src/schemas/validate.mjs';
 import { createDecisionEngine } from '../src/core/decision-engine.mjs';
 import { createRulesAdapter } from '../src/adapters/rules/rules-adapter.mjs';
 import { createJevAdapter, buildJevRequest } from '../src/adapters/jev/jev-adapter.mjs';
+import { toGatewayQuestions } from '../src/adapters/jev/jev-vercel-provider.mjs';
 import { createLocalAdapterStub } from '../src/adapters/local/local-adapter-stub.mjs';
 import { createLlmAdapterStub } from '../src/adapters/llm/llm-adapter-stub.mjs';
 import { createHumanAdapter } from '../src/adapters/human/human-adapter.mjs';
@@ -126,6 +127,15 @@ test('every outcome field maps to a Jev question (boolean / enum only) so Jev is
   assert.equal(request.questions.recommended_route.type, 'choice');
 });
 
+test('Vercel Gateway conversion (the Human smoke route) accepts this schema: no throw, non-empty criteria for both enums', () => {
+  const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
+  const gw = toGatewayQuestions(request.questions);
+  assert.deepEqual(Object.keys(gw).sort(), Object.keys(request.questions).sort());
+  for (const field of ['risk_level', 'recommended_route']) {
+    for (const [v, text] of Object.entries(gw[field].criteria)) assert.ok(typeof text === 'string' && text.length > 0, `${field}.${v}`);
+  }
+});
+
 // ---------------------------------------------------------------- Jev question design（Calibration 方式）
 
 test('question design: every field has concrete instructions, every enum value has criteria, the brief says it never publishes', () => {
@@ -239,6 +249,40 @@ test('F: already published → blocked (no duplicate publish candidate); duplica
   const c = await engine.decide(req(baseInput({ prior_publication_state: 'unknown' })));
   assert.match(c.rationale, /^rule:publication-state-unknown/);
   assert.equal(c.outcome.recommended_route, 'hold');
+});
+
+test('semantics pinned: deterministic blocked / hold without a content concern are tier=auto and human_gate.required=false — callers must key on recommended_route, not on human_gate.required', async () => {
+  const { engine } = engineWith(fakeProvider(CLEAR_CANDIDATE));
+  const cases = [
+    [{ policy_state: 'blocked' }, 'blocked'],
+    [{ channel: 'facebook' }, 'blocked'],
+    [{ channel: 'discord' }, 'blocked'],
+    [{ channel: 'linkedin' }, 'blocked'],
+    [{ prior_publication_state: 'published' }, 'blocked'],
+    [{ prior_publication_state: 'unknown' }, 'hold'],
+    [{ channel: 'instagram', channel_registered: false }, 'hold'],
+    [{ channel: 'x', content_type: 'post' }, 'hold'],
+  ];
+  for (const [extra, route] of cases) {
+    const r = await engine.decide(req(baseInput(extra)));
+    assert.equal(r.outcome.recommended_route, route, JSON.stringify(extra));
+    assert.equal(r.outcome.publish_candidate, false, JSON.stringify(extra));
+    // tier は「この事前判定の確信度」。hold / blocked の意味（進めない）は route が持つ
+    assert.equal(r.tier, 'auto', JSON.stringify(extra));
+    assert.equal(r.human_gate.required, false, JSON.stringify(extra));
+    assertNeverPublishes(r);
+  }
+});
+
+test('known gap (Hybrid follow-up must close): Jev risk_level=high with human_review_required=false at high confidence → tier auto; safe only because publishing is always Human', async () => {
+  const { engine } = engineWith(fakeProvider({ ...CLEAR_CANDIDATE, risk_level: { choice: 'high', confidence: 0.92 } }));
+  const r = await engine.decide(req(baseInput()));
+  assert.equal(r.resolved_by, 'jev');
+  assert.equal(r.outcome.risk_level, 'high');
+  assert.equal(r.outcome.human_review_required, false);
+  assert.equal(r.tier, 'auto', 'no field-consistency check exists yet (MA-30 follow-up ② Hybrid / contradiction detection)');
+  assertNeverPublishes(r);
+  assert.equal(DT.final_action, 'human-only');
 });
 
 test('G: brand / legal risk → Human review + hold (rules via caller flags; Jev via human_review_required=true)', async () => {
