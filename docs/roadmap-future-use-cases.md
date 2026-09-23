@@ -10,7 +10,7 @@ MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Lay
 | 2 | Context Relevance Filter | `context-relevance` | Claude Code・Cursor・Hermes（上位LLM投入前） | 予約のみ |
 | 3 | Input / Output Guard 補助 | `io-guard-assist` | 全呼び出し元 | 予約のみ（禁止キー先置き） |
 | 4 | Post-Execution Verification | `post-execution-verify` | 全呼び出し元 | 予約のみ |
-| 5 | Growth：公開候補ゲート | `content-publish-gate` | Claude Code 本体（note-check 後）・将来 Hermes | 予約のみ（2026-09-23） |
+| 5 | Growth：公開候補ゲート | `content-publish-gate` | Claude Code 本体（note-check 後）・将来 Hermes | **実装済み（2026-09-23 MA-31 G3）**。`docs/growth-content-publish-gate.md` |
 | 6 | Growth：チャネル選定 | `channel-selection` | Claude Code 本体・将来 Hermes | 予約のみ（2026-09-23） |
 | 7 | Growth：Lead トリアージ | `lead-triage` | 電話AI・公式サイト Contact・ココナラ問い合わせ | 予約のみ（2026-09-23） |
 | 8 | Growth：次アクション | `next-best-action` | AI Company V1 §8 Growth 手順 | 予約のみ（2026-09-23） |
@@ -53,7 +53,7 @@ Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタ�
 
 | decision_type | 用途 | 境界（変えない） |
 |---|---|---|
-| `content-publish-gate` | 公開候補の content_risk / duplicate_risk / brand・legal-risk 候補 / human_attention_candidate | 公開は Human-only（Safety台帳 L4/L5）。tier=auto は「投稿してよい」を意味しない |
+| `content-publish-gate` | **実装済み（G3・2026-09-23）**。outcome = publish_candidate / revision_needed / risk_level / human_review_required / recommended_route（human-publish-review / needs-revision / hold / blocked）。予約時の content_risk / duplicate_risk / brand・legal-risk / human_attention_candidate は risk_level・rules（already-published / duplicate-confirmed / risk_flags）・human_review_required へ写像した | 公開は Human-only（Safety台帳 L4/L5）。tier=auto は「投稿してよい」を意味しない。公開実行キーは `forbidden_outcome_keys` で禁止 |
 | `channel-selection` | recommended_channels / channel_suitability / content_value / localization_value / video_conversion_value / repost_value | 候補提示のみ。planned / future / excluded の媒体（Vault 正本 §7）は rules で候補から外す |
 | `lead-triage` | lead_intent / lead_priority / service_fit / b2b_b2c / reply_classification | `call-triage`（ai-phone）と併存。PII を input / context に入れない（reference ID と件数のみ） |
 | `next-best-action` | nurture vs sales / next_best_action / cross_sell_fit | AI Company V1 §8 の補助。実行は Human |
@@ -65,6 +65,7 @@ Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタ�
 - deterministic policy（unsubscribe / consent / frequency cap / duplicate block / budget / permission / cooldown / external-send prohibition）は Jev に判断させず、Growth Core 側の policy JSON に置く（本 repo の `policies/` にも置かない）
 - 予約しないもの：`sales-readiness` / `cross-sell-routing` / `churn-response`（sale・retention の実データが継続して出るまで）
 - schema 化の順序：Vault 正本 §16 の G3（`content-publish-gate` → `channel-selection`、Rules First）。MA-30 follow-up ①②の後。本追記は MA-30 の状態（基盤完成 / Calibration 完了 / 次統合待ち）を変えない
+- 2026-09-23：`content-publish-gate` を実装（Human の明示発注により follow-up ①② 未着手のまま先行。decision-log 参照）。`channel-selection` 以降の 5 件は予約のまま
 
 ## 仕様に固定しない情報
 

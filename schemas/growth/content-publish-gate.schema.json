@@ -1,0 +1,90 @@
+{
+  "$id": "edl/growth/content-publish-gate",
+  "title": "ContentPublishGate",
+  "description": "MA-31 G3（2026-09-23）。外部公開前のコンテンツ1件×1媒体について「次にどの段階へ進めるか」を型付きで返す公開前判定ゲート。**公開実行装置ではない**：note / X / Threads / YouTube 等への公開は常に Human（Safety台帳§2 L4/L5・policies/safety/human-only.json の external-send-approval）で、tier=auto でも・recommended_route=human-publish-review でも投稿してよいという意味にはならない。outcome に承認・公開実行を意味するキーは置かない（forbidden_outcome_keys で機械的に禁止）。input は閉じている（additionalProperties:false）。本文全文・氏名・メール・電話・住所・顧客個人情報を入れず、reference ID と短い抜粋・caller 判定済みのフラグだけを渡す（input 全体が Jev の state.input に載るため）。outcome 配下の description / x-enum-descriptions は Jev Adapter が question instructions / choice criteria としてそのまま送る判断基準（英語なのは Jev へ渡す文面のため。paid-generation-gate の Calibration 方式に従う）。特定の答えへ誘導する文言は書かない。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["content_id", "channel", "channel_registered", "prior_publication_state"],
+      "additionalProperties": false,
+      "properties": {
+        "content_id": { "type": "string", "minLength": 1, "maxLength": 120, "description": "参照ID（Hub content id・Vault ノート相対パス・下書きID等）。PII を含めない" },
+        "source_type": { "type": "string", "enum": ["vault-note", "dev-log", "note-draft", "sns-draft", "video-project", "product-page", "other"] },
+        "content_type": { "type": "string", "enum": ["article", "post", "video", "page", "other"], "description": "Product Hub content.kind（article/post/video/page）＋other。新しい kind は Hub 側 enums.json が先（MA-31 正本§6）" },
+        "channel": {
+          "type": "string",
+          "enum": ["note", "x", "threads", "youtube", "instagram", "tiktok", "tales", "substack", "medium", "pinterest", "pixiv", "linkedin", "facebook", "discord"],
+          "description": "媒体名。状態（manual/planned/future/excluded/internal）は MA-31 正本§7 が正本で、ここでは持たない。facebook（excluded）/ linkedin（future）/ discord（internal）は rules が名前で止める"
+        },
+        "channel_registered": { "type": "boolean", "description": "Product Hub に実物の channel（chn_*）が登録済みか。planned 媒体（アカウント未確認）は false。caller が Hub / 正本§7 から渡す（本 repo は Channel Registry を持たない）" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "excerpt": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "短い抜粋（redaction 済み）。本文全文は渡さない" },
+        "language": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "provenance": { "type": "string", "enum": ["human-written", "ai-draft-human-edited", "ai-draft-unedited", "mixed", "unknown"] },
+        "prior_publication_state": { "type": "string", "enum": ["unpublished", "published", "unknown"], "description": "同一 content が同一 channel で既に公開済みか。unknown は rules が hold（二重公開の配信層防止は未実装・G5。MA-31 正本§15）" },
+        "duplicate_confirmed": { "type": "boolean", "description": "既存公開物との重複（焼き直し等）を caller が確認済みなら true（note-idea-check 等）" },
+        "policy_state": { "type": "string", "enum": ["clear", "blocked", "unknown"], "description": "Growth Core 側 policy（consent / cooldown / 公開停止指示 等。G4 で policy JSON 化予定）の評価結果。本 repo は policy の状態そのものを持たない（decision-log 2026-09-23）" },
+        "review_state": { "type": "string", "enum": ["passed", "issues-open", "not-run"], "description": "公開前の編集チェック（note-check 等）の状態" },
+        "human_opt_in": { "type": "boolean", "description": "X / Threads のみ：Human が明示的にこの投稿を追跡対象にすると指示したか（16_Threads運用ルール§7）。X / Threads で true でなければ rules が hold" },
+        "risk_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "caller が検出したリスク信号。true のものは rules が決定的に扱い Jev に判断させない",
+          "properties": {
+            "personal_information": { "type": "boolean" },
+            "identifiable_third_party": { "type": "boolean", "description": "顧客・取引先・現場・私人など特定可能な第三者への言及" },
+            "legal_or_financial_claim": { "type": "boolean", "description": "法務・医療・税務・金融の断定的主張" },
+            "company_representative_statement": { "type": "boolean", "description": "会社を代表する表明" },
+            "sale_terms": { "type": "boolean", "description": "価格・販売条件・契約条件の記載（有料 note を含む）" }
+          }
+        },
+        "campaign_ref": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "project_ref": { "type": "string", "minLength": 1, "maxLength": 120 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Pre-publication check for one piece of E-NEXUS content (a draft or channel-specific variant) intended for one external channel, performed before a human decides whether to publish it. This decision never publishes anything and is never a publishing approval: every external publication (note, X, Threads, YouTube, Instagram, TikTok, TALES, Substack, Medium, Pinterest, pixiv) is always carried out by a human after the human's own review. Decide what the next stage for this content should be. Stages: 'human-publish-review' = the content looks ready to be handed to the human who decides whether to publish it; 'needs-revision' = the text should be edited before a human publish review; 'hold' = do not proceed yet because something outside the text must first be resolved by a human; 'blocked' = the content must not be published on this channel. Input fields: content_id (a reference ID only), source_type, content_type (article, post, video, page), channel, channel_registered (true = the channel account exists and is registered), title, summary, excerpt (a short redacted excerpt, not the full text), language, provenance (human-written, AI draft edited by a human, unedited AI draft, mixed), prior_publication_state, duplicate_confirmed, policy_state, review_state (result of the pre-publication editorial check, e.g. note-check), human_opt_in, risk_flags (signals already detected by the caller), campaign_ref, project_ref. Missing optional fields mean the information is unknown.",
+      "required": ["publish_candidate", "revision_needed", "risk_level", "human_review_required", "recommended_route"],
+      "additionalProperties": false,
+      "properties": {
+        "publish_candidate": {
+          "type": "boolean",
+          "description": "Is this content ready to be handed, as it is, to the human who decides whether to publish it on the given channel? True if the essentials are present (a clear title and summary), the content fits the channel and the content type, and nothing has to be edited or resolved first. False if it needs revision, has to wait for something to be resolved, or must not be published on this channel. True never means the content may be published automatically: publishing is always a separate human action."
+        },
+        "revision_needed": {
+          "type": "boolean",
+          "description": "Does the text itself need to be edited before a human publish review? True if essential information is missing or unclear, the text appears inaccurate, unfinished or low quality, it does not fit the channel's format or audience, or it contains personal information that must be removed. False if the text can go to review as it is (it may still have to wait for a reason that is not editorial)."
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "unassessed"],
+          "description": "How much harm (brand, legal, privacy or reputational) could publishing this content on this channel cause? Judge only from the given input.",
+          "x-enum-descriptions": {
+            "low": "Ordinary content: no sensitive claims, no identifiable third parties, no personal information, no statements on behalf of the company.",
+            "medium": "Some sensitivity a human should notice: opinions about named products or services, business figures, strong but non-legal claims, prices or sale terms, AI-generated media showing realistic people, or unclear authorship.",
+            "high": "Could cause legal, privacy or serious reputational harm: legal, medical, tax or financial claims, identifiable clients or private persons, personal information, or statements made on behalf of the company.",
+            "unassessed": "The content cannot be assessed from the input because essential information (title, summary or excerpt) is missing."
+          }
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Apart from the human decision to publish, which always happens separately, does this content need focused human scrutiny of a specific concern before it goes further? True if it names clients, private persons or other identifiable third parties, makes legal, medical, tax or financial claims, speaks on behalf of the company, states prices or sale terms, contains or may contain personal information, relies on facts that cannot be verified from the input, or if the right next stage is genuinely unclear. False if none of these apply. This field is not about whether publishing needs human approval: publishing always needs it."
+        },
+        "recommended_route": {
+          "type": "string",
+          "enum": ["human-publish-review", "needs-revision", "hold", "blocked"],
+          "description": "The single next stage for this content, consistent with the other answers: 'human-publish-review' when it is ready for the human publish decision, 'needs-revision' when the text must be edited first, 'hold' when something outside the text must first be resolved by a human, 'blocked' when it must not be published on this channel. None of these stages publishes anything.",
+          "x-enum-descriptions": {
+            "human-publish-review": "Hand the content to the human who decides whether and when to publish it; nothing is published by this decision.",
+            "needs-revision": "Edit the text first: missing or unclear essentials, accuracy or quality problems, a poor fit for the channel, or personal information to remove.",
+            "hold": "Do not proceed yet: a human must first resolve something outside the text, such as legal, brand or company-representative sensitivity, sale terms, or an unconfirmed publication state.",
+            "blocked": "Do not publish this content on this channel."
+          }
+        }
+      }
+    }
+  }
+}

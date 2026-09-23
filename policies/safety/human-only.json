@@ -1,5 +1,5 @@
 {
-  "$comment": "Human Gate 保護。ここに列挙した decision_type は Adapter を一切呼ばず human へ直行する（Jev/LLM の confidence では解除できない）。forbidden_outcome_keys が outcome に現れたら HumanGateViolationError で停止する。既存の Human-only 境界（Vault CLAUDE.md『Human-only操作』・Safety台帳§4・en-generate-hub 承認チェーン）を弱めるためのものではなく、Decision Layer が誤ってそれらを肩代わりしないための壁。 force_human_when_outcome_keys はドメインごとに語彙が違う「Humanへ上げる」フラグの一覧で、いずれかが true なら confidence に関わらず tier=human（engine の forcedHumanKey が読む）。新しい decision_type で別名を使うならここへ追加する。 safety_cleared / guard_released / unblock / release_block / allow_execution は将来の io-guard-assist（docs/roadmap-future-use-cases.md §3）が「怪しい可能性あり→Escalate」以外を返せないようにするための予約禁止キー。",
+  "$comment": "Human Gate 保護。ここに列挙した decision_type は Adapter を一切呼ばず human へ直行する（Jev/LLM の confidence では解除できない）。forbidden_outcome_keys が outcome に現れたら HumanGateViolationError で停止する。既存の Human-only 境界（Vault CLAUDE.md『Human-only操作』・Safety台帳§4・en-generate-hub 承認チェーン）を弱めるためのものではなく、Decision Layer が誤ってそれらを肩代わりしないための壁。 force_human_when_outcome_keys はドメインごとに語彙が違う「Humanへ上げる」フラグの一覧で、いずれかが true なら confidence に関わらず tier=human（engine の forcedHumanKey が読む）。新しい decision_type で別名を使うならここへ追加する。 safety_cleared / guard_released / unblock / release_block / allow_execution は将来の io-guard-assist（docs/roadmap-future-use-cases.md §3）が「怪しい可能性あり→Escalate」以外を返せないようにするための予約禁止キー。 publish_now / auto_publish / publish_approved / publish_allowed / allow_publish / post_now は content-publish-gate（MA-31 G3・2026-09-23）が公開実行・公開許可を返せないようにする禁止キー（外部公開は常に Human。承認は external-send-approval 側で、Decision Layer は返さない）。",
   "human_only_decision_types": [
     "deploy-approval",
     "app-store-submit-approval",
@@ -24,7 +24,13 @@
     "guard_released",
     "unblock",
     "release_block",
-    "allow_execution"
+    "allow_execution",
+    "publish_now",
+    "auto_publish",
+    "publish_approved",
+    "publish_allowed",
+    "allow_publish",
+    "post_now"
   ],
   "force_human_when_outcome_keys": [
     "human_review_required",

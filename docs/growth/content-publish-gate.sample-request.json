@@ -1,0 +1,28 @@
+{
+  "decision_type": "content-publish-gate",
+  "application_id": "claude-code",
+  "project_id": "en-knowledge-vault",
+  "input": {
+    "content_id": "sample:content-publish-gate-smoke-001",
+    "source_type": "note-draft",
+    "content_type": "article",
+    "channel": "note",
+    "channel_registered": true,
+    "title": "足場屋がAIで見積もりを速くした話",
+    "summary": "現場の見積もり作業をAIで半自動化した経緯と、うまくいかなかった点を振り返る無料記事。",
+    "excerpt": "最初は表計算の関数だけで済むと思っていた。実際に困ったのは、現場ごとに言い方が違う部材名だった。",
+    "language": "ja",
+    "provenance": "ai-draft-human-edited",
+    "prior_publication_state": "unpublished",
+    "duplicate_confirmed": false,
+    "policy_state": "clear",
+    "review_state": "passed",
+    "risk_flags": {
+      "personal_information": false,
+      "identifiable_third_party": false,
+      "legal_or_financial_claim": false,
+      "company_representative_statement": false,
+      "sale_terms": false
+    }
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "$comment": "content-publish-gate（MA-31 G3・2026-09-23）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定する（Rules First）。順序：①媒体方針（名前で固定の3媒体）→②公開状態・重複・policy 状態→③hold（外部で解決が要るもの）→④revision。どれにも一致しなければ Jev へ渡す。ここに置くのは『caller が渡した事実 → outcome』の写像だけで、policy の状態（consent・cooldown・frequency cap・公開停止リスト等）は持たない（Growth Core 側 policy JSON。decision-log 2026-09-23）。媒体の状態表の正本は Vault MA-31 正本§7 で、ここへ複製しない：facebook=excluded／linkedin=future／discord=internal は同§19 Decision Log で固定済みの方針なので名前で止め、それ以外（planned／manual）は時間で変わるため caller の channel_registered で判定する。rule outcome の risk_level『unassessed』は『本文を評価する前に決定的理由で止めた』を表す。どの outcome も公開を意味しない（公開は常に Human）。",
+  "rules": [
+    {
+      "id": "channel-facebook-excluded",
+      "when": { "channel": "facebook" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "Facebook は excluded（個人アカウント・知人・個人特定との結びつきを避ける。MA-31 正本§7・§7-1）"
+    },
+    {
+      "id": "channel-discord-internal",
+      "when": { "channel": "discord" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "Discord は internal（Internal Ops / Agent 通知 / Approval 用。External Channel ではないため外部公開ゲートの対象外。MA-31 正本§12）"
+    },
+    {
+      "id": "channel-linkedin-future",
+      "when": { "channel": "linkedin" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "LinkedIn は future（外部公開に耐える実績が揃った段階で Human が導入判断。MA-31 正本§7）"
+    },
+    {
+      "id": "already-published",
+      "when": { "prior_publication_state": "published" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "同一 content は同一 channel で公開済み。二重公開候補にしない（配信層の冪等性は G5。MA-31 正本§15）"
+    },
+    {
+      "id": "duplicate-confirmed",
+      "when": { "duplicate_confirmed": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "既存公開物との重複を caller が確認済み"
+    },
+    {
+      "id": "policy-state-blocked",
+      "when": { "policy_state": "blocked" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "blocked" },
+      "rationale": "Growth Core 側 policy が公開を止めている（policy の中身は本 repo に置かない）"
+    },
+    {
+      "id": "channel-not-registered",
+      "when": { "channel_registered": false },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Product Hub に実物の channel が無い（planned 媒体・アカウント未確認）。アカウント実在確認と channel_created は Human（MA-31 正本§18-4）"
+    },
+    {
+      "id": "publication-state-unknown",
+      "when": { "prior_publication_state": "unknown" },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "公開済みかどうか不明。推測で公開候補にしない（投稿済みログ / Hub content で確認してから再判定）"
+    },
+    {
+      "id": "x-opt-in-missing",
+      "when": { "channel": "x", "human_opt_in": { "exists": false } },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "X は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "x-opt-in-false",
+      "when": { "channel": "x", "human_opt_in": false },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "X は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "threads-opt-in-missing",
+      "when": { "channel": "threads", "human_opt_in": { "exists": false } },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "threads-opt-in-false",
+      "when": { "channel": "threads", "human_opt_in": false },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "hold" },
+      "rationale": "Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+    },
+    {
+      "id": "personal-information",
+      "when": { "risk_flags.personal_information": true },
+      "outcome": { "publish_candidate": false, "revision_needed": true, "risk_level": "high", "human_review_required": true, "recommended_route": "needs-revision" },
+      "rationale": "個人情報を含む。除去してから Human が確認（MA-31 正本§7-1 Privacy）"
+    },
+    {
+      "id": "legal-or-financial-claim",
+      "when": { "risk_flags.legal_or_financial_claim": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "high", "human_review_required": true, "recommended_route": "hold" },
+      "rationale": "legal-risk content は Human-only（MA-31 正本§15）"
+    },
+    {
+      "id": "company-representative-statement",
+      "when": { "risk_flags.company_representative_statement": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "high", "human_review_required": true, "recommended_route": "hold" },
+      "rationale": "company-representative statement は Human-only（MA-31 正本§15）"
+    },
+    {
+      "id": "identifiable-third-party",
+      "when": { "risk_flags.identifiable_third_party": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "high", "human_review_required": true, "recommended_route": "hold" },
+      "rationale": "特定可能な第三者（顧客・現場・私人）への言及は brand-sensitive として Human が確認（MA-31 正本§15）"
+    },
+    {
+      "id": "sale-terms",
+      "when": { "risk_flags.sale_terms": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "medium", "human_review_required": true, "recommended_route": "hold" },
+      "rationale": "価格・販売条件は Human-only（MA-31 正本§15）。Jev に販売条件を判断させない"
+    },
+    {
+      "id": "review-issues-open",
+      "when": { "review_state": "issues-open" },
+      "outcome": { "publish_candidate": false, "revision_needed": true, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "needs-revision" },
+      "rationale": "公開前チェック（note-check 等）の指摘が未解決"
+    },
+    {
+      "id": "title-missing",
+      "when": { "title": { "exists": false } },
+      "outcome": { "publish_candidate": false, "revision_needed": true, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "needs-revision" },
+      "rationale": "title が無い（情報不足。推測で補わない）"
+    },
+    {
+      "id": "summary-missing",
+      "when": { "summary": { "exists": false } },
+      "outcome": { "publish_candidate": false, "revision_needed": true, "risk_level": "unassessed", "human_review_required": false, "recommended_route": "needs-revision" },
+      "rationale": "summary が無い（情報不足。推測で補わない）"
+    }
+  ]
+}

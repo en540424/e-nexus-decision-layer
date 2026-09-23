@@ -1,5 +1,5 @@
 {
-  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。PoC で実装済みなのは paid-generation-gate のみ。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）と content-publish-gate（MA-31 G3・2026-09-23）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
   "decision_types": {
     "paid-generation-gate": {
       "domain": "openmontage",
@@ -46,6 +46,15 @@
         "kind": "skills"
       },
       "description": "Skill候補選択。Registry が global + project の候補だけを渡す。"
+    },
+    "content-publish-gate": {
+      "domain": "growth",
+      "schema": "schemas/growth/content-publish-gate.schema.json",
+      "status": "gate",
+      "candidates": null,
+      "final_action": "human-only",
+      "final_action_ref": "外部公開は常に Human（Safety台帳§2 L4/L5・policies/safety/human-only.json の external-send-approval）。本 decision_type は公開前判定のみで、tier・route に関わらず公開を実行・承認しない",
+      "description": "MA-31 G3（2026-09-23）。外部公開前のコンテンツ1件×1媒体の次段階（human-publish-review / needs-revision / hold / blocked）を型付きで返す。Rules First（媒体方針・公開済み・重複・policy 状態・opt-in・risk flag・情報不足）→ Jev。docs/growth-content-publish-gate.md"
     }
   },
   "reserved_decision_types": {
@@ -64,10 +73,6 @@
     "post-execution-verify": {
       "domain": "harness",
       "description": "実行後の型付き検証。verdict = PASS / RETRY / REVIEW / ESCALATE / HUMAN。Human-only承認の代替ではない。同 §4"
-    },
-    "content-publish-gate": {
-      "domain": "growth",
-      "description": "公開候補の content_risk / duplicate_risk / brand・legal-risk 候補 / human_attention_candidate。公開そのものは Human-only（Safety台帳 L4/L5）で、tier=auto でも投稿しない。docs/roadmap-future-use-cases.md §5"
     },
     "channel-selection": {
       "domain": "growth",

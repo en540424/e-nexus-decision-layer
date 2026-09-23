@@ -1,7 +1,7 @@
 /**
  * 依存ゼロの JSON Schema サブセット検証器。
  * 対応: type（配列可）/ required / properties / additionalProperties(false) / enum / const /
- *       minimum / maximum / minLength / items / oneOf
+ *       minimum / maximum / minLength / maxLength / items / oneOf
  * 目的は「typed decision の入出力が宣言どおりか」を機械的に保証すること。フル JSON Schema は目指さない。
  */
 import { SchemaValidationError } from '../core/errors.mjs';
@@ -41,6 +41,10 @@ export function validate(schema, value, path = '$', errors = []) {
   }
   if (typeof value === 'string' && schema.minLength !== undefined && value.length < schema.minLength) {
     errors.push(`${path}: string shorter than minLength ${schema.minLength}`);
+  }
+  // maxLength（2026-09-23 content-publish-gate）：Jev へ渡す自由文（title / summary / excerpt）を有限に保つため
+  if (typeof value === 'string' && schema.maxLength !== undefined && value.length > schema.maxLength) {
+    errors.push(`${path}: string longer than maxLength ${schema.maxLength}`);
   }
   if (Array.isArray(value) && schema.items) {
     value.forEach((item, i) => validate(schema.items, item, `${path}[${i}]`, errors));

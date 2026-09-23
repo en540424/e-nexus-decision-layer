@@ -17,6 +17,13 @@ test('validator: type / required / enum / additionalProperties / range', () => {
   assert.ok(validate(schema, { a: 'x', n: 2 }).some((e) => e.includes('maximum')));
 });
 
+test('validator: maxLength (2026-09-23, bounds free text sent to Jev)', () => {
+  const schema = { type: 'string', minLength: 1, maxLength: 3 };
+  assert.deepEqual(validate(schema, 'abc'), []);
+  assert.ok(validate(schema, 'abcd').some((e) => e.includes('maxLength')));
+  assert.deepEqual(validate({ type: 'string' }, 'x'.repeat(10_000)), [], 'no maxLength → unbounded (existing schemas unchanged)');
+});
+
 test('all decision types in the index have loadable schemas with input+outcome', () => {
   const types = listDecisionTypes();
   assert.ok(Object.keys(types).length >= 6);
