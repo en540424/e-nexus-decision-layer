@@ -202,9 +202,11 @@ node scripts/real-jev-evidence.mjs --since <smoke開始のISO時刻> --expect cl
 
 1. `node src/cli.mjs gateway health` → `jev.usable: true`・`provider: vercel`
 2. Claude Code consumer：Skill `enexus-decision` の手順どおり `application_id:"claude-code"` の `channel-selection`（無害な架空 dev-log × note・未公開）を `gateway decide --stdin`
-3. en-generate consumer：en-generate-hub で `node src/cli.mjs decision-gate --input examples/kling-i2v-request.json --json`（MA-17 承認の手前で止まる。run / approve / submit はしない）
+3. en-generate consumer：en-generate-hub で `node src/cli.mjs decision-gate --input <request.json> --json`（MA-17 承認の手前で止まる。run / approve / submit はしない）。`purpose` は Jev へ送られるので、smoke では既存 example を scratchpad へコピーし、`purpose` を人名・固有の人物設定を含まない短い架空の説明に差し替えて使う
 4. 任意：`gateway serve`（loopback・一時起動）へ `POST /v1/decisions` を 1 回（`application_id:"http-smoke"`）→ 停止
-5. `scripts/real-jev-evidence.mjs --since … --expect claude-code,en-generate-hub` で証跡確認。`field_confidence` は runner 外では attempt に残らないので、limiting field の確認が要るときは `scripts/poc-calibration.mjs` を使う
+5. `scripts/real-jev-evidence.mjs --since … --expect claude-code,en-generate-hub` で証跡確認し、表示された `request_id` が手順 2・3 の envelope の `request_id` と一致することを照合する（`--since` と `application_id` だけで判定しない）。`field_confidence` は runner 外では attempt に残らないので、limiting field の確認が要るときは `scripts/poc-calibration.mjs` を使う
+
+tests は実 Jev を呼ばない（decision-layer は明示 env `{}`・一時 usage、en-generate-hub は env を継承しても `EDL_HOME` を fake Gateway に向ける）。User scope に実 JEV 用 env を置いても `npm test` は実 Jev を呼ばず、本番 usage.jsonl にも書かない。
 
 ### 11-5. Jev の判定と MA-17 承認は別の層
 
