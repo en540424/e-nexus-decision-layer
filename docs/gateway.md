@@ -163,6 +163,51 @@ consumer 側に作るのは **consumer adapter（request を組み、envelope �
 
 ## 10. Engine の差し替え
 
-- **Jev だけ替える**：Adapter / Provider の差し替え（architecture §7・§9）。Gateway・consumer は無変更
+- **Jev だけ替える**：Adapter / Provider の差し替え（architecture §7・§9）と `policies/gateway/engine-env.json`（engine が読む env 名）の更新。Gateway・consumer は無変更
 - **Decision Layer ごと替える**：`src/gateway/engine.mjs` の契約（`id` / `version` / `mode` / `decide()` / `health()`）を満たす engine を `createGateway({ engine })` に渡す。
   consumer が見る envelope の形は同一で、変わるのは `gateway.engine` だけ（`tests/gateway.test.mjs` の engine swap テスト）
+
+## 11. 実 Jev 経路の有効化と証跡（2026-09-26・MA-30 実JEV第1段）
+
+### 11-1. 有効化条件（現行コードが正）
+
+| env | 値 | 読む場所 |
+|---|---|---|
+| `EDL_ALLOW_NETWORK` | `true` | jev-adapter / 各 Provider（二重チェック）。これが無いと送信前に `NETWORK_DISABLED` |
+| `JEV_PROVIDER` | `vercel` | provider 選択（未設定は `direct`＝TypeSafe 招待待ちなので `JEV_API_KEY_MISSING` で止まる） |
+| `AI_GATEWAY_API_KEY` | （Secret。Human のみが設定） | vercel provider。無いと `JEV_VERCEL_API_KEY_MISSING` |
+| 任意：`JEV_VERCEL_MODEL`（既定 `typesafe-ai/jev`）・`JEV_ZDR`・`AI_GATEWAY_BASE_URL` | | vercel provider |
+
+- 3 つが **Gateway を起動する process の env** に揃ったときだけ実 Jev へ送る。CLI は `.env` を読まない。AI は設定しない（CLAUDE.md）
+- `gateway health` の `engine_health.jev` = `{ provider, network_enabled, usable, reason }`（キーの有無のみ）。`usable:true` が前提条件
+- timeout 30s・同時実行 4（§4）。AI SDK が 408/409/429/5xx を最大 2 回 retry（2s→4s）。失敗は reason 語彙（`JEV_RATE_LIMITED` / `JEV_OVERLOADED` / `JEV_NETWORK_ERROR` / `JEV_MALFORMED_RESPONSE` 等）で attempts[] に残り、human へ倒れる（`tests/gateway-real-jev-path.test.mjs`）
+
+### 11-2. consumer へ渡す env は engine-env manifest が決める
+
+別 process で Gateway CLI を起動する consumer（en-generate-hub 等）は、子 process に **OS 基本 + `EDL_*` + `policies/gateway/engine-env.json` の名前** だけを渡す。
+consumer は Jev 固有の env 名（`JEV_*` / `AI_GATEWAY_*`）をコードに持たない。engine を替えるときはこの manifest だけ変える。
+manifest が読めない consumer は `EDL_*` だけを渡す（外部判断経路が使えず human へ倒れる＝fail-closed）。
+`tests/gateway-engine-env.test.mjs` が「src が読む env 名をすべて manifest が網羅している」ことを検査する。Claude Code（Skill → CLI）は Claude Code process の env をそのまま継承する。
+
+### 11-3. 「実 Jev を使った」の判定
+
+`resolved_by` では判定しない（実 Jev が正常応答しても confidence が閾値未満なら `tier:human`・`resolved_by:human` になる）。
+usage.jsonl の行の `attempts[]` に **`adapter=jev`・`status=ok`・`networked=true`・`route` が実経路（`vercel` / `direct`）・`input_tokens>0`** があれば実 Jev 証跡。
+
+```bash
+node scripts/real-jev-evidence.mjs --since <smoke開始のISO時刻> --expect claude-code,en-generate-hub   # 両 consumer に証跡が無ければ exit 1
+```
+
+### 11-4. smoke 手順（Human が env を設定した後。有料生成・公開・production mutation はしない）
+
+1. `node src/cli.mjs gateway health` → `jev.usable: true`・`provider: vercel`
+2. Claude Code consumer：Skill `enexus-decision` の手順どおり `application_id:"claude-code"` の `channel-selection`（無害な架空 dev-log × note・未公開）を `gateway decide --stdin`
+3. en-generate consumer：en-generate-hub で `node src/cli.mjs decision-gate --input examples/kling-i2v-request.json --json`（MA-17 承認の手前で止まる。run / approve / submit はしない）
+4. 任意：`gateway serve`（loopback・一時起動）へ `POST /v1/decisions` を 1 回（`application_id:"http-smoke"`）→ 停止
+5. `scripts/real-jev-evidence.mjs --since … --expect claude-code,en-generate-hub` で証跡確認。`field_confidence` は runner 外では attempt に残らないので、limiting field の確認が要るときは `scripts/poc-calibration.mjs` を使う
+
+### 11-5. Jev の判定と MA-17 承認は別の層
+
+`paid-generation-gate` の Jev 判定は「Local / 無料で足りるか・有料候補か・Human review が要るか・route 候補」まで。
+`tier:auto` でも有料 API の実行許可ではなく、その後に en-generate-hub の MA-17 Human-only 承認（承認文の入力は Human）が必ずある。
+既知の制約：`paid-generation-gate` は `human_review_required` の confidence が全体（min 合成）を下げやすく、実 Jev 正常時も human tier になりやすい（Calibration B・follow-up ② Hybrid で扱う。閾値 0.85 / 0.60 は変えない）。

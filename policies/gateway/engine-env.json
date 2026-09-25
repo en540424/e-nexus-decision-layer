@@ -1,0 +1,18 @@
+{
+  "$comment": "Common Decision Gateway を別 process（CLI `gateway decide --stdin`）として起動する consumer が、子 process へ渡してよい環境変数の『名前』。値は持たない・書かない。Decision Engine（現在は Decision Layer core → Jev Adapter → Jev Provider）が読む env 名はこのファイルだけが知り、consumer は Jev 固有の名前（JEV_* / AI_GATEWAY_*）をコードに持たない。engine を別の Decision Engine へ差し替えるときは、consumer ではなくこのファイルを変える。consumer はこのファイルが読めなければ EDL_* だけを渡す（engine は外部判断経路を使えず rules → human へ倒れる＝fail-closed）。consumer 自身の Secret（FAL_KEY 等）は consumer 側で常に除外する。tests/gateway-engine-env.test.mjs が src の env 参照をすべて網羅していることを検査する。2026-09-26 新設（MA-30 実JEV第1段）。",
+  "contract_version": "1",
+  "forward": {
+    "prefixes": ["EDL_"],
+    "names": [
+      "JEV_PROVIDER",
+      "JEV_API_KEY",
+      "JEV_API_BASE_URL",
+      "JEV_MODEL",
+      "JEV_TIMEOUT_MS",
+      "JEV_VERCEL_MODEL",
+      "JEV_ZDR",
+      "AI_GATEWAY_API_KEY",
+      "AI_GATEWAY_BASE_URL"
+    ]
+  }
+}
