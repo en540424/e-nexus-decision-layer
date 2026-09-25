@@ -3,13 +3,15 @@
 E-NEXUS 全体で共通利用する **Decision Layer**。AI非依存・IDE非依存の「判断基盤」。
 
 ```
-App / Agent / IDE（Claude Code・Cursor・Hermes・各アプリ）
-  ↓  CLI（src/cli.mjs）または SDK（src/index.mjs）
+App / Agent / IDE（Claude Code・Cursor・Hermes・OpenAI系Agent・他LLM・各アプリ・LINE/CRM・SNS・Worker）
+  ↓  Common Decision Gateway（src/gateway/）：SDK ／ CLI `gateway decide` ／ HTTP `gateway serve` ／ MCP `gateway mcp`
+  ↓  DecisionEngine 契約（差し替え可能）
 E-NEXUS Decision Layer（core: engine / router / fallback / confidence）
   ↓  Adapter Interface（src/adapters/adapter-interface.mjs）
 Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
 ```
 
+- **consumer の正式入口は Common Decision Gateway**（2026-09-25・`docs/gateway.md`）。契約は Common Decision Contract v1（既存 DecisionResult を `decision` に包む envelope＋`request_id`／`correlation_id`／fail-closed の failure policy）。第1実consumer＝en-generate-hub `decision-gate`（`paid-generation-gate`）、Claude Code は Vault Skill `enexus-decision` から。MCP の接続は Human-only
 - **Jev（TypeSafe AI）は Adapter の1つ**。本体は Jev を知らない。差し替え・併用できる。
 - **deterministic rules を先に評価**し、解けないときだけ確率的 Adapter → 最後は必ず Human。
 - **承認はしない**。outcome に `approved` 等の承認キーは構造上存在できず（`policies/safety/human-only.json`）、
@@ -20,7 +22,11 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 185 tests, 依存ゼロ（node --test）
+npm test                                     # 214 tests, 依存ゼロ（node --test）
+echo '<request json>' | node src/cli.mjs gateway decide --stdin   # Common Decision Gateway（consumer 向け正式入口・envelope を返す）
+node src/cli.mjs gateway health              # version・engine mode・Jev 経路状態（Secret なし）・counters
+node src/cli.mjs gateway serve --port 8787   # HTTP 入口（127.0.0.1。loopback 以外は EDL_GATEWAY_TOKEN 必須）
+node src/cli.mjs gateway mcp                 # MCP stdio 入口（接続設定は Human-only）
 node scripts/poc-calibration.mjs dry-run     # Confidence Calibration（Rules First 件数と送信予定 questions。ネットワーク無し）
 node src/cli.mjs types                       # decision_type 一覧
 node src/cli.mjs decide --json '{"decision_type":"paid-generation-gate","application_id":"claude-code","project_id":"openmontage","input":{"asset_kind":"subtitle","purpose":"jp caption"}}'
@@ -39,12 +45,13 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | パス | 役割 |
 |---|---|
 | `src/core/` | decision-engine / router / fallback / confidence / errors |
+| `src/gateway/` | Common Decision Gateway（gateway / engine 契約 / http-server / mcp-server）。`docs/gateway.md` |
 | `src/adapters/` | adapter-interface と jev（+ jev-provider-interface：direct / vercel / cloudflare 経路）/ rules / llm / local / human |
 | `src/registries/` | Project / Skill / Agent / Model Registry の解決（`registries/*.json` を読む） |
 | `src/schemas/` | 依存ゼロの JSON Schema サブセット検証器 + loader |
 | `src/usage/` | metering（JSONL 追記・集計） |
 | `registries/` | 4台帳（Vault側正本の派生スナップショット） |
-| `policies/` | routing（chain・閾値・rules）/ safety（Human-only）/ human-approval / cost |
+| `policies/` | routing（chain・閾値・rules）/ safety（Human-only）/ human-approval / cost / gateway（failure policy：human-required／deny のみ） |
 | `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate`（公開前判定）・`channel-selection`（候補媒体選定）はどちらも実行はしない（`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`） |
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
@@ -58,4 +65,4 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 
 ## やらないこと
 
-全Projectへの一括導入／既存 Harness の書き換え／Human-only 承認の置換／Jev 依存アーキテクチャ／APIキーのrepo保存。
+全Projectへの一括導入／既存 Harness の書き換え／Human-only 承認の置換／Jev 依存アーキテクチャ／APIキーのrepo保存／Gateway の Automation Core 化（Queue・DLQ・CRM・Monitoring は持たない）。

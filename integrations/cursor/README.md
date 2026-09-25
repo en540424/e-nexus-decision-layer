@@ -1,5 +1,9 @@
 # Cursor から使う
 
+**2026-09-25〜：Common Decision Gateway（`docs/gateway.md`）を使う。** MCP 対応なので `~/.cursor/mcp.json` に
+`node <repo>/src/cli.mjs gateway mcp` を stdio server として登録すれば `enexus_decide` が使える（登録は Human-only・Vault MCP接続台帳）。
+CLI なら `gateway decide --stdin`。以下は従来の記述。
+
 Cursor の Agent / Rules から同じ CLI を呼ぶ。本体は変更不要。
 
 - `.cursor/rules` に「有料生成・外部API・Human 確認が絡む判断は `node <repo>/src/cli.mjs decide` を先に呼ぶ」と書く

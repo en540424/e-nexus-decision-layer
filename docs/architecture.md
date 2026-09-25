@@ -159,3 +159,21 @@ decision（1件）
   `summarize()` の既存フィールドは final resolver 基準のまま、`total_*` / `attempts_by_provider` が全 attempt 基準。`usage --attempts` で attempt 単位集計
 - AI Cost Manager 連携（将来）は `attempts[]` を provider 非依存の入力とする：provider / model / route / application_id / project_id / decision_type /
   timestamp / tokens / cost / status / networked / final / human_escalation がすべて機械可読で揃う。本 repo から AI Cost Manager 本体は変更しない
+
+## 12. Common Decision Gateway（2026-09-25・MA-30 次phase）
+
+```
+consumer（Claude Code / Cursor / Hermes / OpenAI系・他LLM Agent / Apps / LINE・CRM / SNS・Growth / Worker）
+   ↓ SDK ／ CLI `gateway decide --stdin` ／ HTTP `POST /v1/decisions` ／ MCP `enexus_decide`
+Common Decision Gateway（src/gateway/gateway.mjs）   ← consumer が知るのはここの契約（Common Decision Contract v1）だけ
+   ↓ DecisionEngine 契約（src/gateway/engine.mjs：id / version / mode / decide / health）
+Decision Layer core（§1〜§11 のまま・無変更）
+   ↓ Adapter Interface → Rules → Jev（Provider）→ local → llm → Human
+```
+
+- 差し替え点は2段：Jev だけ替える＝Adapter / Provider（§7・§9）、判断エンジンごと替える＝engine 契約。どちらも consumer の契約は不変
+- Gateway が持つのは envelope・request_id・timeout・同時実行上限・failure policy（human-required／deny のみ）・stats だけ。判断ロジックは持たない
+- consumer 向け engine は `production` mode（mock-jev を入れない）。`verification` mode は配管検証専用
+- metering は同じ usage.jsonl 1 行に `request_id` / `correlation_id` / `via` を追加（旧行は null）
+- Worker は core を import せず HTTP Gateway を正式経路にする（`node:fs` 依存の分離は行わない）
+- 詳細・入口面・認証・consumer 追加手順は `docs/gateway.md`

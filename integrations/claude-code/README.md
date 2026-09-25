@@ -1,7 +1,15 @@
 # Claude Code から使う
 
-Claude Code は **Hook や settings.json を変えずに**、通常の Bash 実行として CLI を呼ぶ。
-（`.claude/settings.json` の変更は Human-only。将来 Hook 化する場合も Human が配線する）
+**2026-09-25〜：正式入口は Common Decision Gateway（`docs/gateway.md`）。** Claude Code は Vault の Skill `enexus-decision`
+（`.claude/skills/enexus-decision/SKILL.md`）と Vault CLAUDE.md の発動ルールで、Decision Point（有料API・Local/Cloud・provider/model・
+Human 確認要否・公開前・投稿先）に達したとき自動で `gateway decide --stdin` を呼ぶ。有料生成の前段は `/en-generate` Skill が
+en-generate-hub `decision-gate` 経由で呼ぶ。Hook・settings.json は変えていない（Human-only）。MCP（`gateway mcp`）は実装済みで、接続は Human が行う：
+
+```bash
+claude mcp add --scope user enexus-decision -- node C:/Users/envie/e-nexus-decision-layer/src/cli.mjs gateway mcp
+```
+
+以下は従来の直接 CLI 呼び出し（後方互換。consumer は上の Gateway を使う）。
 
 ```bash
 node C:/Users/envie/e-nexus-decision-layer/src/cli.mjs decide --json '{

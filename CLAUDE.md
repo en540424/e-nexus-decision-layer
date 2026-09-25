@@ -12,7 +12,11 @@
 - **各アプリから Jev を直接呼ばせない。** 呼び出しは CLI / SDK 経由。販売アプリは App → E-NEXUS Backend → Decision Layer。
 - **APIキーを保存しない。** `.env.example` にはキー「名」だけ。値・ログ出力・commit は禁止。
 - **ネットワークは既定で無効。** `EDL_ALLOW_NETWORK=true` を勝手に設定しない。
-- **en-generate-hub / en-product-hub / 各アプリrepo を編集しない。** 接続は将来 integration 側で外から行う。
+- **en-generate-hub / en-product-hub / 各アプリrepo を編集しない。** 接続は consumer 側 repo の作業として、その repo の規則に従って行う
+  （2026-09-25 Human 発注で en-generate-hub に `decision-gate` を追加したのが最初の例。decision-log 参照）。consumer は Jev や core を直接呼ばず
+  **Common Decision Gateway（`src/gateway/`・`docs/gateway.md`）の契約だけ**を使う。
+- **Gateway は承認しない・fail-open しない。** `policies/gateway/failure-policy.json` は `human-required`／`deny` 以外を持てない。
+  HTTP を loopback 以外へ bind するのは token 必須、MCP の接続・常駐・deploy は Human-only。
 - **Git**：Vault の CLAUDE.md「Git運用」「Human-only操作」に従う。force push / reset / rebase / stash / branch削除は禁止。
   remote 作成（`gh repo create`）と push 先の設定は Human-only。
 

@@ -1,0 +1,11 @@
+{
+  "$comment": "Common Decision Gateway（src/gateway/）の障害時方針。Gateway が decision を返せなかったとき（schema 不正・未知の decision_type・timeout・同時実行上限・engine 例外・Human Gate 違反）に consumer へ返す『代わりの扱い』。fail-open（自動で進めてよい）は構造上存在しない：値は human-required（既存の Human 確認・既存ゲートへ戻す）と deny（その処理を進めない）の2つだけで、loader がそれ以外を拒否する。paid-generation-gate の human-required は『MA-17 en-generate-hub の Human-only 承認チェーンを従来どおり通る』を意味し、有料実行の許可ではない。2026-09-25 新設。",
+  "allowed": ["human-required", "deny"],
+  "default": "human-required",
+  "overrides": {
+    "paid-generation-gate": "human-required",
+    "content-publish-gate": "human-required",
+    "channel-selection": "human-required",
+    "model-route": "human-required"
+  }
+}

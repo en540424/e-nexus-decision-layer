@@ -1,5 +1,9 @@
 # Hermes（Mac mini 常駐 Agent・設計のみ・未導入）から使う
 
+**2026-09-25〜：Hermes の入口は Common Decision Gateway（`docs/gateway.md`）の HTTP（`POST /v1/decisions`）または MCP。**
+Hermes 未導入のため未接続（完成扱いにしない）。導入時は Hermes 側に consumer adapter（request を組み envelope を読む層）を置くだけで、core・Gateway は変えない。
+Mac mini 常駐で HTTP を使う場合は `EDL_GATEWAY_TOKEN`（Human 発行）必須。
+
 正本：Vault `AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_Hermes常駐Agent導入設計_2026-08-30.md`。
 
 - Hermes は Vault に対して read-only（同正本 §6–7）。Decision Layer も Hermes から **CLI / SDK を読み取り用途で呼ぶだけ**

@@ -59,3 +59,8 @@ export { createFileMeter, createMemoryMeter, summarize, summarizeAttempts, attem
 export { resolveCandidates, resolveProject, loadRegistry, checkRegistries } from './registries/registry.mjs';
 export { listDecisionTypes, loadDecisionType } from './schemas/loader.mjs';
 export * from './core/errors.mjs';
+// Common Decision Gateway（2026-09-25）：consumer 向けの正式入口。App / Agent / IDE は decide() を直接呼ぶより createGateway() を推奨
+export { createGateway, loadFailurePolicy, failureFor, GATEWAY_CONTRACT_VERSION, GATEWAY_VIAS } from './gateway/gateway.mjs';
+export { createDecisionLayerEngine, assertEngineShape, gatewayAdapters, jevRouteStatus, ENGINE_MODES, DECISION_LAYER_ENGINE_ID } from './gateway/engine.mjs';
+export { createGatewayHttpHandler, startGatewayServer, isLoopbackHost } from './gateway/http-server.mjs';
+export { createMcpHandler, runMcpStdio, TOOLS as MCP_TOOLS, SUPPORTED_PROTOCOL_VERSIONS as MCP_PROTOCOL_VERSIONS } from './gateway/mcp-server.mjs';

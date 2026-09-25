@@ -28,6 +28,8 @@ export const USAGE_FIELDS = Object.freeze([
   'input_tokens', 'output_tokens', 'estimated_cost_usd_micros',
   'fallback_occurred', 'human_escalation', 'tier',
   'attempts', 'usage_total',
+  // 2026-09-25 Common Decision Gateway：どの consumer の、どの request が、どの入口から来たか（旧行には無い＝null 扱い）
+  'request_id', 'correlation_id', 'via',
 ]);
 
 /** attempts[] の1要素が持つフィールド（fallback.trace の record から `ms`（latency_ms と同値）だけ落とした射影） */
@@ -93,6 +95,9 @@ export function buildUsageRecord({ request, result, adapter, adapterResult, fall
     tier: result.tier,
     attempts,
     usage_total: totalUsage(attempts),
+    request_id: request.request_id ?? null,
+    correlation_id: request.correlation_id ?? null,
+    via: request.via ?? null,
   };
 }
 
