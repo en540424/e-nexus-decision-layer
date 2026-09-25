@@ -78,6 +78,8 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
 
 **HTTP status は「Gateway が decision を返せたか」だけ**。`tier=human` でも 200（Decision 結果と status を混同しない）。
 
+**timeout の既知の制約**：`GATEWAY_TIMEOUT` を返した後も engine の `decide()` は中断されず走り続ける（Jev 呼び出しが完了して usage.jsonl に1行書かれることがあり、同時実行カウントはその時点で解放済み）。consumer への結果は fail-closed のままなので安全側だが、長時間ハングが続く環境では同時実行上限を実質超え得る。別 process の consumer（en-generate-hub）は Gateway の 30s より長い 35s で子 process を止め、Gateway 側の構造化 envelope を先に受け取れるようにしている。
+
 ### Failure policy（`policies/gateway/failure-policy.json`）
 
 値は `human-required`（既存の Human 確認・既存ゲートへ戻す）と `deny`（その処理を進めない）の **2つだけ**。fail-open は構造上存在せず、
