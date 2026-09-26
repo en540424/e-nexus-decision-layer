@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import enexus_openmontage_decision as om
@@ -161,12 +162,21 @@ class PreflightTest(unittest.TestCase):
         pf.run_preflight(d / "checkpoint_proposal.json", decide=fake_decide("en-generate-hub"))
         self.assertEqual({p.name: p.read_bytes() for p in d.iterdir()}, before)
 
-    def test_cli_refuses_openmontage_managed_files(self):
-        d = project_with("proposal-free-subtitle.json")
+    def test_cli_refuses_openmontage_managed_files_before_any_gateway_call(self):
+        # 拒否する呼び出しは Gateway を呼ばない（判定も usage 記録も発生させない）。万一呼んでも実 Gateway へ届かない env にする
+        d = project_with("proposal-paid-video.json")
         before = (d / "checkpoint_proposal.json").read_bytes()
-        rc = pf.main(["--project-dir", str(d), "--out", str(d / "checkpoint_proposal.json")])
-        self.assertEqual(rc, 2)
+
+        def must_not_decide(*a, **k):
+            raise AssertionError("Gateway must not be called for a refused --out")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("EDL_")}
+        env["EDL_HOME"] = str(REPO / "no-such-dir")
+        with mock.patch.object(om, "decide", must_not_decide), mock.patch.dict(os.environ, env, clear=True):
+            for name in ("checkpoint_proposal.json", "decision_log.json", "project.json"):
+                with self.subTest(out=name):
+                    self.assertEqual(pf.main(["--project-dir", str(d), "--out", str(d / name)]), 2)
         self.assertEqual((d / "checkpoint_proposal.json").read_bytes(), before)
+        self.assertFalse((d / "decision_log.json").exists())
 
     def test_source_has_no_openmontage_import_and_no_engine_names(self):
         src = Path(pf.__file__).read_text(encoding="utf-8")

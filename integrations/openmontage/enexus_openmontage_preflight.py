@@ -267,15 +267,15 @@ def main(argv=None):
     try:
         cp_path = _resolve_checkpoint(argv)
         max_calls = int(argv[argv.index("--max-calls") + 1]) if "--max-calls" in argv else DEFAULT_MAX_CALLS
+        # 引数の不備は Gateway を呼ぶ前に止める（拒否した呼び出しで判定・usage 記録を発生させない）
+        out = Path(argv[argv.index("--out") + 1]) if "--out" in argv else None
+        if out is not None and (out.name.startswith("checkpoint_") or out.name in ("decision_log.json", "project.json")):
+            raise CheckpointError("OpenMontage の管理ファイル名へは書き込みません")
         report = run_preflight(cp_path, max_calls=max(0, max_calls))
     except (CheckpointError, IndexError, ValueError) as e:
         sys.stdout.buffer.write((json.dumps({"error": str(e), "overall": "human-review", "proceed_automatically": False}, ensure_ascii=False) + "\n").encode("utf-8"))
         return 2
-    if "--out" in argv:
-        out = Path(argv[argv.index("--out") + 1])
-        if out.name.startswith("checkpoint_") or out.name in ("decision_log.json", "project.json"):
-            sys.stdout.buffer.write((json.dumps({"error": "OpenMontage の管理ファイル名へは書き込みません"}, ensure_ascii=False) + "\n").encode("utf-8"))
-            return 2
+    if out is not None:
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if "--text" in argv:
         sys.stdout.buffer.write((format_text(report) + "\n").encode("utf-8"))
