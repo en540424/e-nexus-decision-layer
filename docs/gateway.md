@@ -144,27 +144,89 @@ core の runtime-neutral 分離は今回行わない（2026-09-25 decision-log�
   process 内 counters（requests / ok / failed / fallbacks / human_tier / errors_by_code / by_decision_type / by_via / latency last・max・avg）。
   CLI は 1 process 1 判定なので、横断の件数は usage.jsonl が正
 
-## 9. consumer の追加手順（Hermes / OpenAI / 他 LLM / LINE / SNS / Apps）
+## 9. consumer の追加手順（Consumer Integration 標準・2026-09-26 改訂）
 
-consumer 側に作るのは **consumer adapter（request を組み、envelope を読む薄い層）だけ**。core・Gateway は変更しない。
+新しい App / SaaS / Agent（Hermes・OpenAI 系 Agent・他 LLM・LINE / CRM・SNS・各 App）を Gateway へつなぐとき、
+consumer 側に作るのは **thin consumer adapter（request を組み、Gateway を呼び、envelope を読む薄い層）だけ**。core・Gateway は変更しない。
+2026-09-26 の OpenMontage 接続では Gateway・core・schema の変更は 0 行だった（adapter と test だけで接続できた）。
 
-0. **どの実行環境の Gateway につなぐかを先に決める（§12）。** 本人用・内部用＝`dev`（今ある Gateway）。一般販売・外部ユーザー向けの SaaS／App／API／Agent は `production` 前提で、**今の DEV Gateway へつながない**（Production Gateway は未構築＝接続先・Secret・deploy は Human Required）。不明なら Production へ推測接続しない
-1. `application_id` を決める（例 `hermes` / `openai-agent` / `line-crm` / `en-sns-hub`）
-2. 入口面を選ぶ：Node 同居 = SDK、別言語・別マシン = HTTP、MCP 対応 Agent = MCP、shell / 別 repo = CLI
-3. `input` は decision_type schema の構造情報だけ（Secret・PII・本文全文を入れない）。`correlation_id` に自分の業務 ID
-4. `ok:false` は必ず `failure.policy` に従う。`ok:true` でも承認ではない。request に `expected_environment` を付け、envelope の `gateway.environment` も確認する（不一致・欠落は fail-closed）
-5. deterministic な安全規則（consent・unsubscribe・frequency cap・公開停止等）は consumer / Growth Core 側の Rules に残し、Jev に丸投げしない
-6. 新しい decision_type が要るときは architecture §7（schema + index + rules + tests）。Gateway は変えない
+### 9-1. 既存 3 consumer の比較から固定した共通責務
+
+| 責務 | Claude Code（Skill `enexus-decision`） | en-generate-hub（`decision-gate`） | en-sns-hub（`src/growth-decision.mjs`） | 標準 |
+|---|---|---|---|---|
+| consumer ID | `application_id: claude-code` | `en-generate-hub` | `en-sns-hub` | 固定の `application_id` を 1 つ持つ（中央 registry は無い。`usage --by application_id` で可視化） |
+| transport | CLI（Skill の手順で `gateway decide --stdin`） | CLI 子 process | CLI 子 process | request は stdin（argv に載せない） |
+| 子 process の env | Claude Code の env を継承 | allowlist（OS + `EDL_*` + engine-env manifest）・`FAL_`/`WAVESPEED_` 除外 | 同じ allowlist・`ANTHROPIC_` 等除外 | allowlist ＋ consumer 自身の Secret 除外（§11-2） |
+| timeout | Gateway 既定 30s | 35s | 35s | consumer 側は Gateway より長く（35s） |
+| 失敗時 | `failure.policy` に従う | fail-closed envelope を local で組む | 同じ | throw せず fail-closed（human-required）の envelope |
+| envelope 検証 | 手順で確認 | `contract_version`・`ok` の形 | 同じ＋environment 照合 | 形・`decision` の有無・`gateway.environment` |
+| 環境 | `expected_environment: dev`（2026-09-26〜） | `expected_environment: dev`（2026-09-26〜） | `expected_environment: dev`・非 dev は接続しない | local CLI / SDK は `dev` のみ（§12） |
+| correlation | 任意 | `en-generate-hub:<request hash>` | `en-sns-hub:<content_id>` | PII を含まない業務 ID（hash 可） |
+| Engine 固有名 | 持たない | 持たない（2026-09-26 に除去） | 持たない | consumer は Jev 等の env 名・endpoint・provider を持たない |
+| Human-only | 判定は承認ではない | MA-17 承認チェーンと分離（test で import を禁止） | `publication: human-only` 固定 | 結果に承認・実行キーを持たせない／`proceed_automatically:false` |
+
+en-generate-hub と en-sns-hub の transport 部分（`resolveEdlHome`・`loadEngineEnvSpec`・`buildChildEnv`・`unavailableEnvelope`・`callDecisionGateway`）は
+ほぼ同じコードの重複だった。これを `consumer-kit/node/cli-transport.mjs` として抽出した（既存 2 consumer の移行は §9-5）。
+
+### 9-2. 共通化しないもの（consumer 固有に残す）
+
+- **Decision Point の検出**（Claude Code：Skill の発動条件／en-generate-hub：`decision-gate` コマンド／SNS：候補生成後／OpenMontage：有料 tool の直前）
+- **input builder**（生成要求 → `paid-generation-gate`、Threads 候補 → GrowthCandidate → `channel-selection`・`content-publish-gate` 等）。
+  何を送り何を伏せるかは consumer の業務データに依存する
+- **outcome の正規化と表示**（日本語の次段階表示・ブラウザへの返却形等）
+- **consumer 自身の Secret 名**（`neverForward`）と deterministic な安全規則（consent・frequency cap・公開停止等は consumer / Growth Core 側の Rules）
+
+### 9-3. 標準手順（新 consumer ごとに再発明しない）
+
+1. **identity**：`application_id` を決める（例 `hermes` / `openai-agent` / `line-crm` / `openmontage`）。`project_id` は `registries/projects.json` の id
+2. **environment**：どの実行環境の Gateway につなぐかを先に決める（§12）。本人用・内部用＝`dev`。一般販売・外部ユーザー向けは `production` 前提で
+   **今の DEV Gateway へつながない**（Production Gateway は未構築＝接続先・Secret・deploy は Human Required）。不明なら Production へ推測接続しない
+3. **Decision Point**：どの時点で呼ぶかを 1〜2 箇所に絞る（全操作に通さない）
+4. **decision_type**：`gateway types` の既存 type を使う。無ければ architecture §7（schema + index + rules + tests）。consumer が未知の type を作らない
+5. **structured context**：`input` は decision_type schema の構造情報だけ。参照用 ID は `context`（engine へ送られない）。`correlation_id` に PII の無い業務 ID
+6. **PII / Secret boundary**：`input` に Secret・PII・人物名・prompt / 本文の全文・ローカルパスを入れない。疑いがあれば本文を送らない（rules で止める）
+7. **Gateway 呼び出し**：入口面を選ぶ（Node 同居 = SDK、shell / 別 repo = CLI、別言語・別マシン = HTTP、MCP 対応 Agent = MCP）。CLI は §9-4 の transport 契約に従う
+8. **typed result 検証**：`contract_version`・`ok`・`decision` の有無・`gateway.environment` を確認し、`decision.outcome` / `tier` / `human_gate` を読む
+9. **Human-only 境界**：`ok:true`・`tier:auto` でも承認ではない。結果に承認・実行キーを作らない。有料実行・公開・送信・deploy は既存 Human-only ゲートを通る
+10. **failure / mismatch**：`ok:false` は `failure.policy`（human-required / deny）に従う。環境不一致・欠落・Gateway 不在・timeout・不正応答は fail-closed。自動 retry・自動続行しない
+11. **usage evidence**：`usage --by application_id` と `scripts/real-jev-evidence.mjs --expect <application_id>` で「実際に使われている」ことを確認できる（§11-3）
+12. **tests**：transport は `consumer-kit/conformance/transport-cases.json` を全件通す。consumer 固有部分は builder（送らない情報）・解釈（承認でない・不明 route は human）を test
+13. **real smoke**：synthetic input で 1〜2 回（burst 429 実測あり）。事前に `gateway health` で経路を確認し、事後に `--since` と `request_id` を照合（§11-4）
+14. **SSOT / Product Hub / log**：この表（§9-5）・Vault Decision Layer 正本 §18・アプリ別技術スタック台帳・開発ログ。Product Hub は事業イベントがある時だけ
+15. **commit / push**：consumer repo と Gateway repo を別々に。remote の無い repo は commit まで
+
+### 9-4. transport 契約と Consumer Integration Kit（`consumer-kit/`）
+
+local CLI transport（`gateway decide --stdin` を子 process で呼ぶ）の契約：
+
+- request は stdin・`contract_version: "1"`・`expected_environment: "dev"`（local CLI / SDK は DEV のみ。staging / production 指定は Gateway を呼ばずに fail-closed）
+- 子 process の env は OS の最低限 + `EDL_*` + `policies/gateway/engine-env.json` の名前だけ。consumer 自身の Secret は manifest に関係なく渡さない
+- timeout 35s。起動失敗・timeout・非 JSON・非 v1・`ok:true` で `decision` 無し・`gateway.environment` 不一致 / 欠落は fail-closed（human-required）の envelope
+- Gateway 自身の `ok:false` は `failure.policy` ごとそのまま渡す。stderr は表示・保存しない
+
+| Kit の部品 | 用途 |
+|---|---|
+| `consumer-kit/conformance/transport-cases.json` | 上の契約の言語非依存 cases（Gateway 応答 10 件・echo・env allowlist 3 profile・設定不備 4 件） |
+| `consumer-kit/conformance/fake-gateway/` | cases を返す fake Gateway（`EDL_HOME` に指定・`EDL_FAKE_CASE` で選択）。通信・書き込みなし |
+| `consumer-kit/node/cli-transport.mjs` | Node reference transport（`createCliTransport({ neverForward, environment })`）。新 Node consumer はコピーして持つ |
+| `integrations/openmontage/enexus_openmontage_decision.py` | Python の実装例（同じ cases を通す）。2 つ目の Python consumer が出たら transport 部分を kit へ移す |
+
+repo をまたぐ runtime import はしない（consumer の Secret を Gateway repo のコードへ見せないため・version 結合を作らないため）。
+HTTP / Production 用 transport は Production Gateway の構築（Human-only）と同時に作る。Kit に Decision Engine 固有の名前は入れない（`tests/consumer-kit.test.mjs` が検査）。
+
+### 9-5. consumer 一覧
 
 | consumer | 状態（2026-09-26） | 次に作るもの |
 |---|---|---|
-| en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate` コマンド・CLI transport）。2026-09-26 実 Jev 到達確認 | — |
-| Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。2026-09-26 実 Jev 到達確認。MCP は Human 接続待ち | — |
+| en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate`・CLI transport）。2026-09-26 実 Jev 到達確認。同日 `expected_environment: dev` と environment 照合を追加（標準準拠） | transport を `consumer-kit/node/cli-transport.mjs` へ寄せるのは任意（次に触る時） |
+| Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。2026-09-26 実 Jev 到達確認。同日 Skill の request に `expected_environment: dev` を追加。MCP は Human 接続待ち | — |
+| SNS / Growth（`channel-selection`・`content-publish-gate`） | **接続済み（2026-09-26・dev）**：en-sns-hub `src/growth-decision.mjs`（thin adapter・CLI transport・`expected_environment: dev`）＋ `POST /api/decide`。実 Jev 到達確認 | Worker 版は HTTP Gateway が要る（deploy は Human-only）。transport の kit 移行は任意 |
+| **OpenMontage（`paid-generation-gate`）** | **接続済み（2026-09-26・dev）**：`integrations/openmontage/enexus_openmontage_decision.py`（Python thin adapter・CLI transport・`application_id: openmontage`）。route=en-generate-hub は /en-generate（MA-17）への引き継ぎ候補で、OpenMontage 内蔵の有料 tool は使わない。実 Jev 到達確認 | OpenMontage の agent 手順（上流 `AGENT_GUIDE.md`）へは組み込まない（上流 clone は編集しない）。呼び出しは Claude Code Skill `enexus-decision` の案内から |
 | Cursor | 未接続 | MCP 設定（Human）か `.cursor/rules` で CLI |
-| Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter |
+| Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter（Python なら openmontage adapter の transport を kit へ移して使う） |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |
 | LINE / CRM | 未接続（MA-31 G5-0 は触らない） | `lead-triage` schema 化の後、HTTP |
-| SNS / Growth（`channel-selection`・`content-publish-gate`） | **接続済み（2026-09-26・dev）**：en-sns-hub `src/growth-decision.mjs`（thin adapter・CLI transport・`expected_environment: dev`）＋ `POST /api/decide`。実 Jev 到達確認（`real-jev-evidence.mjs --expect en-sns-hub`）。Claude Code 経路は Skill `enexus-decision` | en-sns-hub の Worker 版は HTTP Gateway が要る（deploy は Human-only）。他 SNS は GrowthCandidate への写像を足す |
+| 一般販売 App / SaaS（AI Cost Manager・旅レートカメラ・足場 SaaS 等） | 未接続 | **Production Backend → Production Gateway**（未構築・Human Required）。client に Secret を置かない。DEV Gateway へつながない（§12） |
 
 ## 10. Engine の差し替え
 

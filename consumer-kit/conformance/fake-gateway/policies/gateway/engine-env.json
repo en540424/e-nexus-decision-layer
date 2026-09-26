@@ -1,0 +1,8 @@
+{
+  "$comment": "conformance 用の架空 manifest。実 manifest（repo の policies/gateway/engine-env.json）と同じ形で、架空の engine 名だけを列挙する。",
+  "contract_version": "1",
+  "forward": {
+    "prefixes": ["EDL_"],
+    "names": ["ENGINE_X_KEY", "ENGINE_MODE", "ENGINE_SHARED_SECRET"]
+  }
+}

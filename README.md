@@ -22,7 +22,8 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 214 tests, 依存ゼロ（node --test）
+npm test                                     # 272 tests, 依存ゼロ（node --test）
+python -m unittest discover -s integrations/openmontage -p "test_*.py"   # OpenMontage adapter（Python stdlib・npm test とは別）
 echo '<request json>' | node src/cli.mjs gateway decide --stdin   # Common Decision Gateway（consumer 向け正式入口・envelope を返す）
 node src/cli.mjs gateway health              # version・engine mode・Jev 経路状態（Secret なし）・counters
 node src/cli.mjs gateway serve --port 8787   # HTTP 入口（127.0.0.1。loopback 以外は EDL_GATEWAY_TOKEN 必須）
@@ -53,7 +54,8 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | `registries/` | 4台帳（Vault側正本の派生スナップショット） |
 | `policies/` | routing（chain・閾値・rules）/ safety（Human-only）/ human-approval / cost / gateway（failure policy：human-required／deny のみ） |
 | `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate`（公開前判定）・`channel-selection`（候補媒体選定）はどちらも実行はしない（`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`） |
-| `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要） |
+| `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要）、openmontage の thin consumer adapter（Python・2026-09-26） |
+| `consumer-kit/` | Consumer Integration Kit：transport の言語非依存 conformance cases・fake Gateway・Node reference transport（標準は `docs/gateway.md` §9） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
 | `scripts/` | poc-calibration（Jev confidence の実測 runner。run はキー export 済みの Human シェルでのみ動く） |
 | `docs/` | architecture / PoC / decision-log / poc/calibration（ケース定義・結果） / growth-content-publish-gate（MA-31 G3）・growth-channel-selection（MA-31 G3後半）＋ growth/（Human smoke 用サンプル） / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |

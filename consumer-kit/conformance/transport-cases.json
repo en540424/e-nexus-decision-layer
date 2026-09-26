@@ -1,0 +1,111 @@
+{
+  "$comment": "E-NEXUS Consumer Integration Kit：local CLI transport の言語非依存 conformance cases（2026-09-26・kit v1）。Node / Python 等どの言語の consumer adapter も、fake-gateway/（EDL_HOME に指定）を相手にこの全 case を通すこと。判定するのは transport 契約だけ（input の組み立て・outcome の正規化は consumer 固有なので対象外）。標準の本文は docs/gateway.md §9。fake-gateway は環境変数 EDL_FAKE_CASE で case を選び、usage.jsonl 等へ何も書かない。",
+  "kit_version": "1",
+  "contract_version": "1",
+  "transport": {
+    "command": ["<EDL_HOME>/src/cli.mjs", "gateway", "decide", "--stdin"],
+    "request_over": "stdin",
+    "local_transport_environments": ["dev"],
+    "default_timeout_ms": 35000,
+    "fail_closed_failure": { "policy": "human-required", "human_required": true, "proceed_automatically": false }
+  },
+  "gateway_cases": [
+    {
+      "id": "ok-dev",
+      "description": "正常な envelope（gateway.environment=dev）はそのまま consumer へ渡す",
+      "gateway": { "stdout": { "contract_version": "1", "ok": true, "request_id": "req_conformance_ok", "correlation_id": "c-1", "decision": { "decision_type": "paid-generation-gate", "outcome": { "recommended_route": "remotion" }, "tier": "auto", "confidence": 0.9, "resolved_by": "jev", "human_gate": { "required": false } }, "gateway": { "via": "cli", "environment": "dev", "engine": { "id": "fake", "version": "0", "mode": "production" }, "latency_ms": 1 } } },
+      "expect": { "ok": true, "request_id": "req_conformance_ok" }
+    },
+    {
+      "id": "ok-human-tier",
+      "description": "tier=human も transport としては ok:true（Decision の結果と transport の成否を混同しない）",
+      "gateway": { "stdout": { "contract_version": "1", "ok": true, "request_id": "req_conformance_human", "correlation_id": "c-1", "decision": { "decision_type": "paid-generation-gate", "outcome": { "recommended_route": "human-review" }, "tier": "human", "confidence": 0.3, "resolved_by": "human", "human_gate": { "required": true, "reason": "low confidence" } }, "gateway": { "via": "cli", "environment": "dev", "engine": { "id": "fake", "version": "0", "mode": "production" }, "latency_ms": 1 } } },
+      "expect": { "ok": true, "request_id": "req_conformance_human" }
+    },
+    {
+      "id": "environment-mismatch",
+      "description": "ok:true でも gateway.environment が期待（dev）と違えば ENVIRONMENT_MISMATCH で fail-closed",
+      "gateway": { "stdout": { "contract_version": "1", "ok": true, "request_id": "req_conformance_staging", "correlation_id": "c-1", "decision": { "decision_type": "paid-generation-gate", "outcome": {}, "tier": "auto" }, "gateway": { "via": "cli", "environment": "staging", "engine": { "id": "fake", "version": "0", "mode": "production" } } } },
+      "expect": { "ok": false, "error_code": "ENVIRONMENT_MISMATCH", "failure_policy": "human-required" }
+    },
+    {
+      "id": "environment-missing",
+      "description": "gateway.environment が無い envelope（旧 Gateway 等）も fail-closed",
+      "gateway": { "stdout": { "contract_version": "1", "ok": true, "request_id": "req_conformance_noenv", "correlation_id": "c-1", "decision": { "decision_type": "paid-generation-gate", "outcome": {}, "tier": "auto" }, "gateway": { "via": "cli", "engine": { "id": "fake", "version": "0", "mode": "production" } } } },
+      "expect": { "ok": false, "error_code": "ENVIRONMENT_MISMATCH", "failure_policy": "human-required" }
+    },
+    {
+      "id": "gateway-error-passthrough",
+      "description": "Gateway 自身の ok:false envelope は failure.policy ごとそのまま渡す（consumer が勝手に retry・続行しない）",
+      "gateway": { "stdout": { "contract_version": "1", "ok": false, "request_id": "req_conformance_invalid", "correlation_id": "c-1", "decision": null, "error": { "code": "SCHEMA_INVALID", "kind": "invalid_request", "retryable": false, "message": "input.asset_kind: enum" }, "failure": { "policy": "deny", "human_required": false, "proceed_automatically": false }, "gateway": { "via": "cli", "environment": "dev" } }, "exit_code": 2 },
+      "expect": { "ok": false, "error_code": "SCHEMA_INVALID", "failure_policy": "deny" }
+    },
+    {
+      "id": "not-json",
+      "description": "stdout が JSON でない",
+      "gateway": { "raw_stdout": "not json" },
+      "expect": { "ok": false, "error_code": "GATEWAY_BAD_RESPONSE", "failure_policy": "human-required" }
+    },
+    {
+      "id": "unsupported-contract",
+      "description": "contract_version が 1 以外",
+      "gateway": { "stdout": { "contract_version": "2", "ok": true, "request_id": "req_conformance_v2", "decision": {}, "gateway": { "environment": "dev" } } },
+      "expect": { "ok": false, "error_code": "GATEWAY_BAD_RESPONSE", "failure_policy": "human-required" }
+    },
+    {
+      "id": "ok-without-decision",
+      "description": "ok:true なのに decision が無い",
+      "gateway": { "stdout": { "contract_version": "1", "ok": true, "request_id": "req_conformance_nodecision", "decision": null, "gateway": { "environment": "dev" } } },
+      "expect": { "ok": false, "error_code": "GATEWAY_BAD_RESPONSE", "failure_policy": "human-required" }
+    },
+    {
+      "id": "crash",
+      "description": "stdout 無しで非0終了",
+      "gateway": { "raw_stdout": "", "exit_code": 1 },
+      "expect": { "ok": false, "error_code": "GATEWAY_BAD_RESPONSE", "failure_policy": "human-required" }
+    },
+    {
+      "id": "hang",
+      "description": "応答しない Gateway は consumer 側 timeout で fail-closed（test では timeout を短くする）",
+      "gateway": { "hang": true },
+      "test_timeout_ms": 400,
+      "expect": { "ok": false, "error_code": "GATEWAY_TIMEOUT", "failure_policy": "human-required" }
+    }
+  ],
+  "echo_case": {
+    "id": "echo",
+    "description": "fake-gateway が受け取った request・子 process の env の名前・argv を返す。stdin 渡し・expected_environment・env allowlist を検査する",
+    "expect": {
+      "argv": ["gateway", "decide", "--stdin"],
+      "request_expected_environment": "dev",
+      "request_contract_version": "1"
+    }
+  },
+  "env_forwarding": {
+    "$comment": "親 process の env（名前だけ）→ 子へ渡してよい名前。fake-gateway/policies/gateway/engine-env.json は架空の engine 名（ENGINE_*）を列挙する。consumer 自身の Secret（never_forward）は manifest に載っていても渡さない。",
+    "parent_env": ["PATH", "EDL_ALLOW_NETWORK", "EDL_FAKE_CASE", "ENGINE_X_KEY", "ENGINE_MODE", "FAL_KEY", "WAVESPEED_API_KEY", "ANTHROPIC_API_KEY", "ACCESS_TOKEN", "OPENAI_API_KEY", "RANDOM_APP_SETTING", "ENGINE_SHARED_SECRET"],
+    "profiles": [
+      {
+        "consumer": "en-generate-hub-like",
+        "never_forward": "^(FAL_|WAVESPEED_)",
+        "expect_forwarded": ["EDL_ALLOW_NETWORK", "EDL_FAKE_CASE", "ENGINE_MODE", "ENGINE_SHARED_SECRET", "ENGINE_X_KEY", "PATH"]
+      },
+      {
+        "consumer": "en-sns-hub-like",
+        "never_forward": "^(ANTHROPIC_|ACCESS_TOKEN$|CLAUDE_|CLOUDFLARE_|WRANGLER_)",
+        "expect_forwarded": ["EDL_ALLOW_NETWORK", "EDL_FAKE_CASE", "ENGINE_MODE", "ENGINE_SHARED_SECRET", "ENGINE_X_KEY", "PATH"]
+      },
+      {
+        "consumer": "openmontage-like",
+        "never_forward": "^(FAL_|WAVESPEED_|ANTHROPIC_|OPENAI_|ENGINE_SHARED_)",
+        "expect_forwarded": ["EDL_ALLOW_NETWORK", "EDL_FAKE_CASE", "ENGINE_MODE", "ENGINE_X_KEY", "PATH"]
+      }
+    ]
+  },
+  "configuration_cases": [
+    { "id": "environment-production", "environment": "production", "expect": { "ok": false, "error_code": "ENVIRONMENT_NOT_SUPPORTED_BY_TRANSPORT", "gateway_called": false } },
+    { "id": "environment-staging", "environment": "staging", "expect": { "ok": false, "error_code": "ENVIRONMENT_NOT_SUPPORTED_BY_TRANSPORT", "gateway_called": false } },
+    { "id": "environment-unknown", "environment": "prod", "expect": { "ok": false, "error_code": "ENVIRONMENT_UNKNOWN", "gateway_called": false } },
+    { "id": "gateway-not-found", "environment": "dev", "edl_home": "<nonexistent>", "expect": { "ok": false, "error_code": "GATEWAY_NOT_FOUND", "gateway_called": false } }
+  ]
+}
