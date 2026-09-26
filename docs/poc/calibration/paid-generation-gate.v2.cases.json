@@ -1,0 +1,109 @@
+{
+  "$comment": "MA-30 実JEV Calibration 第2回（2026-09-26）paid-generation-gate の評価セット。2026-09-19 の paid-generation-gate.cases.json（Calibration B）は履歴として残し、こちらは『paid 必要性と route の矛盾』を主対象に作り直したもの。synthetic・PII なし（purpose に人名・顧客名・連絡先を含めない）。expected.acceptable / unacceptable は Jev が満たすべき制約（許容値の集合）。自己矛盾は outcome schema の x-outcome-invariants で数える。resolver=rules は --offline。予算の有無は input に無い（予算ゲートは en-generate-hub MA-17 の責務。この判定は予算を見ない）ため『予算0』ケースは置かない。holdout は paid-generation-gate.v2.holdout.cases.json（修正前に凍結）。",
+  "decision_type": "paid-generation-gate",
+  "application_id": "calibration-openmontage",
+  "project_id": "openmontage",
+  "cases": [
+    {
+      "case_id": "PG-J1-local-crop-existing-photos",
+      "category": "A: Local / Free で十分（style 未指定なので rules に当たらない）",
+      "facts": ["手元に写真がある", "切り抜き・リサイズだけ"],
+      "input": { "asset_kind": "image", "purpose": "Crop and resize three existing product photos we already have into a square 3-image carousel for a social post", "style": "unspecified", "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J2-cinematic-city-no-footage",
+      "category": "B/F: 品質要件上 paid が必要（素材なし・シネマティック）",
+      "facts": ["素材なし", "写実的なシネマティック映像を新規に作る"],
+      "input": { "asset_kind": "scene", "purpose": "An 8-second cinematic establishing shot of a futuristic city at dusk for an opening title; we have no existing footage of anything like it", "style": "cinematic", "duration_sec": 8, "has_reference_media": false, "has_local_assets": false, "estimated_paid_cost_usd_micros": 400000, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true], "local_sufficient": [false] }, "unacceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J3-trim-existing-screen-recording",
+      "category": "D: 見積はあるが Local で十分",
+      "facts": ["自社アプリの画面録画が既にある", "トリミングだけ", "見積額が付いている"],
+      "input": { "asset_kind": "b-roll", "purpose": "Trim our own already-recorded app screen capture down to the 12 seconds where the export button is used", "style": "unspecified", "duration_sec": 12, "has_reference_media": false, "has_local_assets": true, "estimated_paid_cost_usd_micros": 300000, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J4-vague-purpose",
+      "category": "E: 目的が曖昧（追加確認 / Human）",
+      "facts": ["purpose が曖昧", "style 未指定", "素材の有無不明"],
+      "input": { "asset_kind": "other", "purpose": "Something cool for the video", "style": "unspecified", "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["human-review"], "human_review_required": [true] }, "unacceptable": { "recommended_route": ["en-generate-hub"] }, "ambiguity": "high" },
+      "notes": "ここで低 confidence・human は正しい挙動"
+    },
+    {
+      "case_id": "PG-J5-concept-product-photoreal",
+      "category": "F: 必要品質が明確で Local では不足（参照あり）",
+      "facts": ["実在しない試作品", "写実的なスタジオ写真", "参照スケッチあり", "手元素材なし"],
+      "input": { "asset_kind": "product-shot", "purpose": "Photoreal studio shots from three angles of a concept product that does not physically exist yet; a hand-drawn sketch is available as reference", "style": "photoreal", "has_reference_media": true, "has_local_assets": false, "estimated_paid_cost_usd_micros": 600000, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub", "human-review"], "paid_generation_required": [true] }, "unacceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J6-ai-presenter-with-estimate",
+      "category": "G: 見積額あり・presenter 映像なし",
+      "facts": ["presenter の映像が無い", "30秒", "見積 1.2 USD"],
+      "input": { "asset_kind": "talking-head", "purpose": "A 30-second AI presenter explaining one feature of our app; we have no presenter footage at all", "style": "photoreal", "duration_sec": 30, "has_reference_media": false, "has_local_assets": false, "estimated_paid_cost_usd_micros": 1200000, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub", "human-review"], "paid_generation_required": [true] }, "unacceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J7-hero-image-no-estimate",
+      "category": "H: 見積額なし・写実画像を新規に作る",
+      "facts": ["見積なし", "写真素材なし", "写実的な画像"],
+      "input": { "asset_kind": "image", "purpose": "A photoreal hero image of a mountain cabin at sunrise for a travel article; we have no photos of the place", "style": "photoreal", "has_reference_media": false, "has_local_assets": false, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub", "human-review"], "paid_generation_required": [true] }, "unacceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "ambiguity": "low" },
+      "notes": "見積が無いこと自体は paid 必要性の判断を妨げない"
+    },
+    {
+      "case_id": "PG-J8-reedit-existing-drone-footage",
+      "category": "I: 参照素材・手元素材あり（再編集で足りる）",
+      "facts": ["ドローン映像が手元にある", "再編集とカラーグレーディング"],
+      "input": { "asset_kind": "scene", "purpose": "Re-edit our existing drone footage into a 20-second cinematic teaser with color grading and title text", "style": "cinematic", "duration_sec": 20, "has_reference_media": true, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J9-animated-chart",
+      "category": "A': Remotion 向き（素材なしでもプログラム描画で足りる）",
+      "facts": ["CSV から棒グラフのアニメーション", "写実性不要"],
+      "input": { "asset_kind": "b-roll", "purpose": "An animated bar chart of monthly sales figures from a CSV file, with labels and a simple grow-in animation", "style": "motion-graphics", "duration_sec": 10, "has_reference_media": false, "has_local_assets": false, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["remotion"], "paid_generation_required": [false], "remotion_suitable": [true] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J10-anime-character-with-reference",
+      "category": "I: 参照素材あり・手元素材なし（新規アニメ映像）",
+      "facts": ["キャラクター設定画が参照としてある", "動く映像は無い"],
+      "input": { "asset_kind": "scene", "purpose": "A 5-second anime-style clip of our original mascot character waving; the character design sheet exists as a reference image but there is no animation", "style": "anime", "duration_sec": 5, "has_reference_media": true, "has_local_assets": false, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub", "human-review"], "paid_generation_required": [true] }, "unacceptable": { "recommended_route": ["local"], "paid_generation_required": [false] }, "ambiguity": "medium" }
+    },
+    {
+      "case_id": "PG-J11-cut-existing-interview",
+      "category": "A: 既存インタビュー映像の切り出し",
+      "facts": ["インタビュー映像が手元にある", "切り出しだけ"],
+      "input": { "asset_kind": "talking-head", "purpose": "Cut our existing recorded interview footage down to a 30-second clip with subtitles", "style": "unspecified", "duration_sec": 30, "has_reference_media": false, "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-J12-smoke-style-vague",
+      "category": "E': 前回 smoke と同型（目的が抽象的・見積なし）",
+      "facts": ["purpose が抽象的", "素材有無は一部のみ"],
+      "input": { "asset_kind": "scene", "purpose": "A short scene for the product promo video", "style": "unspecified", "has_reference_media": false, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["human-review", "en-generate-hub"] }, "unacceptable": { "recommended_route": ["local"] }, "ambiguity": "high" },
+      "notes": "判断保留（human-review）でよい。制約は自己矛盾しないことだけ"
+    },
+    {
+      "case_id": "PG-R1-subtitle",
+      "category": "Rules First：字幕",
+      "facts": ["text-only asset"],
+      "input": { "asset_kind": "subtitle", "purpose": "Captions for an existing tutorial", "style": "flat", "has_local_assets": true, "language": "ja" },
+      "expected": { "resolver": "rules", "acceptable": { "recommended_route": ["remotion"] }, "unacceptable": { "recommended_route": ["en-generate-hub"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-R2-high-cost",
+      "category": "Rules First：推定 $5 以上",
+      "facts": ["見積 6 USD"],
+      "input": { "asset_kind": "scene", "purpose": "A long generated scene", "style": "cinematic", "has_local_assets": false, "estimated_paid_cost_usd_micros": 6000000, "language": "ja" },
+      "expected": { "resolver": "rules", "acceptable": { "recommended_route": ["en-generate-hub"], "human_review_required": [true] }, "unacceptable": {}, "ambiguity": "low" }
+    }
+  ]
+}

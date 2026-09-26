@@ -49,6 +49,14 @@
       "description": "Pre-publication check for one piece of E-NEXUS content (a draft or channel-specific variant) intended for one external channel, performed before a human decides whether to publish it. This decision never publishes anything and is never a publishing approval: every external publication (note, X, Threads, YouTube, Instagram, TikTok, TALES, Substack, Medium, Pinterest, pixiv) is always carried out by a human after the human's own review. Decide what the next stage for this content should be. Stages: 'human-publish-review' = the content looks ready to be handed to the human who decides whether to publish it; 'needs-revision' = the text should be edited before a human publish review; 'hold' = do not proceed yet because something outside the text must first be resolved by a human; 'blocked' = the content must not be published on this channel. Input fields: content_id (a reference ID only), source_type, content_type (article, post, video, page), channel, channel_registered (true = the channel account exists and is registered), title, summary, excerpt (a short redacted excerpt, not the full text), language, provenance (human-written, AI draft edited by a human, unedited AI draft, mixed), prior_publication_state, duplicate_confirmed, policy_state, review_state (result of the pre-publication editorial check, e.g. note-check), human_opt_in, risk_flags (signals already detected by the caller), campaign_ref, project_ref. Missing optional fields mean the information is unknown.",
       "required": ["publish_candidate", "revision_needed", "risk_level", "human_review_required", "recommended_route"],
       "additionalProperties": false,
+      "x-outcome-invariants": [
+        { "id": "publish-review-route-requires-candidate", "if": { "recommended_route": "human-publish-review" }, "then": { "publish_candidate": true } },
+        { "id": "candidate-requires-publish-review-route", "if": { "publish_candidate": true }, "then": { "recommended_route": "human-publish-review" } },
+        { "id": "revision-route-requires-revision-needed", "if": { "recommended_route": "needs-revision" }, "then": { "revision_needed": true } },
+        { "id": "revision-needed-excludes-candidate", "if": { "revision_needed": true }, "then": { "publish_candidate": false } },
+        { "id": "high-risk-requires-human-review", "if": { "risk_level": "high" }, "then": { "human_review_required": true } },
+        { "id": "unassessed-risk-excludes-candidate", "if": { "risk_level": "unassessed" }, "then": { "publish_candidate": false } }
+      ],
       "properties": {
         "publish_candidate": {
           "type": "boolean",

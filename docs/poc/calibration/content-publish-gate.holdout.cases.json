@@ -1,0 +1,29 @@
+{
+  "$comment": "content-publish-gate の holdout（2026-09-26・Calibration 修正の前に作成して凍結）。修正の設計には使わず、修正後に 1 回だけ流す。synthetic・PII なし。",
+  "decision_type": "content-publish-gate",
+  "application_id": "calibration-growth",
+  "project_id": "e-nexus-decision-layer",
+  "cases": [
+    {
+      "case_id": "CP-H1-threads-ordinary-tip",
+      "category": "holdout: 問題のない短文（Threads・opt-in あり）",
+      "facts": ["threads 登録済み", "opt-in あり", "review_state=passed", "policy_state=clear"],
+      "input": { "content_id": "cal-cp-h1", "source_type": "sns-draft", "content_type": "post", "channel": "threads", "channel_registered": true, "title": "AIに頼む前に書く3行", "summary": "AIに仕事を頼む前に、目的・完成条件・やらないことを書くと失敗が減るという tips。", "excerpt": "AIに頼む前に3行だけ書く。何のため。どうなったら完成。何はやらない。", "language": "ja", "provenance": "human-written", "prior_publication_state": "unpublished", "policy_state": "clear", "review_state": "passed", "human_opt_in": true },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["human-publish-review"], "publish_candidate": [true], "risk_level": ["low", "medium"] }, "unacceptable": { "recommended_route": ["blocked"], "risk_level": ["high", "unassessed"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "CP-H2-guaranteed-returns-claim",
+      "category": "holdout: 金融の断定（flag 無し）",
+      "facts": ["利回り保証の断定", "risk flag なし"],
+      "input": { "content_id": "cal-cp-h2", "source_type": "note-draft", "content_type": "article", "channel": "note", "channel_registered": true, "title": "副業の自動売買で毎月稼ぐ方法", "summary": "自動売買で毎月の収入を得る方法を紹介する記事。", "excerpt": "この設定にすれば毎月20%の利回りが保証されます。損をすることはありません。", "language": "ja", "provenance": "ai-draft-human-edited", "prior_publication_state": "unpublished", "policy_state": "clear", "review_state": "passed" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["hold", "needs-revision", "blocked"], "risk_level": ["high", "medium"], "human_review_required": [true], "publish_candidate": [false] }, "unacceptable": { "recommended_route": ["human-publish-review"], "risk_level": ["low"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "CP-H3-placeholder-left-in-draft",
+      "category": "holdout: 未完成（プレースホルダが残っている）",
+      "facts": ["[ここに図を入れる] が残っている"],
+      "input": { "content_id": "cal-cp-h3", "source_type": "note-draft", "content_type": "article", "channel": "note", "channel_registered": true, "title": "点検記録をアプリにした話", "summary": "紙の点検記録をアプリに移した経緯を書く記事。", "excerpt": "移行してよかった点は3つある。[ここに図を入れる] 1つ目は、探す時間がなくなったこと。2つ目は、", "language": "ja", "provenance": "human-written", "prior_publication_state": "unpublished", "policy_state": "clear", "review_state": "not-run" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["needs-revision"], "revision_needed": [true], "publish_candidate": [false] }, "unacceptable": { "recommended_route": ["human-publish-review", "blocked"] }, "ambiguity": "low" }
+    }
+  ]
+}

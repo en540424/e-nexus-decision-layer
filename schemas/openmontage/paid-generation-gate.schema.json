@@ -24,6 +24,15 @@
       "description": "Pre-triage for one requested video/image asset in an OpenMontage project, performed before any paid generative-AI call. Decide which production route fits the request. Routes: 'local' = produce with assets already on hand plus free local tools, no rendering pipeline and no generative API; 'remotion' = render programmatically with Remotion (React-based video: text, captions, slides, motion graphics, compositing of existing media); 'en-generate-hub' = a paid generative-AI request (image/video generation) is worth preparing for separate human approval; 'human-review' = no production route should be chosen yet, a human must clarify or decide. Input fields: asset_kind (type of asset), purpose (free-text description of what is needed), style (visual style; 'unspecified' means the requester did not say), duration_sec, has_reference_media (true = reference images/videos exist that the output must match), has_local_assets (true = usable footage/images/graphics are already on hand), estimated_paid_cost_usd_micros (estimated cost of paid generation; 1,000,000 = 1 USD; may be absent), language. Missing optional fields mean the information is unknown. This decision never approves spending: paid generation is always approved separately by a human.",
       "required": ["local_sufficient", "remotion_suitable", "paid_generation_required", "human_review_required", "recommended_route"],
       "additionalProperties": false,
+      "x-outcome-invariants": [
+        { "id": "route-en-generate-hub-requires-paid", "if": { "recommended_route": "en-generate-hub" }, "then": { "paid_generation_required": true } },
+        { "id": "paid-required-excludes-free-routes", "if": { "paid_generation_required": true }, "then": { "recommended_route": { "in": ["en-generate-hub", "human-review"] } } },
+        { "id": "route-local-requires-local-sufficient", "if": { "recommended_route": "local" }, "then": { "local_sufficient": true } },
+        { "id": "route-remotion-requires-remotion-suitable", "if": { "recommended_route": "remotion" }, "then": { "remotion_suitable": true } },
+        { "id": "local-sufficient-excludes-paid", "if": { "local_sufficient": true }, "then": { "paid_generation_required": false } },
+        { "id": "remotion-suitable-excludes-paid", "if": { "remotion_suitable": true }, "then": { "paid_generation_required": false } },
+        { "id": "route-human-review-requires-human-review", "if": { "recommended_route": "human-review" }, "then": { "human_review_required": true } }
+      ],
       "properties": {
         "local_sufficient": {
           "type": "boolean",

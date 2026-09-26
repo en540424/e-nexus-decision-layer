@@ -44,6 +44,7 @@ import { loadDecisionType } from '../src/schemas/loader.mjs';
 import { realJevUsable } from '../src/index.mjs';
 import { resolveJevProvider } from '../src/adapters/jev/jev-provider-interface.mjs';
 import { toGatewayModelId } from '../src/adapters/jev/jev-vercel-provider.mjs';
+import { checkOutcomeInvariants } from '../src/schemas/invariants.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_CASES_PATH = join(ROOT, 'docs', 'poc', 'calibration', 'paid-generation-gate.cases.json');
@@ -260,6 +261,8 @@ async function cmdRun(opts, env) {
     schema: 'edl-poc-calibration-v1',
     decision_type: doc.decision_type,
     variant,
+    label: opts.label ? String(opts.label) : null,
+    cases_path: opts.cases ? String(opts.cases) : null,
     started_at: startedAt.toISOString(),
     finished_at: new Date().toISOString(),
     node: process.version,
@@ -274,7 +277,7 @@ async function cmdRun(opts, env) {
   const text = JSON.stringify(out, null, 2);
   assertNoSecrets(text, env);
   const stamp = startedAt.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  const outPath = opts.out ? resolve(String(opts.out)) : join(RESULTS_DIR, `${stamp}-${variant}.json`);
+  const outPath = opts.out ? resolve(String(opts.out)) : join(RESULTS_DIR, `${stamp}-${opts.label ? String(opts.label).replace(/[^A-Za-z0-9_.-]/g, '_') : variant}.json`);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, `${text}\n`, 'utf8');
   process.stderr.write(`\nwrote ${outPath}\n`);
@@ -318,8 +321,8 @@ export function mergeResults(outs) {
   const byVariant = {};
   const sorted = [...outs].sort((a, b) => String(a.started_at ?? '').localeCompare(String(b.started_at ?? '')));
   for (const out of sorted) {
-    const v = out.variant ?? '(none)';
-    const g = (byVariant[v] ??= { variant: v, thresholds: out.thresholds, decision_type: out.decision_type, provider: out.provider, sources: [], records: new Map(), started_at: out.started_at, finished_at: out.finished_at, stopped: null });
+    const v = out.label ?? out.variant ?? '(none)';
+    const g = (byVariant[v] ??= { variant: v, label: out.label ?? null, thresholds: out.thresholds, decision_type: out.decision_type, provider: out.provider, sources: [], records: new Map(), started_at: out.started_at, finished_at: out.finished_at, stopped: null });
     g.sources.push(out.started_at ?? '(unknown)');
     g.finished_at = out.finished_at ?? g.finished_at;
     g.thresholds = out.thresholds ?? g.thresholds;
@@ -371,6 +374,22 @@ function groupStats(records, keyFn) {
   return Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, stats(v)]));
 }
 
+/**
+ * 制約評価（2026-09-26 実JEV Calibration）。唯一の正解ではなく「満たすべき制約」で見る：
+ *   acceptable_ok  = expected.acceptable の全 field で、outcome の値が許容集合に入っている
+ *   unacceptable   = expected.unacceptable のどれかに当たった field（事実・方針と衝突する回答）
+ *   invariants     = outcome schema の x-outcome-invariants のうち破られたもの（自己矛盾）
+ * 評価対象は Jev の生 outcome（jev ok のとき）か rules の outcome。Jev が失敗したケースは null。
+ */
+export function evaluateConstraints(decisionType, outcome, expected = {}, input = {}) {
+  if (!outcome) return null;
+  const outcomeSchema = loadDecisionType(decisionType)?.schema?.properties?.outcome;
+  const accMiss = Object.entries(expected.acceptable ?? {}).filter(([f, vals]) => !vals.includes(outcome[f])).map(([f]) => f);
+  const unaccHit = Object.entries(expected.unacceptable ?? {}).filter(([f, vals]) => vals.includes(outcome[f])).map(([f]) => f);
+  const violated = checkOutcomeInvariants(outcomeSchema, outcome, input);
+  return { acceptable_ok: accMiss.length === 0, acceptable_missed: accMiss, unacceptable_hit: unaccHit, invariant_violations: violated, pass: accMiss.length === 0 && unaccHit.length === 0 && violated.length === 0 };
+}
+
 export function analyze(out) {
   const thresholds = out.thresholds;
   const records = out.records ?? [];
@@ -412,7 +431,11 @@ export function analyze(out) {
     const expRoute = String(exp.route ?? '');
     const routeMatch = route == null ? null : expRoute.startsWith('either:') ? expRoute.slice(7).split('|').includes(route) : expRoute === route;
     const resolverActual = r.rules_first_hit ? 'rules' : (r.jev ? 'jev' : r.final.resolved_by);
+    const constraints = evaluateConstraints(out.decision_type, outcome, exp, r.input);
     return {
+      constraints,
+      jev_outcome: r.jev?.status === 'ok' ? r.jev.outcome : null,
+      field_confidence: r.jev?.field_confidence ?? null,
       case_id: r.case_id,
       ambiguity: exp.ambiguity ?? null,
       resolver_expected: exp.resolver ?? null,
@@ -456,8 +479,23 @@ export function analyze(out) {
     };
   });
 
+  const jevCmp = comparison.filter((c) => c.resolver_actual === 'jev' && c.constraints);
+  const constraintSummary = {
+    jev_evaluated: jevCmp.length,
+    jev_pass: jevCmp.filter((c) => c.constraints.pass).length,
+    jev_acceptable_ok: jevCmp.filter((c) => c.constraints.acceptable_ok).length,
+    jev_unacceptable_hits: jevCmp.filter((c) => c.constraints.unacceptable_hit.length).length,
+    jev_contradictions: jevCmp.filter((c) => c.constraints.invariant_violations.length).length,
+    jev_human_final: jevCmp.filter((c) => c.final_tier === 'human').length,
+    rules_evaluated: comparison.filter((c) => c.resolver_actual === 'rules' && c.constraints).length,
+    rules_pass: comparison.filter((c) => c.resolver_actual === 'rules' && c.constraints?.pass).length,
+    invariant_violation_counts: jevCmp.flatMap((c) => c.constraints.invariant_violations).reduce((m, id) => ({ ...m, [id]: (m[id] ?? 0) + 1 }), {}),
+  };
   return {
     variant: out.variant,
+    label: out.label ?? null,
+    decision_type: out.decision_type,
+    constraints: constraintSummary,
     thresholds,
     counts: { cases: records.length, rules_first: rulesFirst.length, jev_ok: jevOk.length, jev_failed: jevFailed.length, stopped: out.stopped ?? null },
     confidence: stats(confidences),
@@ -481,13 +519,28 @@ function fmtStats(s) { return s.n ? `n=${s.n} min=${s.min} median=${s.median} me
 export function analyzeToMarkdown(out, compare = null) {
   const a = analyze(out);
   const L = [];
-  L.push(`# Calibration analysis — variant=${a.variant} (${out.merged ? `merged from ${out.sources.length} run(s): ${out.sources.join(', ')}` : (out.started_at ?? '')})`);
+  L.push(`# Calibration analysis — ${a.decision_type ?? ''} ${a.label ? `label=${a.label}` : `variant=${a.variant}`} (${out.merged ? `merged from ${out.sources.length} run(s): ${out.sources.join(', ')}` : (out.started_at ?? '')})`);
   L.push('');
   L.push(`- thresholds: auto_min=${a.thresholds.auto_min} review_min=${a.thresholds.review_min}`);
   L.push(`- cases=${a.counts.cases} rules_first=${a.counts.rules_first} jev_ok=${a.counts.jev_ok} jev_failed=${a.counts.jev_failed}${a.counts.stopped ? ` STOPPED after ${a.counts.stopped.after_case} (${a.counts.stopped.reason})` : ''}`);
   L.push(`- jev confidence: ${fmtStats(a.confidence)}`);
   L.push(`- tier at current thresholds (jev ok only): auto=${a.tier_distribution_at_current_thresholds.auto} review=${a.tier_distribution_at_current_thresholds.review} human=${a.tier_distribution_at_current_thresholds.human}`);
   L.push(`- latency_ms: ${fmtStats(a.latency_ms)}; tokens in=${a.tokens.input} out=${a.tokens.output}; est. cost=${a.tokens.estimated_cost_usd_micros} USD micros`);
+  const cs = a.constraints;
+  L.push(`- constraints (jev): pass=${cs.jev_pass}/${cs.jev_evaluated} acceptable_ok=${cs.jev_acceptable_ok} unacceptable_hits=${cs.jev_unacceptable_hits} contradictions=${cs.jev_contradictions} final_human=${cs.jev_human_final}; rules pass=${cs.rules_pass}/${cs.rules_evaluated}`);
+  if (Object.keys(cs.invariant_violation_counts).length) L.push(`- invariant violations: ${JSON.stringify(cs.invariant_violation_counts)}`);
+  L.push('');
+  L.push('## Constraints per case');
+  L.push('');
+  L.push('| case | resolver | outcome | field confidence | pass | acceptable missed | unacceptable hit | invariant violations | final |');
+  L.push('|---|---|---|---|---|---|---|---|---|');
+  for (const c of a.comparison) {
+    const o = c.jev_outcome ?? null;
+    const oc = o ? Object.entries(o).map(([k, v]) => `${k}=${v}`).join(', ') : (c.resolver_actual === 'rules' ? '(rules)' : '-');
+    const fc = c.field_confidence ? Object.entries(c.field_confidence).map(([k, v]) => `${k}=${r3(v)}`).join(', ') : '-';
+    const k = c.constraints;
+    L.push(`| ${c.case_id} | ${c.resolver_actual} | ${oc} | ${fc} | ${k ? (k.pass ? 'yes' : 'NO') : '-'} | ${k?.acceptable_missed?.join(' ') || '-'} | ${k?.unacceptable_hit?.join(' ') || '-'} | ${k?.invariant_violations?.join(' ') || '-'} | ${c.final_resolved_by}/${c.final_tier} |`);
+  }
   L.push('');
   L.push('## Per case');
   L.push('');
@@ -525,7 +578,10 @@ export function analyzeToMarkdown(out, compare = null) {
   if (compare) {
     const b = analyze(compare);
     L.push('');
-    L.push(`## Compare: ${a.variant} vs ${b.variant}`);
+    L.push(`## Compare: ${a.label ?? a.variant} vs ${b.label ?? b.variant}`);
+    L.push('');
+    L.push(`- constraints ${a.label ?? a.variant}: ${JSON.stringify(a.constraints)}`);
+    L.push(`- constraints ${b.label ?? b.variant}: ${JSON.stringify(b.constraints)}`);
     L.push('');
     L.push(`- confidence ${a.variant}: ${fmtStats(a.confidence)}`);
     L.push(`- confidence ${b.variant}: ${fmtStats(b.confidence)}`);
@@ -572,6 +628,19 @@ async function main() {
       await cmdRun(opts, process.env);
       return;
     case 'analyze': {
+      if (opts.compare && positional.length) {
+        // --compare <before.json> と after（位置引数・複数可）を別々に統合して比較する（label が同じでも混ぜない）
+        const load = (fs) => Object.values(mergeResults(resolveResultFiles(fs).map((f) => JSON.parse(readFileSync(f, 'utf8')))))[0];
+        const after = load(positional);
+        const before = load([String(opts.compare)]);
+        process.stdout.write(`${analyzeToMarkdown(after, before)}
+
+---
+
+${analyzeToMarkdown(before)}
+`);
+        return;
+      }
       const files = resolveResultFiles([...positional, ...(opts.compare ? [String(opts.compare)] : [])]);
       const outs = files.map((f) => JSON.parse(readFileSync(f, 'utf8')));
       if (outs.length === 1) { process.stdout.write(`${analyzeToMarkdown(outs[0])}\n`); return; }
@@ -583,7 +652,7 @@ async function main() {
       return;
     }
     default:
-      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--only a,b] [--out file] [--offline] | analyze [<results.json|dir>...] [--compare other.json]\n');
+      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--cases file] [--label name] [--only a,b] [--out file] [--offline] | analyze [<results.json|dir>...] [--compare other.json]\n');
       process.exitCode = 2;
   }
 }

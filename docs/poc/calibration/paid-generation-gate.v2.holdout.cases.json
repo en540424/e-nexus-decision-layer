@@ -1,0 +1,29 @@
+{
+  "$comment": "paid-generation-gate 第2回 Calibration の holdout（2026-09-26・修正の前に作成して凍結）。修正の設計には使わず、修正後に 1 回だけ流す。synthetic・PII なし。",
+  "decision_type": "paid-generation-gate",
+  "application_id": "calibration-openmontage",
+  "project_id": "openmontage",
+  "cases": [
+    {
+      "case_id": "PG-H1-aerial-night-city-no-footage",
+      "category": "holdout: 素材なし・写実的な空撮",
+      "facts": ["素材なし", "写実的な夜景空撮"],
+      "input": { "asset_kind": "b-roll", "purpose": "Photoreal aerial b-roll of a large city at night for a 6-second intro; we have no aerial footage", "style": "photoreal", "duration_sec": 6, "has_reference_media": false, "has_local_assets": false, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["en-generate-hub", "human-review"], "paid_generation_required": [true] }, "unacceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-H2-existing-photo-with-text-overlay",
+      "category": "holdout: 既存写真＋文字入れ",
+      "facts": ["既存の製品写真がある", "白背景と文字を載せるだけ"],
+      "input": { "asset_kind": "product-shot", "purpose": "Place our existing product photo on a plain white background and add the product name as text", "style": "unspecified", "has_reference_media": false, "has_local_assets": true, "estimated_paid_cost_usd_micros": 200000, "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["local", "remotion"], "paid_generation_required": [false] }, "unacceptable": { "recommended_route": ["en-generate-hub"], "paid_generation_required": [true] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "PG-H3-tbd-purpose",
+      "category": "holdout: 目的未定",
+      "facts": ["purpose が未定"],
+      "input": { "asset_kind": "other", "purpose": "TBD", "language": "ja" },
+      "expected": { "resolver": "jev", "acceptable": { "recommended_route": ["human-review"], "human_review_required": [true] }, "unacceptable": { "recommended_route": ["en-generate-hub", "local"] }, "ambiguity": "high" }
+    }
+  ]
+}

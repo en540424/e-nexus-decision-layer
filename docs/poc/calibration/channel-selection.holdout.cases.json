@@ -1,0 +1,29 @@
+{
+  "$comment": "channel-selection の holdout（2026-09-26・Calibration 修正の前に作成して凍結）。修正の設計・調整には使わず、修正後に 1 回だけ流して過学習していないかを見る。synthetic・PII なし。",
+  "decision_type": "channel-selection",
+  "application_id": "calibration-growth",
+  "project_id": "e-nexus-decision-layer",
+  "cases": [
+    {
+      "case_id": "CS-H1-tiktok-short-vertical-video",
+      "category": "holdout: TikTok × 縦型ショート動画",
+      "facts": ["tiktok は登録済み", "未公開", "15秒の縦型動画"],
+      "input": { "content_id": "cal-cs-h1", "source_type": "video-project", "content_type": "video", "media_type": "video", "channel": "tiktok", "channel_registered": true, "channel_publication_state": "not-published", "title": "足場の解体を15秒で", "summary": "足場の解体作業を早回しで撮影した15秒の縦型動画。字幕のみでナレーション無し。", "language": "ja", "paid_listing": false, "human_channel_preference": "none" },
+      "expected": { "resolver": "jev", "acceptable": { "channel_status": ["primary", "secondary"], "content_channel_fit": ["high", "medium"], "recommended_route": ["channel-candidate-review"] }, "unacceptable": { "channel_status": ["unavailable", "excluded", "future", "internal", "not_recommended"], "recommended_route": ["hold", "not-a-candidate"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "CS-H2-instagram-long-text-only",
+      "category": "holdout: Instagram × 画像の無い長文",
+      "facts": ["instagram は登録済み", "未公開", "長文テキストのみ"],
+      "input": { "content_id": "cal-cs-h2", "source_type": "note-draft", "content_type": "article", "media_type": "text", "channel": "instagram", "channel_registered": true, "channel_publication_state": "not-published", "title": "会社を継いで5年、数字で振り返る", "summary": "事業承継から5年間の売上・人員・案件数の推移を文章と表で振り返る約5000字の記事。写真やイラストは無い。", "language": "ja", "paid_listing": false, "human_channel_preference": "none" },
+      "expected": { "resolver": "jev", "acceptable": { "channel_status": ["not_recommended", "secondary"], "content_channel_fit": ["low", "medium"] }, "unacceptable": { "channel_status": ["primary", "unavailable", "excluded", "future", "internal"], "content_channel_fit": ["high"], "recommended_route": ["hold"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "CS-H3-threads-opt-in-tip",
+      "category": "holdout: Threads（opt-in あり）× 短い tips",
+      "facts": ["threads は登録済み", "Human opt-in あり", "未公開", "短文"],
+      "input": { "content_id": "cal-cs-h3", "source_type": "sns-draft", "content_type": "post", "media_type": "text", "channel": "threads", "channel_registered": true, "channel_publication_state": "not-published", "title": "AIに頼む前に書く3行", "summary": "AIに仕事を頼む前に、目的・完成条件・やらないことの3行を書くと失敗が減るという短い tips 投稿。", "excerpt": "AIに頼む前に3行だけ書く。何のため。どうなったら完成。何はやらない。", "language": "ja", "paid_listing": false, "human_opt_in": true, "human_channel_preference": "none" },
+      "expected": { "resolver": "jev", "acceptable": { "channel_status": ["primary", "secondary"], "content_channel_fit": ["high", "medium"], "recommended_route": ["channel-candidate-review"] }, "unacceptable": { "channel_status": ["unavailable", "excluded", "future", "internal"], "recommended_route": ["hold"] }, "ambiguity": "low" }
+    }
+  ]
+}
