@@ -1,6 +1,6 @@
 # OpenMontage から使う（2026-09-26・MA-29 × MA-30）
 
-OpenMontage（`C:\Users\envie\poc\openmontage-ma29`、MA-29 技術PoC成功・条件付き採用候補）の **有料生成の直前**で、
+OpenMontage（`<OpenMontage cloneのパス>`、MA-29 技術PoC成功・条件付き採用候補）の **有料生成の直前**で、
 Common Decision Gateway の `paid-generation-gate` を呼ぶ thin consumer adapter。`application_id: openmontage`・PERSONAL / DEV のみ。
 
 ```
@@ -24,7 +24,7 @@ OpenMontage workflow（agent が有料 tool＝video_generation / image_generatio
 ## 使い方
 
 ```bash
-python C:/Users/envie/e-nexus-decision-layer/integrations/openmontage/enexus_openmontage_decision.py --text < asset-request.json
+python <e-nexus-decision-layerのパス>/integrations/openmontage/enexus_openmontage_decision.py --text < asset-request.json
 ```
 
 asset request（OpenMontage workflow が組む構造情報。`tool.estimate_cost()` / `dry_run()` の値を使ってよい）：
@@ -59,7 +59,7 @@ asset request（OpenMontage workflow が組む構造情報。`tool.estimate_cost
 ## テスト
 
 ```bash
-cd C:/Users/envie/e-nexus-decision-layer/integrations/openmontage
+cd integrations/openmontage   # repo ルートから
 python -m unittest discover -s . -p "test_*.py"
 ```
 
