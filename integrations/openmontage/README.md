@@ -45,7 +45,7 @@ Human -> Launcher（enexus_openmontage_launcher.py）
 - **環境**：DEV のみ。`EDL_ENVIRONMENT` が staging / production なら起動しない
 - **観測**：`data/openmontage-launcher/launcher-events.jsonl`（検知・判定・route・confidence・latency・retry・重複スキップ・agent の起動/終了）。
   OpenMontage の `.env` に有料 provider の鍵が書かれていれば起動時に警告する（Launcher は .env を変えない）
-- **監視されない経路**：Launcher を通さず clone で直接 agent を起動した場合、その間は監視されない（次に Launcher を起動した時の走査で拾う）
+- **監視されない経路**：autostart（下の「常駐」節）を**登録していない時だけ**、Launcher を通さず clone で直接 agent を起動するとその間は監視されない（次に watcher / Launcher が起動した時の走査で拾う）。登録済みなら常駐 watcher が監視する
 
 ## 常駐：Windows ログオン時に watcher を自動起動する（2026-09-26〜・Launcher の起動を忘れても Decision が入る）
 
