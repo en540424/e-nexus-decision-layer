@@ -185,6 +185,8 @@ node scripts/poc-calibration.mjs analyze
 | **Wrapper Design Ready** | **YES** | route semantics 安定（6/7・整合 7/7）、Human Gate 実測（E1）、confidence 挙動理解（min・ノイズ床・auto 0/14）、閾値/aggregate 確定、metering 実測、cost ≈52 USD micros/件、429 挙動既知（burst 禁止、runner と同じ pacing） |
 | **Production Auto Ready** | **NO** | auto 0/14。human_review_required の Hybrid 化と、より多くの実データ（n=7 は小）が前提。wrapper は review / human 経路だけを前提に設計する |
 
+> 2026-09-26 追記：Hybrid（`human_review_required` escalation-only）・自己矛盾検知（`x-outcome-invariants` 7 件）・`local_sufficient` / `remotion_suitable` の「能力」定義化を実装し、第2回実測（評価 12・holdout 3）で矛盾 0・制約合格 15/15・auto 2 / review 8（評価）。auto は `en-generate-hub` route でも承認ではなく MA-17 の Human-only 承認が必ず残る。詳細は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`。本表（2026-09-19）は履歴として残す
+
 **remaining uncertainty**：サンプル 7 件／同一入力のノイズ ±0.06／C1 の期待定義／TypeSafe Direct 実疎通（招待待ち、本 Calibration を block しない）／本番入力分布での confidence（今回は設計ケース）
 
 **follow-up（MA-30 の完了を block しない。番号は Human 発番、台帳慣例なら `MA-30-1` / `MA-30-2`）**

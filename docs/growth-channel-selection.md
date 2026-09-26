@@ -92,8 +92,8 @@ reason code 専用 field は置かない。決定的な理由は `rationale` の
 - 各 outcome field の `description` = question instructions、enum 値ごとの `x-enum-descriptions` = choice criteria、outcome の `description` = `state.brief`（投稿を選ばない・公開承認ではない・content-publish-gate とは別の判定であることを明記）
 - 特定の答えへ誘導する文言を書かない（steering 語句をテストで機械検査。content-publish-gate と同じチェック）
 - `human_review_required` は content-publish-gate と同じ設計思想（観察可能なトリガーで定義）を、fit 判定という別ドメインに適用：fit が曖昧・content type が媒体にとって異例・signal が矛盾、のいずれか
-- confidence 合成（min）・閾値（0.85 / 0.60）は**変更していない**。field 数は 4（content-publish-gate の 5 より少ない。channel_status と recommended_route の一部が重複する情報を持つため content_channel_fit を追加してもなお content-publish-gate 以下に収めた）
-- **既知のギャップ（content-publish-gate と同じクラス）**：Jev が `channel_status` と `recommended_route` の間で一貫しない組合せ（例：`not_recommended` なのに `channel-candidate-review`）を高 confidence で返しても、field 間の整合チェックは無い（MA-30 follow-up ② Hybrid で閉じる対象）。投稿は常に Human なので安全側だが、tests で現状を固定している
+- 閾値（0.85 / 0.60）は**変更していない**。2026-09-26 実JEV Calibration で `human_review_required` を escalation-only（true なら常に human・確信度は min に入れない。follow-up ② Hybrid）にした。field 数は 4（content-publish-gate の 5 より少ない。channel_status と recommended_route の一部が重複する情報を持つため content_channel_fit を追加してもなお content-publish-gate 以下に収めた）
+- **（2026-09-26 解消）旧・既知のギャップ**：`recommended_route` は Jev に訊かず `channel_status` から導出（`x-jev-derive`）するため status と route は矛盾し得ない。status × fit の矛盾（primary × low 等）は `x-outcome-invariants` で検知し confidence 0 → human。Jev に提示する選択肢は Rules First 通過後に到達し得る値（status＝primary / secondary / not_recommended、fit＝high / medium / low）だけ（`x-jev-enum`）。媒体の意味は `input_notes`（`channel` の `x-enum-descriptions`）で渡す。実測は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`
 
 ## 5. Human-only publish の扱い（別レイヤで分離）
 

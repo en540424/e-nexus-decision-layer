@@ -78,9 +78,9 @@ reason code 専用 field は置かない（Jev が全 field に答える設計�
 - 各 outcome field の `description` = question instructions（具体的な判定基準を列挙）、enum 値ごとの `x-enum-descriptions` = choice criteria、outcome の `description` = `state.brief`（公開しない・承認ではないことを明記）
 - 特定の答えへ誘導する文言を書かない（steering 語句をテストで機械検査）
 - `human_review_required` は Calibration で limiting field になった経緯（MA-30 分類 D）を踏まえ、「人が見るべきか」という抽象的な問いではなく**観察可能なトリガー**（特定可能な第三者・法務/医療/税務/金融の主張・会社代表の表明・価格/販売条件・個人情報・検証不能な事実）で定義した。caller がフラグで分かっているものは rules が決定的に true にする
-- confidence 合成（min）・閾値（0.85 / 0.60）は**変更していない**。field 数は 5（paid-generation-gate と同数）に抑えた
-- **MA-30 follow-up ②（`human_review_required` の Hybrid 化：Jev＋policy＋他 field confidence＋矛盾検出から決定的に導く）は未実装のまま**。route と他 field の矛盾検出もその範囲
-- **既知のギャップ（Hybrid で閉じる対象）**：Jev が `risk_level=high` かつ `human_review_required=false` を高 confidence で返すと tier=auto になる（field 間の整合チェックが無いため）。公開は常に Human なので安全側ではあるが、「high なのに要注意フラグが立たない」状態を今は検出しない（tests で現状を固定）
+- 閾値（0.85 / 0.60）は**変更していない**。field 数は 5（paid-generation-gate と同数）。2026-09-26 から `publish_candidate` は `recommended_route=human-publish-review` からの導出（`x-jev-derive`）で、Jev への質問は 4 問
+- **MA-30 follow-up ② Hybrid は 2026-09-26 に実装**：`human_review_required` は escalation-only（true なら常に human・確信度は min に入れない）。route と他 field の矛盾は `x-outcome-invariants`（6 件）で検知し confidence 0 → human
+- **（2026-09-26 解消）旧・既知のギャップ**：`risk_level=high` かつ `human_review_required=false` は不変条件 `high-risk-requires-human-review` 違反として confidence 0 → human（tests で固定）。Secret・外部公開禁止情報は `risk_flags.confidential_or_secret` ＋ rule で決定的に hold（Jev に本文を見せない）。実測は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`
 
 ## 5. Human-only publish の扱い（別レイヤで分離）
 

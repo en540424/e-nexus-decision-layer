@@ -1,0 +1,3874 @@
+{
+  "schema": "edl-poc-calibration-v1",
+  "decision_type": "content-publish-gate",
+  "variant": "improved",
+  "label": "cal2-improved1-content-publish-gate",
+  "cases_path": "docs/poc/calibration/content-publish-gate.cases.json",
+  "started_at": "2026-09-26T03:02:54.324Z",
+  "finished_at": "2026-09-26T03:03:06.175Z",
+  "node": "v24.13.1",
+  "provider": {
+    "route": "vercel",
+    "model_id": "typesafe-ai/jev",
+    "zdr": false
+  },
+  "thresholds": {
+    "auto_min": 0.85,
+    "review_min": 0.6
+  },
+  "usage_path": "C:\\Users\\envie\\e-nexus-decision-layer\\data\\usage\\usage.jsonl",
+  "cases_total": 17,
+  "stopped": null,
+  "records": [
+    {
+      "case_id": "CP-J1-ordinary-note-article",
+      "category": "問題のない一般投稿（note・人間が執筆・チェック済み）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j1",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "朝の15分で現場の段取りが変わった",
+        "summary": "毎朝15分だけ職人さんと段取りを確認する習慣を始めて、手戻りが減った体験を書いた記事。",
+        "excerpt": "最初は面倒がられた。でも3週間たつと、向こうから『今日の段取りは？』と聞いてくるようになった。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "duplicate_confirmed": false,
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "publish_candidate": [
+            true
+          ],
+          "revision_needed": [
+            false
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "blocked"
+          ],
+          "risk_level": [
+            "high",
+            "unassessed"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030254326_0ea89b62",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.24,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 681,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1763,
+        "output_tokens": 137,
+        "estimated_cost_usd_micros": 74,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": false,
+          "risk_level": "low",
+          "human_review_required": false,
+          "recommended_route": "human-publish-review",
+          "publish_candidate": true
+        },
+        "field_confidence": {
+          "revision_needed": 0.5800000000000001,
+          "risk_level": 0.99,
+          "human_review_required": 0.24,
+          "recommended_route": 0.97
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.24,
+          "tier": "human",
+          "ms": 681,
+          "latency_ms": 681,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1763,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 74,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:54.327Z",
+        "decision_id": "dec_20260926030254326_0ea89b62",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.24,
+            "tier": "human",
+            "latency_ms": 681,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1763,
+            "output_tokens": 137,
+            "estimated_cost_usd_micros": 74,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1763,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 74
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 685
+    },
+    {
+      "case_id": "CP-J2-x-short-announcement",
+      "category": "問題のない一般投稿（X・opt-in あり）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j2",
+        "source_type": "sns-draft",
+        "content_type": "post",
+        "channel": "x",
+        "channel_registered": true,
+        "title": "旅レートカメラ 更新しました",
+        "summary": "円換算アプリの更新告知。オフラインでも前回レートで計算できるようになった。",
+        "excerpt": "旅レートカメラを更新しました。電波の無い場所でも、前回のレートで円に換算できます。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed",
+        "human_opt_in": true
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "publish_candidate": [
+            true
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "blocked"
+          ],
+          "risk_level": [
+            "high",
+            "unassessed"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030255316_599af99d",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.28,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 329,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1739,
+        "output_tokens": 137,
+        "estimated_cost_usd_micros": 73,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": false,
+          "risk_level": "low",
+          "human_review_required": false,
+          "recommended_route": "human-publish-review",
+          "publish_candidate": true
+        },
+        "field_confidence": {
+          "revision_needed": 0.62,
+          "risk_level": 0.93,
+          "human_review_required": 0.28,
+          "recommended_route": 0.95
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.28,
+          "tier": "human",
+          "ms": 329,
+          "latency_ms": 329,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1739,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 73,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:55.316Z",
+        "decision_id": "dec_20260926030255316_599af99d",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.28,
+            "tier": "human",
+            "latency_ms": 329,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1739,
+            "output_tokens": 137,
+            "estimated_cost_usd_micros": 73,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1739,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 73
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 329
+    },
+    {
+      "case_id": "CP-J3-unflagged-medical-claim",
+      "category": "誤情報の可能性・医療の断定（caller の flag 無し）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j3",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "現場仕事の腰痛はこれで治る",
+        "summary": "毎日5分のストレッチで腰痛が完治すると紹介する記事。",
+        "excerpt": "このストレッチを続ければ、腰痛は病院に行かなくても必ず完治します。薬も不要です。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "hold",
+            "needs-revision",
+            "blocked"
+          ],
+          "risk_level": [
+            "medium",
+            "high"
+          ],
+          "human_review_required": [
+            true
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030255952_40f392c5",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "jev",
+        "tier": "human",
+        "confidence": 0.74,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "revision_needed=0.74, risk_level=0.99, human_review_required=0.92, recommended_route=0.86"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.74,
+        "tier": "review",
+        "reason": null,
+        "latency_ms": 491,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1725,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "retry_count": null,
+        "final": true,
+        "continue_reason": null,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.74,
+          "risk_level": 0.99,
+          "human_review_required": 0.9199999999999999,
+          "recommended_route": 0.86
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.74,
+          "tier": "review",
+          "ms": 491,
+          "latency_ms": 491,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1725,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:55.952Z",
+        "decision_id": "dec_20260926030255952_40f392c5",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": "typesafe-ai",
+        "model": "jev",
+        "decision_type": "content-publish-gate",
+        "resolved_by": "jev",
+        "request_count": 1,
+        "input_tokens": 1725,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.74,
+            "tier": "review",
+            "latency_ms": 491,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1725,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 72,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 2,
+          "ok_attempts": 1,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1725,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 491
+    },
+    {
+      "case_id": "CP-J4-unflagged-personal-phone",
+      "category": "個人情報を含む可能性（caller の flag 無し）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j4",
+        "source_type": "sns-draft",
+        "content_type": "post",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "現場見学の申し込み方法",
+        "summary": "現場見学会の申し込み方法を案内する投稿。",
+        "excerpt": "申し込みは現場責任者の個人携帯 090-0000-0000 へ直接お電話ください。夜でも出ます。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision",
+            "hold",
+            "blocked"
+          ],
+          "risk_level": [
+            "medium",
+            "high"
+          ],
+          "human_review_required": [
+            true
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030256744_03847ea0",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "jev",
+        "tier": "human",
+        "confidence": 0.8200000000000001,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "revision_needed=0.82, risk_level=0.89, human_review_required=0.84, recommended_route=0.92"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.8200000000000001,
+        "tier": "review",
+        "reason": null,
+        "latency_ms": 492,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1725,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "retry_count": null,
+        "final": true,
+        "continue_reason": null,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.8200000000000001,
+          "risk_level": 0.89,
+          "human_review_required": 0.8400000000000001,
+          "recommended_route": 0.92
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.8200000000000001,
+          "tier": "review",
+          "ms": 492,
+          "latency_ms": 492,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1725,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:56.744Z",
+        "decision_id": "dec_20260926030256744_03847ea0",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": "typesafe-ai",
+        "model": "jev",
+        "decision_type": "content-publish-gate",
+        "resolved_by": "jev",
+        "request_count": 1,
+        "input_tokens": 1725,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.8200000000000001,
+            "tier": "review",
+            "latency_ms": 492,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1725,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 72,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 2,
+          "ok_attempts": 1,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1725,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 494
+    },
+    {
+      "case_id": "CP-J5-unsourced-certification-claim",
+      "category": "source 不足・claim の裏付け不足",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j5",
+        "source_type": "product-page",
+        "content_type": "page",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "経費アプリの紹介",
+        "summary": "自社の経費アプリを紹介するページ。",
+        "excerpt": "本アプリは国の認定を受けた唯一の経費アプリです。税務調査でも必ず通ります。",
+        "language": "ja",
+        "provenance": "ai-draft-human-edited",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "hold",
+            "needs-revision",
+            "blocked"
+          ],
+          "risk_level": [
+            "medium",
+            "high"
+          ],
+          "human_review_required": [
+            true
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030257553_ad4093ba",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "jev",
+        "tier": "human",
+        "confidence": 0.7,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "revision_needed=0.70, risk_level=0.98, human_review_required=0.92, recommended_route=0.88"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.7,
+        "tier": "review",
+        "reason": null,
+        "latency_ms": 514,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1711,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "retry_count": null,
+        "final": true,
+        "continue_reason": null,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.7,
+          "risk_level": 0.98,
+          "human_review_required": 0.9199999999999999,
+          "recommended_route": 0.88
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.7,
+          "tier": "review",
+          "ms": 514,
+          "latency_ms": 514,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1711,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:57.553Z",
+        "decision_id": "dec_20260926030257553_ad4093ba",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": "typesafe-ai",
+        "model": "jev",
+        "decision_type": "content-publish-gate",
+        "resolved_by": "jev",
+        "request_count": 1,
+        "input_tokens": 1711,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.7,
+            "tier": "review",
+            "latency_ms": 514,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1711,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 72,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 2,
+          "ok_attempts": 1,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1711,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 514
+    },
+    {
+      "case_id": "CP-J6-affiliate-without-disclosure",
+      "category": "affiliate disclosure 必要",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j6",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "現場で使っているおすすめ工具5選",
+        "summary": "現場で実際に使っている工具5つを紹介し、購入リンクを載せる記事。",
+        "excerpt": "どれも本当に使っているものだけ。下のリンクから買えます（リンクはアフィリエイトリンクです、とは書いていない）。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision",
+            "hold"
+          ],
+          "risk_level": [
+            "medium",
+            "high"
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review",
+            "blocked"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "medium"
+      },
+      "decision_id": "dec_20260926030258374_d59409a1",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "jev",
+        "tier": "human",
+        "confidence": 0.6799999999999999,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "medium",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "revision_needed=0.68, risk_level=0.80, human_review_required=0.72, recommended_route=0.91"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.6799999999999999,
+        "tier": "review",
+        "reason": null,
+        "latency_ms": 475,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1748,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 73,
+        "retry_count": null,
+        "final": true,
+        "continue_reason": null,
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "medium",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.6799999999999999,
+          "risk_level": 0.8,
+          "human_review_required": 0.72,
+          "recommended_route": 0.91
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 1,
+          "latency_ms": 1,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.6799999999999999,
+          "tier": "review",
+          "ms": 475,
+          "latency_ms": 475,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1748,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:58.374Z",
+        "decision_id": "dec_20260926030258374_d59409a1",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": "typesafe-ai",
+        "model": "jev",
+        "decision_type": "content-publish-gate",
+        "resolved_by": "jev",
+        "request_count": 1,
+        "input_tokens": 1748,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 73,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 1,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.6799999999999999,
+            "tier": "review",
+            "latency_ms": 475,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1748,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 73,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 2,
+          "ok_attempts": 1,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1748,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 477
+    },
+    {
+      "case_id": "CP-J7-unfinished-draft",
+      "category": "draft 状態（未完成）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j7",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "見積もりソフトを3つ試した",
+        "summary": "見積もりソフト3種類を比較した記事（執筆途中）。",
+        "excerpt": "1つ目は操作が簡単だった。2つ目は（TODO：ここに比較表を入れる）。結論：（TODO：あとで書く）",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "not-run"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision"
+          ],
+          "revision_needed": [
+            true
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review",
+            "blocked"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030259156_c0545adc",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.040000000000000036,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 737,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1728,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 73,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "low",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.9199999999999999,
+          "risk_level": 0.88,
+          "human_review_required": 0.040000000000000036,
+          "recommended_route": 1
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.040000000000000036,
+          "tier": "human",
+          "ms": 737,
+          "latency_ms": 737,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1728,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 1,
+          "latency_ms": 1,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:02:59.156Z",
+        "decision_id": "dec_20260926030259156_c0545adc",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.040000000000000036,
+            "tier": "human",
+            "latency_ms": 737,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1728,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 73,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 1,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1728,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 740
+    },
+    {
+      "case_id": "CP-J8-policy-state-unknown",
+      "category": "policy 状態が未評価（それ以外は問題なし）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j8",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "雨の日の現場でやること",
+        "summary": "雨で作業が止まった日に、事務所でやっている片付けと準備を紹介する記事。",
+        "excerpt": "雨の日は道具の手入れの日。錆びる前に拭く、それだけで工具の寿命が変わる。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "unknown",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "hold",
+            "human-publish-review"
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "blocked",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "high",
+            "unassessed"
+          ]
+        },
+        "ambiguity": "medium"
+      },
+      "decision_id": "dec_20260926030300198_0f075552",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.45999999999999996,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 529,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1730,
+        "output_tokens": 137,
+        "estimated_cost_usd_micros": 73,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": false,
+          "risk_level": "low",
+          "human_review_required": false,
+          "recommended_route": "human-publish-review",
+          "publish_candidate": true
+        },
+        "field_confidence": {
+          "revision_needed": 0.45999999999999996,
+          "risk_level": 1,
+          "human_review_required": 0.6,
+          "recommended_route": 0.94
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.45999999999999996,
+          "tier": "human",
+          "ms": 529,
+          "latency_ms": 529,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1730,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 73,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:00.198Z",
+        "decision_id": "dec_20260926030300198_0f075552",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.45999999999999996,
+            "tier": "human",
+            "latency_ms": 529,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1730,
+            "output_tokens": 137,
+            "estimated_cost_usd_micros": 73,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1730,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 73
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 531
+    },
+    {
+      "case_id": "CP-J9-youtube-text-only",
+      "category": "platform 制約（YouTube に動画の無い文章）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j9",
+        "source_type": "dev-log",
+        "content_type": "article",
+        "channel": "youtube",
+        "channel_registered": true,
+        "title": "OCR 精度改善メモ",
+        "summary": "レシート読み取りの前処理を調整した文章だけの開発メモ。動画は無い。",
+        "excerpt": "二値化の閾値を適応的にしたら、影のあるレシートでも安定した。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision",
+            "blocked",
+            "hold"
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030301040_999a8313",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.1200000000000001,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 637,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1718,
+        "output_tokens": 133,
+        "estimated_cost_usd_micros": 72,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "low",
+          "human_review_required": true,
+          "recommended_route": "blocked",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.6599999999999999,
+          "risk_level": 0.98,
+          "human_review_required": 0.1200000000000001,
+          "recommended_route": 0.93
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.1200000000000001,
+          "tier": "human",
+          "ms": 637,
+          "latency_ms": 637,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1718,
+          "output_tokens": 133,
+          "estimated_cost_usd_micros": 72,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:01.040Z",
+        "decision_id": "dec_20260926030301040_999a8313",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.1200000000000001,
+            "tier": "human",
+            "latency_ms": 637,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1718,
+            "output_tokens": 133,
+            "estimated_cost_usd_micros": 72,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1718,
+          "output_tokens": 133,
+          "estimated_cost_usd_micros": 72
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 638
+    },
+    {
+      "case_id": "CP-J10-harsh-competitor-claim",
+      "category": "高 risk だが修正可能（他社への断定的な批判）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j10",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "他社の見積もりツールをやめた理由",
+        "summary": "以前使っていた他社ツールをやめた理由を書く記事。",
+        "excerpt": "某大手A社のツールは詐欺まがいだ。解約させないように作られている。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "hold",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "medium",
+            "high"
+          ],
+          "human_review_required": [
+            true
+          ],
+          "publish_candidate": [
+            false
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030301989_cb263209",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.3600000000000001,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 488,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1721,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 72,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "medium",
+          "human_review_required": true,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.3600000000000001,
+          "risk_level": 0.69,
+          "human_review_required": 0.8,
+          "recommended_route": 0.7
+        },
+        "limiting_field": "revision_needed",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 1,
+          "latency_ms": 1,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.3600000000000001,
+          "tier": "human",
+          "ms": 488,
+          "latency_ms": 488,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1721,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:01.989Z",
+        "decision_id": "dec_20260926030301989_cb263209",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 1,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.3600000000000001,
+            "tier": "human",
+            "latency_ms": 488,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1721,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 72,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1721,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 72
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 490
+    },
+    {
+      "case_id": "CP-J11-unedited-ai-draft",
+      "category": "境界：AI 下書き未編集・チェック未実施",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j11",
+        "source_type": "sns-draft",
+        "content_type": "post",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "生産性を高める5つの習慣",
+        "summary": "生産性を高める一般的な習慣を5つ紹介する投稿。",
+        "excerpt": "現代のビジネスパーソンにとって、生産性の向上は避けては通れない課題です。本稿では5つの習慣をご紹介します。",
+        "language": "ja",
+        "provenance": "ai-draft-unedited",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "not-run"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision",
+            "hold",
+            "human-publish-review"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "blocked"
+          ],
+          "risk_level": [
+            "high"
+          ]
+        },
+        "ambiguity": "medium"
+      },
+      "decision_id": "dec_20260926030302783_57d7030f",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.18000000000000005,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 546,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1743,
+        "output_tokens": 136,
+        "estimated_cost_usd_micros": 73,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": true,
+          "risk_level": "low",
+          "human_review_required": false,
+          "recommended_route": "needs-revision",
+          "publish_candidate": false
+        },
+        "field_confidence": {
+          "revision_needed": 0.6200000000000001,
+          "risk_level": 0.79,
+          "human_review_required": 0.18000000000000005,
+          "recommended_route": 0.84
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 1,
+          "latency_ms": 1,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.18000000000000005,
+          "tier": "human",
+          "ms": 546,
+          "latency_ms": 546,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1743,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:02.783Z",
+        "decision_id": "dec_20260926030302783_57d7030f",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 1,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.18000000000000005,
+            "tier": "human",
+            "latency_ms": 546,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1743,
+            "output_tokens": 136,
+            "estimated_cost_usd_micros": 73,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1743,
+          "output_tokens": 136,
+          "estimated_cost_usd_micros": 73
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 549
+    },
+    {
+      "case_id": "CP-J12-business-figures",
+      "category": "境界：自社の売上数字を含む一般記事",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-j12",
+        "source_type": "note-draft",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "継いで3年、売上はこう変わった",
+        "summary": "事業承継後3年間の自社の売上の推移と、効いた施策を振り返る記事。",
+        "excerpt": "1年目は前年割れ。2年目で横ばい。3年目にようやく前年比110%に戻った。効いたのは値上げより、断る仕事を決めたことだった。",
+        "language": "ja",
+        "provenance": "human-written",
+        "prior_publication_state": "unpublished",
+        "policy_state": "clear",
+        "review_state": "passed"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "recommended_route": [
+            "human-publish-review",
+            "hold"
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "blocked"
+          ],
+          "risk_level": [
+            "unassessed"
+          ]
+        },
+        "ambiguity": "medium"
+      },
+      "decision_id": "dec_20260926030303639_177e53cc",
+      "rules_first_hit": false,
+      "jev_called": true,
+      "final": {
+        "resolved_by": "human",
+        "tier": "human",
+        "confidence": 0,
+        "outcome": {
+          "escalated": true,
+          "human_review_required": true,
+          "reason": "no automated adapter could decide",
+          "decision_type": "content-publish-gate"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "escalated: no automated adapter could decide",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "escalated to human"
+      },
+      "jev": {
+        "status": "ok",
+        "provider": "typesafe-ai",
+        "model": "typesafe-ai/jev",
+        "route": "vercel",
+        "confidence": 0.32000000000000006,
+        "tier": "human",
+        "reason": null,
+        "latency_ms": 669,
+        "networked": true,
+        "usage_known": true,
+        "input_tokens": 1758,
+        "output_tokens": 137,
+        "estimated_cost_usd_micros": 74,
+        "retry_count": null,
+        "final": false,
+        "continue_reason": "CONFIDENCE_TIER_HUMAN",
+        "outcome": {
+          "revision_needed": false,
+          "risk_level": "low",
+          "human_review_required": true,
+          "recommended_route": "human-publish-review",
+          "publish_candidate": true
+        },
+        "field_confidence": {
+          "revision_needed": 0.54,
+          "risk_level": 0.5,
+          "human_review_required": 0.32000000000000006,
+          "recommended_route": 0.94
+        },
+        "limiting_field": "human_review_required",
+        "adapter_invariant_violations": null,
+        "derived_fields": {
+          "publish_candidate": "recommended_route"
+        },
+        "diagnostic": null
+      },
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "unavailable",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "reason": "NO_RULE_MATCHED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "jev",
+          "status": "ok",
+          "provider": "typesafe-ai",
+          "model": "typesafe-ai/jev",
+          "route": "vercel",
+          "confidence": 0.32000000000000006,
+          "tier": "human",
+          "ms": 669,
+          "latency_ms": 669,
+          "networked": true,
+          "usage_known": true,
+          "input_tokens": 1758,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 74,
+          "retry_count": null,
+          "final": false,
+          "continue_reason": "CONFIDENCE_TIER_HUMAN"
+        },
+        {
+          "adapter": "local",
+          "status": "unavailable",
+          "provider": "local",
+          "model": null,
+          "route": null,
+          "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": false
+        },
+        {
+          "adapter": "human",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 0,
+          "tier": "human",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:03.639Z",
+        "decision_id": "dec_20260926030303639_177e53cc",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "human",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": true,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "unavailable",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "reason": "NO_RULE_MATCHED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "jev",
+            "status": "ok",
+            "provider": "typesafe-ai",
+            "model": "typesafe-ai/jev",
+            "route": "vercel",
+            "confidence": 0.32000000000000006,
+            "tier": "human",
+            "latency_ms": 669,
+            "networked": true,
+            "usage_known": true,
+            "input_tokens": 1758,
+            "output_tokens": 137,
+            "estimated_cost_usd_micros": 74,
+            "retry_count": null,
+            "final": false,
+            "continue_reason": "CONFIDENCE_TIER_HUMAN"
+          },
+          {
+            "adapter": "local",
+            "status": "unavailable",
+            "provider": "local",
+            "model": null,
+            "route": null,
+            "reason": "LOCAL_MODEL_NOT_CONFIGURED",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": false
+          },
+          {
+            "adapter": "human",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 0,
+            "tier": "human",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 4,
+          "ok_attempts": 2,
+          "networked_attempts": 1,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 1758,
+          "output_tokens": 137,
+          "estimated_cost_usd_micros": 74
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 670
+    },
+    {
+      "case_id": "CP-R1-facebook",
+      "category": "Facebook 除外（Rules First）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-r1",
+        "content_type": "post",
+        "channel": "facebook",
+        "channel_registered": true,
+        "title": "告知",
+        "summary": "告知。",
+        "prior_publication_state": "unpublished"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "recommended_route": [
+            "blocked"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030304619_8a8a3f73",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "auto",
+        "confidence": 1,
+        "outcome": {
+          "publish_candidate": false,
+          "revision_needed": false,
+          "risk_level": "unassessed",
+          "human_review_required": false,
+          "recommended_route": "blocked"
+        },
+        "human_escalation": false,
+        "human_gate": {
+          "required": false,
+          "preserved": true,
+          "reason": null,
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:channel-facebook-excluded — Facebook は excluded（個人アカウント・知人・個人特定との結びつきを避ける。MA-31 正本§7・§7-1）"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:04.619Z",
+        "decision_id": "dec_20260926030304619_8a8a3f73",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": false,
+        "tier": "auto",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 1
+    },
+    {
+      "case_id": "CP-R2-personal-information-flag",
+      "category": "個人情報（caller flag・Rules First）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-r2",
+        "content_type": "post",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "お知らせ",
+        "summary": "お知らせ。",
+        "prior_publication_state": "unpublished",
+        "risk_flags": {
+          "personal_information": true
+        }
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "recommended_route": [
+            "needs-revision"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030304927_7a5bab97",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "human",
+        "confidence": 1,
+        "outcome": {
+          "publish_candidate": false,
+          "revision_needed": true,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "needs-revision"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:personal-information — 個人情報を含む。除去してから Human が確認（MA-31 正本§7-1 Privacy）"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 1,
+          "latency_ms": 1,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:04.927Z",
+        "decision_id": "dec_20260926030304927_7a5bab97",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 1,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 3
+    },
+    {
+      "case_id": "CP-R3-sale-terms-flag",
+      "category": "販売条件（caller flag・Rules First）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-r3",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "有料版",
+        "summary": "有料版の案内。",
+        "prior_publication_state": "unpublished",
+        "risk_flags": {
+          "sale_terms": true
+        }
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "recommended_route": [
+            "hold"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030305239_d58db3d6",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "human",
+        "confidence": 1,
+        "outcome": {
+          "publish_candidate": false,
+          "revision_needed": false,
+          "risk_level": "medium",
+          "human_review_required": true,
+          "recommended_route": "hold"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:sale-terms — 価格・販売条件は Human-only（MA-31 正本§15）。Jev に販売条件を判断させない"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:05.239Z",
+        "decision_id": "dec_20260926030305239_d58db3d6",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 1
+    },
+    {
+      "case_id": "CP-R4-threads-no-opt-in",
+      "category": "Threads opt-in 無し（Rules First）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-r4",
+        "content_type": "post",
+        "channel": "threads",
+        "channel_registered": true,
+        "title": "短文",
+        "summary": "短文。",
+        "prior_publication_state": "unpublished"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "recommended_route": [
+            "hold"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030305549_2bc15aa8",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "auto",
+        "confidence": 1,
+        "outcome": {
+          "publish_candidate": false,
+          "revision_needed": false,
+          "risk_level": "unassessed",
+          "human_review_required": false,
+          "recommended_route": "hold"
+        },
+        "human_escalation": false,
+        "human_gate": {
+          "required": false,
+          "preserved": true,
+          "reason": null,
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:threads-opt-in-missing — Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:05.549Z",
+        "decision_id": "dec_20260926030305549_2bc15aa8",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": false,
+        "tier": "auto",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 1
+    },
+    {
+      "case_id": "CP-R5-confidential-or-secret-flag",
+      "category": "Secret・外部公開禁止情報（caller flag・Rules First。2026-09-26 追加の rule）",
+      "variant": "improved",
+      "input": {
+        "content_id": "cal-cp-r5",
+        "content_type": "article",
+        "channel": "note",
+        "channel_registered": true,
+        "title": "設定メモ",
+        "summary": "設定手順のメモ。",
+        "prior_publication_state": "unpublished",
+        "risk_flags": {
+          "confidential_or_secret": true
+        }
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "recommended_route": [
+            "hold"
+          ],
+          "human_review_required": [
+            true
+          ],
+          "risk_level": [
+            "high"
+          ]
+        },
+        "unacceptable": {
+          "recommended_route": [
+            "human-publish-review"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "decision_id": "dec_20260926030305862_8df48050",
+      "rules_first_hit": true,
+      "jev_called": false,
+      "final": {
+        "resolved_by": "rules",
+        "tier": "human",
+        "confidence": 1,
+        "outcome": {
+          "publish_candidate": false,
+          "revision_needed": false,
+          "risk_level": "high",
+          "human_review_required": true,
+          "recommended_route": "hold"
+        },
+        "human_escalation": true,
+        "human_gate": {
+          "required": true,
+          "preserved": true,
+          "reason": "outcome.human_review_required=true",
+          "note": "Decision Layer never approves. Existing Human-only gates (en-generate-hub approval, Claude Code permissions, Product Hub update button) remain authoritative."
+        },
+        "rationale": "rule:confidential-or-secret — Secret・認証情報・社外秘・外部公開禁止情報が混入している（caller 検出）。本文は Jev へ渡さず決定的に止め、除去か公開取りやめかを Human が判断する（2026-09-26 実JEV Calibration で追加。プライバシー境界）"
+      },
+      "jev": null,
+      "trace": [
+        {
+          "adapter": "rules",
+          "status": "ok",
+          "provider": null,
+          "model": null,
+          "route": null,
+          "confidence": 1,
+          "tier": "auto",
+          "ms": 0,
+          "latency_ms": 0,
+          "networked": false,
+          "usage_known": true,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0,
+          "retry_count": null,
+          "final": true
+        }
+      ],
+      "skipped": [
+        {
+          "adapter": "mock-jev",
+          "reason": "NOT_REGISTERED"
+        },
+        {
+          "adapter": "llm",
+          "reason": "COST_GATE_PAID_ADAPTER_NOT_ALLOWED"
+        }
+      ],
+      "usage_record": {
+        "timestamp": "2026-09-26T03:03:05.862Z",
+        "decision_id": "dec_20260926030305862_8df48050",
+        "application_id": "calibration-growth",
+        "project_id": "e-nexus-decision-layer",
+        "tenant": null,
+        "provider": null,
+        "model": null,
+        "decision_type": "content-publish-gate",
+        "resolved_by": "rules",
+        "request_count": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "estimated_cost_usd_micros": 0,
+        "fallback_occurred": false,
+        "human_escalation": true,
+        "tier": "human",
+        "attempts": [
+          {
+            "adapter": "rules",
+            "status": "ok",
+            "provider": null,
+            "model": null,
+            "route": null,
+            "confidence": 1,
+            "tier": "auto",
+            "latency_ms": 0,
+            "networked": false,
+            "usage_known": true,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd_micros": 0,
+            "retry_count": null,
+            "final": true
+          }
+        ],
+        "usage_total": {
+          "attempts": 1,
+          "ok_attempts": 1,
+          "networked_attempts": 0,
+          "unknown_usage_attempts": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_cost_usd_micros": 0
+        },
+        "request_id": null,
+        "correlation_id": null,
+        "via": null
+      },
+      "wall_ms": 1
+    }
+  ]
+}

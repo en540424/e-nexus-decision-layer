@@ -120,9 +120,13 @@ export function requestFor(doc, c) {
   return { decision_type: doc.decision_type, application_id: doc.application_id, project_id: doc.project_id, input: structuredClone(c.input) };
 }
 
-function limitingField(fieldConfidence) {
+/** 全体 confidence を決めた field。escalation-only（x-jev-confidence。min に入らない）は他に field があれば除く */
+function limitingField(fieldConfidence, decisionType = null) {
   if (!fieldConfidence) return null;
-  const entries = Object.entries(fieldConfidence);
+  const props = decisionType ? (loadDecisionType(decisionType)?.schema?.properties?.outcome?.properties ?? {}) : {};
+  const all = Object.entries(fieldConfidence);
+  const inMin = all.filter(([k]) => props[k]?.['x-jev-confidence'] !== 'escalation-only');
+  const entries = inMin.length ? inMin : all;
   if (!entries.length) return null;
   entries.sort((a, b) => a[1] - b[1]);
   return entries[0][0];
@@ -204,7 +208,7 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
         continue_reason: jevAttempt.continue_reason ?? null,
         outcome: jevCapture?.ok ? jevCapture.outcome : null,
         field_confidence: jevCapture?.ok ? jevCapture.field_confidence : null,
-        limiting_field: jevCapture?.ok ? limitingField(jevCapture.field_confidence) : null,
+        limiting_field: jevCapture?.ok ? limitingField(jevCapture.field_confidence, doc.decision_type) : null,
         adapter_invariant_violations: jevCapture?.ok ? jevCapture.invariant_violations : null,
         derived_fields: jevCapture?.ok ? jevCapture.derived_fields : null,
         diagnostic: jevCapture && !jevCapture.ok ? jevCapture.diagnostic : null,
@@ -431,7 +435,7 @@ export function analyze(out) {
     const outcome = r.jev?.status === 'ok' ? r.jev.outcome : (r.rules_first_hit ? r.final.outcome : null);
     const route = outcome?.recommended_route ?? null;
     const expRoute = String(exp.route ?? '');
-    const routeMatch = route == null ? null : expRoute.startsWith('either:') ? expRoute.slice(7).split('|').includes(route) : expRoute === route;
+    const routeMatch = route == null || !expRoute ? null : expRoute.startsWith('either:') ? expRoute.slice(7).split('|').includes(route) : expRoute === route;
     const resolverActual = r.rules_first_hit ? 'rules' : (r.jev ? 'jev' : r.final.resolved_by);
     const constraints = evaluateConstraints(out.decision_type, outcome, exp, r.input);
     return {

@@ -212,4 +212,7 @@ tests は実 Jev を呼ばない（decision-layer は明示 env `{}`・一時 us
 
 `paid-generation-gate` の Jev 判定は「Local / 無料で足りるか・有料候補か・Human review が要るか・route 候補」まで。
 `tier:auto` でも有料 API の実行許可ではなく、その後に en-generate-hub の MA-17 Human-only 承認（承認文の入力は Human）が必ずある。
-既知の制約：`paid-generation-gate` は `human_review_required` の confidence が全体（min 合成）を下げやすく、実 Jev 正常時も human tier になりやすい（Calibration B・follow-up ② Hybrid で扱う。閾値 0.85 / 0.60 は変えない）。
+2026-09-26 実JEV Calibration 以降の意味論（consumer が知っておくこと。閾値 0.85 / 0.60 は不変）：
+- `human_review_required` は escalation-only（follow-up ② Hybrid）：true なら confidence に関わらず `tier:human`、false のときはその質問の確信度を全体 confidence に入れない
+- Jev の回答が自己矛盾（schema の `x-outcome-invariants`。例：`paid_generation_required=false` かつ route `en-generate-hub`）していれば attempt の confidence は 0 になり human へ進む（usage は attempt に残る）
+- 実測（synthetic 評価・holdout）は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`。`tier:auto` はどの type でも承認ではない
