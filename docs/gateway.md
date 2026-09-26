@@ -153,13 +153,13 @@ consumer 側に作るのは **consumer adapter（request を組み、envelope �
 
 | consumer | 状態（2026-09-25） | 次に作るもの |
 |---|---|---|
-| en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate` コマンド・CLI transport） | — |
-| Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。MCP は Human 接続待ち | — |
+| en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate` コマンド・CLI transport）。2026-09-26 実 Jev 到達確認 | — |
+| Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。2026-09-26 実 Jev 到達確認。MCP は Human 接続待ち | — |
 | Cursor | 未接続 | MCP 設定（Human）か `.cursor/rules` で CLI |
 | Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |
 | LINE / CRM | 未接続（MA-31 G5-0 は触らない） | `lead-triage` schema 化の後、HTTP |
-| SNS / Growth | 未接続 | note 系 Skill / en-sns-hub から `content-publish-gate` / `channel-selection` |
+| SNS / Growth | 未接続（**次**） | 先に `channel-selection`／`content-publish-gate` の実 Jev Calibration（decision-log 2026-09-26）→ note 系 Skill / en-sns-hub から接続 |
 
 ## 10. Engine の差し替え
 
