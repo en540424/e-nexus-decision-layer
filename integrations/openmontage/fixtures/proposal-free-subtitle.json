@@ -1,0 +1,26 @@
+{
+  "$comment": "合成 fixture（E-NEXUS 作成）。OpenMontage の proposal checkpoint のうち wrapper が読む部分だけを模した最小形。字幕中心・手元素材あり・有料生成なしの計画",
+  "version": "1.0",
+  "project_id": "enexus-fixture-free",
+  "stage": "proposal",
+  "status": "awaiting_human",
+  "pipeline_type": "cinematic",
+  "artifacts": {
+    "proposal_packet": {
+      "production_plan": {
+        "pipeline": "cinematic",
+        "render_runtime": "remotion",
+        "delivery_promise": {"promise_type": "source_led", "motion_required": true, "source_required": true, "tone_mode": "educational", "quality_floor": "presentable"},
+        "stages": [
+          {"stage": "assets", "approach": "手元の動画へ日本語字幕を付ける", "tools": [
+            {"tool_name": "subtitle_gen", "role": "既存動画へ日本語字幕を焼き込む", "available": true, "estimated_cost_usd": 0}
+          ]},
+          {"stage": "compose", "approach": "Remotion で合成", "tools": [
+            {"tool_name": "video_compose", "role": "合成", "available": true, "estimated_cost_usd": 0}
+          ]}
+        ]
+      },
+      "cost_estimate": {"total_estimated_usd": 0, "budget_verdict": "no_budget_set", "line_items": []}
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # OpenMontage から使う（2026-09-26・MA-29 × MA-30）
 
-OpenMontage（`<OpenMontage cloneのパス>`、MA-29 技術PoC成功・条件付き採用候補）の **有料生成の直前**で、
+OpenMontage（`<OpenMontage cloneのパス>`、MA-29 技術PoC成功・2026-09-18 に条件付き採用として記録・商品化判断は未決）の **有料生成の直前**で、
 Common Decision Gateway の `paid-generation-gate` を呼ぶ thin consumer adapter。`application_id: openmontage`・PERSONAL / DEV のみ。
 
 ```
@@ -14,14 +14,43 @@ OpenMontage workflow（agent が有料 tool＝video_generation / image_generatio
 
 ## 置き場所の理由
 
-- consumer adapter は本来 consumer 側に置くが、`poc/openmontage-ma29` は上流 `calesthio/OpenMontage`（AGPL-3.0）の clone で、
-  push 先が無く、正式基盤登録・`managed-repos.json` 登録は Human-only（MA-29）。そのため Gateway repo の `integrations/`
-  （claude-code / cursor / hermes と同列）に置く
+- consumer adapter は本来 consumer 側に置くが、OpenMontage の clone は上流 `calesthio/OpenMontage`（AGPL-3.0）そのもので
+  push 先が無く、E-NEXUS 固有のコードを上流へ混ぜない（Vault の管理台帳では class B・配布なし・上流の agent 契約を上書きしない扱い）。
+  そのため Gateway repo の `integrations/`（claude-code / cursor / hermes と同列）に置く
 - **OpenMontage のコードを import しない**（process 境界の外で動く独立 adapter。AGPL の範囲を E-NEXUS 側へ広げない。
   入力は caller が渡す構造情報だけ）。OpenMontage の tracked files（`AGENT_GUIDE.md` 等）も編集しない
 - stdlib のみ（Python 3.10+）。Gateway 呼び出しには `node` が要る
 
-## 使い方
+## workflow から使う（preflight wrapper・推奨）
+
+OpenMontage では有料 tool の実行は assets 段階で起き、assets は proposal 段階（pipeline manifest で `human_approval_default: true`）の
+Human gate の後にしか進めない。proposal 段階は `<OPENMONTAGE_PROJECTS_DIR>/<project_id>/checkpoint_proposal.json` を
+`awaiting_human` で書き、`proposal_packet.production_plan.stages[].tools[]` に使う tool・provider・見積が入る。
+**この checkpoint が `awaiting_human` の間に** preflight を実行する（どの有料 tool もまだ実行されていない）。
+
+```
+OpenMontage workflow（proposal 段階 → checkpoint_proposal.json・awaiting_human）
+  → enexus_openmontage_preflight.py（checkpoint を JSON で読むだけ・生成系 tool ごとに adapter を呼ぶ・上限 6 回）
+  → enexus_openmontage_decision.py → Common Decision Gateway（dev）→ Rules → Decision Engine → Human
+  → overall: free-path / paid-handoff / human-review / no-decision-point
+```
+
+```bash
+python <e-nexus-decision-layerのパス>/integrations/openmontage/enexus_openmontage_preflight.py --project-dir <OpenMontageのprojects>/<project_id> --text
+python .../enexus_openmontage_preflight.py --checkpoint <checkpoint_proposal.json> --out <report.json>   # JSON 報告を保存
+```
+
+- `paid-handoff`：`handoff_to_en_generate` の tool を OpenMontage 内で実行せず、/en-generate（MA-17）で見積→Human-only 承認へ
+- `human-review`：判定不能・呼び出し上限超過・proposal より後（sample / assets / compose）の checkpoint が既にある（手遅れの可能性）
+- 報告は OpenMontage の proposal gate の承認ではない。checkpoint・`decision_log.json`・`project.json`・`human_approved` には書かない
+  （`--out` にこれらの名前は指定できない）
+- Decision Point とみなす tool は生成系だけ（`video_selector`・`image_selector`・`tts_selector`・`music_gen`・`subtitle_gen`・3D・avatar 等）。
+  合成・編集・解析（`video_compose`・`audio_mixer`・`color_grade`・`transcriber` 等）は呼ばない。route は Gateway が決める
+- Engine へ送る `purpose` は tool の `role`（adapter が 200 字・パス伏せ・PII/key 風なら送らない）。**role に人物名・顧客名を書かない**
+- OpenMontage の agent が自分でこの wrapper を呼ぶには上流の `AGENT_GUIDE.md` 等への追記が要る（上流は編集しない・Human 判断）。
+  現在は OpenMontage を動かしている Claude Code セッション（Vault 起点・Skill `enexus-decision`）が proposal gate で実行する
+
+## adapter を直接使う
 
 ```bash
 python <e-nexus-decision-layerのパス>/integrations/openmontage/enexus_openmontage_decision.py --text < asset-request.json
@@ -62,6 +91,9 @@ asset request（OpenMontage workflow が組む構造情報。`tool.estimate_cost
 cd integrations/openmontage   # repo ルートから
 python -m unittest discover -s . -p "test_*.py"
 ```
+
+preflight の test（`test_enexus_openmontage_preflight.py`）は `fixtures/` の合成 checkpoint（E-NEXUS 作成・OpenMontage の
+schema やコードは同梱しない）を使い、OpenMontage の clone が無くても通る。
 
 transport は `consumer-kit/conformance/transport-cases.json`（Node reference と同じ cases）を fake Gateway 相手に全件通す。
 実 Decision Engine は呼ばない（実 Gateway 往復はネットワーク無し・usage は tmp）。

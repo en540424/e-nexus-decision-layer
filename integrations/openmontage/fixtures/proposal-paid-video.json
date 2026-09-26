@@ -1,0 +1,29 @@
+{
+  "$comment": "合成 fixture（E-NEXUS 作成）。手元素材なしで実写風の動画カットを有料 provider で作る計画（有料生成候補）",
+  "version": "1.0",
+  "project_id": "enexus-fixture-paid",
+  "stage": "proposal",
+  "status": "awaiting_human",
+  "pipeline_type": "cinematic",
+  "artifacts": {
+    "proposal_packet": {
+      "production_plan": {
+        "pipeline": "cinematic",
+        "render_runtime": "remotion",
+        "delivery_promise": {"promise_type": "motion_led", "motion_required": true, "tone_mode": "cinematic", "quality_floor": "presentable"},
+        "stages": [
+          {"stage": "assets", "approach": "導入カットを動画生成で作る", "tools": [
+            {"tool_name": "video_selector", "provider": "kling", "role": "架空の家電製品が朝のキッチンで動き出す実写風の導入カット（5秒）", "available": true, "estimated_cost_usd": 0.35},
+            {"tool_name": "subtitle_gen", "role": "日本語字幕", "available": true, "estimated_cost_usd": 0}
+          ]},
+          {"stage": "compose", "approach": "Remotion で合成", "tools": [
+            {"tool_name": "video_compose", "role": "合成", "available": true}
+          ]}
+        ]
+      },
+      "cost_estimate": {"total_estimated_usd": 0.35, "budget_verdict": "within_budget", "line_items": [
+        {"tool": "video_selector", "operation": "5秒の導入カット 1本", "quantity": 1, "estimated_usd": 0.35}
+      ]}
+    }
+  }
+}
