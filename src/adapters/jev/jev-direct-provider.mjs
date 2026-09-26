@@ -91,6 +91,16 @@ async function classifyResponse(res) {
   return json;
 }
 
+/** noul の criteria（x-boolean-criteria 由来。Vercel Gateway の boolean criteria 用）は Direct API の仕様で未確認のため送らない */
+export function toDirectRequest(request) {
+  const questions = Object.fromEntries(Object.entries(request?.questions ?? {}).map(([k, q]) => {
+    if (q?.type !== 'noul' || !('criteria' in q)) return [k, q];
+    const { criteria, ...rest } = q; // eslint-disable-line no-unused-vars
+    return [k, rest];
+  }));
+  return { ...request, questions };
+}
+
 async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -101,7 +111,7 @@ async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs }) {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify(toDirectRequest(request)),
       signal: controller.signal,
     });
     return await classifyResponse(res);

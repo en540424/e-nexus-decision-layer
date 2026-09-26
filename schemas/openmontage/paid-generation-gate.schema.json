@@ -36,11 +36,13 @@
       "properties": {
         "local_sufficient": {
           "type": "boolean",
-          "description": "Can the requested asset be produced entirely from assets already on hand using free local tools, without a rendering pipeline and without any generative-AI API? True only if the request can be satisfied this way; false if new footage or imagery has to be rendered or generated."
+          "description": "Can the requested asset be produced entirely from assets already on hand using free local tools (cropping, trimming, resizing, cutting, simple editing, color correction, adding text), without a rendering pipeline and without any generative-AI API? Answer about capability only, regardless of which route is finally recommended. True if the request can be satisfied this way; false if new footage or imagery has to be rendered or generated.",
+          "x-boolean-criteria": { "true": "Assets already on hand plus free local editing (cropping, trimming, cutting, resizing, adding text) are enough to produce the asset.", "false": "New footage or imagery has to be rendered or generated, because the assets on hand are missing or not enough." }
         },
         "remotion_suitable": {
           "type": "boolean",
-          "description": "Is the requested asset a good fit for programmatic rendering with Remotion (React-based video: text animation, captions, slides, motion graphics, layout and compositing of media that already exists)? True if Remotion can produce what is asked for from the available inputs; false if the request needs newly created photoreal or cinematic footage or imagery that cannot be composed from existing material."
+          "description": "Could the requested asset be produced by programmatic rendering with Remotion (React-based video: text animation, captions, slides, charts, motion graphics, layout and compositing of media that already exists)? Answer about capability only, regardless of whether a simpler route such as editing assets on hand would also work. True if Remotion can produce what is asked for from the available inputs; false if the request needs newly created photoreal or cinematic footage or imagery that cannot be composed from existing material or drawn programmatically.",
+          "x-boolean-criteria": { "true": "Remotion could produce the asset from the available inputs (text, captions, charts, motion graphics, or composing and editing existing images or footage), even if simpler tools would also do.", "false": "The asset needs newly created photoreal, cinematic or illustrated imagery or footage that Remotion cannot compose from existing material or draw programmatically." }
         },
         "paid_generation_required": {
           "type": "boolean",
@@ -48,7 +50,9 @@
         },
         "human_review_required": {
           "type": "boolean",
-          "description": "Should a human check this routing decision before anyone acts on it? True if the request is ambiguous or self-contradictory, essential information (what is being asked for, which style, whether inputs exist) is missing, brand or reference fidelity is critical to get right, or more than one route is equally plausible. False if the routing is clear from the input. This is about reviewing the route, not about approving payment: paid generation is always approved separately by a human regardless of this field."
+          "description": "Should a human check this routing decision before anyone acts on it? True if the request is ambiguous or self-contradictory, essential information (what is being asked for, which style, whether inputs exist) is missing, brand or reference fidelity is critical to get right, or more than one route is equally plausible. False if the routing is clear from the input. This is about reviewing the route, not about approving payment: paid generation is always approved separately by a human regardless of this field.",
+          "x-jev-confidence": "escalation-only",
+          "x-boolean-criteria": { "true": "The request is ambiguous, self-contradictory or missing essential information, reference fidelity is critical, or several routes are equally plausible, so a human should check the route first.", "false": "The right route is clear from the input; no human check of the route is needed (any paid generation is still approved separately by a human)." }
         },
         "recommended_route": {
           "type": "string",

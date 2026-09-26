@@ -26,7 +26,8 @@ function fakeProvider({ failWith = null } = {}) {
       const coinFlip = purpose.includes('teaser');
       const answers = {};
       for (const [name, q] of Object.entries(request.questions)) {
-        if (q.type === 'noul') answers[name] = { type: 'noul', noul: name === 'human_review_required' && coinFlip ? 0.54 : (name === 'paid_generation_required' ? 0.05 : 0.95) };
+        // 五分五分は escalation-only でない field（local_sufficient）に置く（2026-09-26 Hybrid 以降 human_review_required は min に入らない）
+        if (q.type === 'noul') answers[name] = { type: 'noul', noul: name === 'local_sufficient' && coinFlip ? 0.54 : (name === 'paid_generation_required' ? 0.05 : 0.95) };
         else answers[name] = { type: 'choice', choice: 'remotion', confidence: 0.9 };
       }
       return { model: 'fake-jev', answers, usage: { input_tokens: 500, output_tokens: 20 } };
@@ -78,7 +79,7 @@ test('runCases: captures field-level confidence + limiting field, keeps rules-fi
   const b1 = records.find((r) => r.case_id === 'B1-photoreal-scene-baseline');
   assert.equal(b1.jev.status, 'ok');
   assert.ok(Math.abs(b1.jev.confidence - 0.08) < 1e-9, 'min aggregation reproduces 0.08 from one coin-flip question');
-  assert.equal(b1.jev.limiting_field, 'human_review_required');
+  assert.equal(b1.jev.limiting_field, 'local_sufficient');
   assert.equal(b1.jev.tier, 'human');
   assert.equal(b1.final.resolved_by, 'human', 'chain continues to human escalation');
   // §19: final=human でも real jev attempt が usage record に残る
@@ -120,7 +121,7 @@ test('analyze / analyzeToMarkdown: distribution, grouping, field-level, metering
   assert.equal(a.counts.jev_ok, doc.cases.length - 3);
   assert.equal(a.confidence.n, doc.cases.length - 3);
   assert.ok(a.confidence.min <= 0.08 + 1e-9);
-  assert.equal(a.limiting_field_counts.human_review_required, 1);
+  assert.equal(a.comparison.find((c) => c.case_id === 'B1-photoreal-scene-baseline').limiting_field, 'local_sufficient');
   assert.ok(a.by_ambiguity.low && a.by_ambiguity.high);
   assert.equal(a.metering.length, doc.cases.length);
   assert.ok(a.metering.every((m) => m.jev_attempt_recorded === !doc.cases.find((c) => c.case_id === m.case_id).expected.resolver.startsWith('rules')));
@@ -144,7 +145,8 @@ test('runCases: a RetryError-wrapped 503 from the real provider path is recorded
     calls += 1;
     if (calls === 1) throw Object.assign(new Error('Failed after 3 attempts'), { name: 'RetryError', reason: 'maxRetriesExceeded', errors: [inner, inner, inner], lastError: inner });
     const answers = {};
-    for (const [name, q] of Object.entries(questions)) answers[name] = q.type === 'boolean' ? { type: 'boolean', probability: 0.97 } : { type: 'choice', choice: 'remotion' };
+    // 自己矛盾しない回答（remotion 可・有料不要）。全部 true にすると x-outcome-invariants に当たり jev で確定しない
+    for (const [name, q] of Object.entries(questions)) answers[name] = q.type === 'boolean' ? { type: 'boolean', probability: name === 'paid_generation_required' ? 0.03 : 0.97 } : { type: 'choice', choice: 'remotion' };
     return { answers, usage: { inputTokens: 300, outputTokens: 20 }, response: { modelId: 'typesafe-ai/jev' }, providerMetadata: { typesafe: { confidence: { recommended_route: 0.9 } } } };
   };
   const provider = createVercelJevProvider({ evaluateImpl });

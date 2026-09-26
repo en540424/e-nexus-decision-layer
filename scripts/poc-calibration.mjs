@@ -100,7 +100,7 @@ export function wrapJevAdapter(inner, capture) {
       capture.current = null;
       try {
         const r = await inner.decide(args);
-        capture.current = { ok: true, outcome: r.outcome, confidence: r.confidence, field_confidence: r.field_confidence ?? null, rationale: r.rationale ?? null };
+        capture.current = { ok: true, outcome: r.outcome, confidence: r.confidence, field_confidence: r.field_confidence ?? null, rationale: r.rationale ?? null, invariant_violations: r.invariant_violations ?? null, derived_fields: r.derived_fields ?? null };
         return r;
       } catch (err) {
         const d = err?.details ?? {};
@@ -205,6 +205,8 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
         outcome: jevCapture?.ok ? jevCapture.outcome : null,
         field_confidence: jevCapture?.ok ? jevCapture.field_confidence : null,
         limiting_field: jevCapture?.ok ? limitingField(jevCapture.field_confidence) : null,
+        adapter_invariant_violations: jevCapture?.ok ? jevCapture.invariant_violations : null,
+        derived_fields: jevCapture?.ok ? jevCapture.derived_fields : null,
         diagnostic: jevCapture && !jevCapture.ok ? jevCapture.diagnostic : null,
       } : null,
       trace: result.fallback.trace,

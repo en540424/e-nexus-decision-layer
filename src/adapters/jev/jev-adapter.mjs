@@ -47,6 +47,7 @@ import { AdapterUnavailableError } from '../../core/errors.mjs';
 import { assertJevProviderShape, resolveJevProvider } from './jev-provider-interface.mjs';
 import { loadDecisionType } from '../../schemas/loader.mjs';
 import { getEntry } from '../../registries/registry.mjs';
+import { checkOutcomeInvariants } from '../../schemas/invariants.mjs';
 
 export const JEV_ENV = Object.freeze({
   apiKey: 'JEV_API_KEY',
@@ -58,16 +59,51 @@ export const JEV_ENV = Object.freeze({
 
 const DEFAULT_MODEL = 'jev-latest';
 
+/**
+ * x-jev-derive（2026-09-26 実JEV Calibration）：定義上ほかの field の答えで一意に決まる field は Jev に別の質問として訊かず、
+ * 元 field の答えから写像する（例：content-publish-gate の publish_candidate は recommended_route=human-publish-review と同義）。
+ * 同じ意味を 2 回独立に訊くと自己矛盾（publish_candidate=true かつ needs-revision 等）が起きるため。判断そのものは元 field で Jev がする。
+ *   { "from": "<outcome field>", "map": { "<元の値>": <導出値>, ... }, "default": <map に無いときの値（任意）> }
+ */
+function derivePlan(name, fieldSchema, properties) {
+  const d = fieldSchema?.['x-jev-derive'];
+  if (!d) return null;
+  const src = properties?.[d.from];
+  if (!src || src['x-jev-derive'] || typeof d.map !== 'object' || d.map === null) {
+    throw new Error(`invalid x-jev-derive on ${name}: source field must exist, be asked directly, and map must be an object`);
+  }
+  return { kind: 'derived', from: d.from, map: { ...d.map }, ...(Object.hasOwn(d, 'default') ? { default: d.default } : {}) };
+}
+
+/**
+ * x-jev-enum（2026-09-26）：choice で Jev に提示する選択肢を、Rules First を通過した後に到達し得る値だけへ絞る。
+ * 例：channel-selection の excluded / future / internal / unavailable は rules が名前・登録状態・opt-in 等で決定的に出す値で、
+ * Jev に届いた時点では前提が満たされていない（未登録なら rules が先に止めている）。提示すると入力事実と衝突する答えを選び得る。
+ * 除外した値はすべて rules の outcome に現れることを tests が固定する（eval ケースではなく rule coverage で正当化する）。
+ */
+function jevEnumOf(name, fieldSchema) {
+  const narrowed = fieldSchema?.['x-jev-enum'];
+  if (narrowed === undefined) return [...fieldSchema.enum];
+  if (!Array.isArray(narrowed) || narrowed.length === 0 || narrowed.some((v) => !fieldSchema.enum.includes(v))) {
+    throw new Error(`invalid x-jev-enum on ${name}: must be a non-empty subset of enum`);
+  }
+  return [...narrowed];
+}
+
 /** 1つの outcome フィールド定義から Jev question（と、応答を読み戻すための plan）を作る。対応不能なら null */
 function planForField(name, fieldSchema, decisionType) {
   const instructions = fieldSchema?.description || `Determine ${name} for this ${decisionType} decision.`;
   if (fieldSchema?.type === 'boolean') {
-    return { question: { type: 'noul', instructions }, plan: { kind: 'noul' } };
+    // x-boolean-criteria（任意）：true / false それぞれの意味。Vercel Gateway の boolean criteria へ渡す（Direct には送らない）
+    const bc = fieldSchema['x-boolean-criteria'];
+    const criteria = bc && typeof bc.true === 'string' && typeof bc.false === 'string' ? { true: bc.true, false: bc.false } : null;
+    return { question: { type: 'noul', instructions, ...(criteria ? { criteria } : {}) }, plan: { kind: 'noul' } };
   }
   if (fieldSchema?.type === 'string' && Array.isArray(fieldSchema.enum) && fieldSchema.enum.length >= 1) {
     const enumDescriptions = fieldSchema['x-enum-descriptions'] ?? {};
-    const criteria = Object.fromEntries(fieldSchema.enum.map((v) => [v, typeof enumDescriptions[v] === 'string' ? enumDescriptions[v] : null]));
-    return { question: { type: 'choice', instructions, criteria }, plan: { kind: 'choice', enumValues: [...fieldSchema.enum] } };
+    const values = jevEnumOf(name, fieldSchema);
+    const criteria = Object.fromEntries(values.map((v) => [v, typeof enumDescriptions[v] === 'string' ? enumDescriptions[v] : null]));
+    return { question: { type: 'choice', instructions, criteria }, plan: { kind: 'choice', enumValues: values } };
   }
   if (
     (fieldSchema?.type === 'integer' || fieldSchema?.type === 'number')
@@ -87,12 +123,17 @@ function planForField(name, fieldSchema, decisionType) {
  * 対応できない outcome フィールドが1つでもあれば推測せず AdapterUnavailableError を投げる。
  * @returns {{ request: object, fieldPlans: Record<string, object> }}
  */
-export function buildJevRequest({ decisionType, outcomeSchema, input, candidates, model = DEFAULT_MODEL }) {
+export function buildJevRequest({ decisionType, outcomeSchema, input, candidates, model = DEFAULT_MODEL, inputSchema = null }) {
   const properties = outcomeSchema?.properties ?? {};
   const questions = {};
   const fieldPlans = {};
   const unsupported = [];
   for (const [name, fieldSchema] of Object.entries(properties)) {
+    const derived = derivePlan(name, fieldSchema, properties);
+    if (derived) {
+      fieldPlans[name] = derived;
+      continue;
+    }
     const built = planForField(name, fieldSchema, decisionType);
     if (!built) {
       unsupported.push(name);
@@ -104,13 +145,26 @@ export function buildJevRequest({ decisionType, outcomeSchema, input, candidates
   if (unsupported.length) {
     throw new AdapterUnavailableError('jev', 'JEV_UNSUPPORTED_OUTCOME_FIELD', { decisionType, fields: unsupported });
   }
-  const brief = typeof outcomeSchema?.description === 'string' && outcomeSchema.description ? outcomeSchema.description : null;
+  // x-jev-brief（任意）：Jev の段で成り立っている前提（Rules First 通過後であること等）を含めた brief。無ければ outcome の description
+  const jevBrief = outcomeSchema?.['x-jev-brief'];
+  const brief = typeof jevBrief === 'string' && jevBrief
+    ? jevBrief
+    : (typeof outcomeSchema?.description === 'string' && outcomeSchema.description ? outcomeSchema.description : null);
+  // input_notes（2026-09-26）：input の enum 値のうち、input schema が x-enum-descriptions で意味を定義しているものだけ、その説明を添える
+  // （例：channel=note が「note.com という日本語の長文プラットフォーム」だと Jev が知らないと、媒体として評価できない）。
+  // 渡すのは schema に書いた固定の説明文だけで、input 由来の新しい情報は増やさない。
+  const inputNotes = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    const desc = inputSchema?.properties?.[k]?.['x-enum-descriptions']?.[v];
+    if (typeof v === 'string' && typeof desc === 'string' && desc) inputNotes[k] = desc;
+  }
   const request = {
     model,
     state: {
       task: decisionType,
       ...(brief ? { brief } : {}),
       input,
+      ...(Object.keys(inputNotes).length ? { input_notes: inputNotes } : {}),
       candidates: (candidates ?? []).map((c) => ({ id: c.id, description: c.description ?? '' })),
     },
     questions,
@@ -139,13 +193,14 @@ function estimateCostUsdMicros(inputTokens) {
  * fieldPlans に無い質問は無視し、fieldPlans にあるのに answers に無い／型不一致／値が不正なものは
  * 全体を JEV_MALFORMED_RESPONSE として unavailable にする（部分的な出力を推測で補わない）。
  */
-export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
+export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, input = {} } = {}) {
   if (!raw || typeof raw !== 'object' || !raw.answers || typeof raw.answers !== 'object') {
     throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: 'missing answers', networked: true });
   }
   const outcome = {};
   const fieldConfidence = {};
   for (const [name, plan] of Object.entries(fieldPlans)) {
+    if (plan.kind === 'derived') continue; // 質問していない（下で元 field の答えから写像する）
     const answer = raw.answers[name];
     if (!answer || typeof answer !== 'object' || answer.type !== plan.kind) {
       throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `answer missing or wrong type: ${name}`, networked: true });
@@ -177,17 +232,45 @@ export function parseJevResponse(raw, { fieldPlans = {} } = {}) {
       fieldConfidence[name] = answer.confidence;
     }
   }
-  const confidences = Object.values(fieldConfidence);
-  const confidence = confidences.length ? Math.min(...confidences) : 1;
+  const derivedFrom = {};
+  for (const [name, plan] of Object.entries(fieldPlans)) {
+    if (plan.kind !== 'derived') continue;
+    const srcValue = outcome[plan.from];
+    const value = Object.hasOwn(plan.map, String(srcValue)) ? plan.map[String(srcValue)] : plan.default;
+    if (value === undefined) {
+      // schema の写像に穴がある（設定誤り）。推測で埋めない
+      throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `no derived value: ${name}`, networked: true });
+    }
+    outcome[name] = value;
+    derivedFrom[name] = plan.from;
+  }
+  // outcome 不変条件（schema x-outcome-invariants）：答え同士が自己矛盾していれば、その回答はどの field も信頼できないものとして
+  // confidence 0 にする（tier human → chain は次の Adapter / Human へ進む）。throw しないのは、実際に送信・課金された usage を
+  // attempt record に残すため。field_confidence は Jev の生値のまま残し、矛盾の id を invariant_violations に載せる。
+  const invariantViolations = outcomeSchema ? checkOutcomeInvariants(outcomeSchema, outcome, input) : [];
+  // x-jev-confidence: "escalation-only"（MA-30 follow-up ② Hybrid・2026-09-26 採用。decision-log 2026-09-19 の D 判定どおり）：
+  // human_review_required のような「Human へ上げるか」の flag は、答え（true）は常に尊重し（engine の forcedHumanKey が
+  // confidence に関わらず tier=human に固定する）、その質問自体の確信度は全体 min に入れない。
+  // 「人が見るべきか」は input に無い組織判断で Jev の確信度が構造的に低く、false 寄りの答えまで全体を human に倒していたため。
+  // 他の field は従来どおり min（閾値 0.85 / 0.60 は不変）。生値は field_confidence に残す。
+  const escalationOnly = new Set(Object.entries(outcomeSchema?.properties ?? {})
+    .filter(([, p]) => p?.['x-jev-confidence'] === 'escalation-only').map(([k]) => k));
+  const aggregated = Object.entries(fieldConfidence).filter(([k]) => !escalationOnly.has(k)).map(([, v]) => v);
+  const confidences = aggregated.length ? aggregated : Object.values(fieldConfidence);
+  const confidence = invariantViolations.length ? 0 : (confidences.length ? Math.min(...confidences) : 1);
   const usage = raw.usage ?? {};
   const inputTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
   const outputTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+  const fieldSummary = (Object.entries(fieldConfidence)
+    .map(([k, v]) => `${k}=${v.toFixed(2)}${escalationOnly.has(k) && aggregated.length ? '(escalation-only, not in min)' : ''}`).join(', ')) || 'jev';
   return {
     outcome,
     confidence,
     // question ごとの confidence（全体は min）。どの question が全体を下げたかを calibration で見るための生値
     field_confidence: fieldConfidence,
-    rationale: Object.entries(fieldConfidence).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(', ') || 'jev',
+    ...(Object.keys(derivedFrom).length ? { derived_fields: derivedFrom } : {}),
+    ...(invariantViolations.length ? { invariant_violations: invariantViolations } : {}),
+    rationale: invariantViolations.length ? `OUTCOME_INVARIANT_VIOLATION: ${invariantViolations.join(', ')} (${fieldSummary})` : fieldSummary,
     usage: {
       input_tokens: inputTokens,
       output_tokens: outputTokens,
@@ -226,8 +309,9 @@ export function createJevAdapter({ env = process.env, provider = null, decisionT
       if (env[JEV_ENV.allowNetwork] !== 'true') throw new AdapterUnavailableError('jev', 'NETWORK_DISABLED', { decisionType, route: p.id });
       const dt = decisionTypeLoader(decisionType);
       const outcomeSchema = dt?.schema?.properties?.outcome ?? null;
+      const inputSchema = dt?.schema?.properties?.input ?? null;
       const model = env[JEV_ENV.model] || DEFAULT_MODEL;
-      const { request, fieldPlans } = buildJevRequest({ decisionType, outcomeSchema, input, candidates, model });
+      const { request, fieldPlans } = buildJevRequest({ decisionType, outcomeSchema, input, candidates, model, inputSchema });
       // meta は Provider が書き戻す attempt 情報（retry_count 等。取得できる Provider だけが書く。捏造しない）
       const meta = {};
       let raw;
@@ -242,7 +326,7 @@ export function createJevAdapter({ env = process.env, provider = null, decisionT
       }
       let parsed;
       try {
-        parsed = parseJevResponse(raw, { fieldPlans });
+        parsed = parseJevResponse(raw, { fieldPlans, outcomeSchema, input });
       } catch (err) {
         if (err instanceof AdapterUnavailableError) err.details.route ??= p.id;
         throw err;

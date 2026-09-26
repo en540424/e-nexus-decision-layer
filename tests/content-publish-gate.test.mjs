@@ -122,7 +122,10 @@ test('route vocabulary is next-stage only: no value means publish / post / appro
 test('every outcome field maps to a Jev question (boolean / enum only) so Jev is never unavailable for this type', () => {
   const { request, fieldPlans } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
   assert.deepEqual(Object.keys(fieldPlans).sort(), ['human_review_required', 'publish_candidate', 'recommended_route', 'revision_needed', 'risk_level']);
-  assert.equal(request.questions.publish_candidate.type, 'noul');
+  // 2026-09-26：publish_candidate は recommended_route=human-publish-review と同義なので導出（x-jev-derive）。Jev への質問にはしない
+  assert.equal(fieldPlans.publish_candidate.kind, 'derived');
+  assert.ok(!('publish_candidate' in request.questions));
+  assert.equal(request.questions.revision_needed.type, 'noul');
   assert.equal(request.questions.risk_level.type, 'choice');
   assert.equal(request.questions.recommended_route.type, 'choice');
 });
@@ -148,11 +151,12 @@ test('question design: every field has concrete instructions, every enum value h
   assert.match(OUTCOME.properties.publish_candidate.description, /never means the content may be published automatically/);
   // human_review_required = 「内容に特定の懸念があるか」。「公開に Human 承認が要るか」（常に要る）と混同しない
   assert.match(OUTCOME.properties.human_review_required.description, /not about whether publishing needs human approval/);
-  const texts = [OUTCOME.description, ...Object.values(OUTCOME.properties).flatMap((p) => [p.description, ...Object.values(p['x-enum-descriptions'] ?? {})])];
+  const texts = [OUTCOME.description, OUTCOME['x-jev-brief'], ...Object.values(OUTCOME.properties).flatMap((p) => [p.description, ...Object.values(p['x-enum-descriptions'] ?? {}), ...Object.values(p['x-boolean-criteria'] ?? {})])];
   for (const t of texts) for (const re of STEERING) assert.ok(!re.test(t), `steering phrase ${re} in: ${t.slice(0, 60)}`);
   const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
   for (const [name, q] of Object.entries(request.questions)) assert.equal(q.instructions, OUTCOME.properties[name].description, name);
-  assert.equal(request.state.brief, OUTCOME.description);
+  assert.equal(request.state.brief, OUTCOME['x-jev-brief']);
+  assert.ok(request.state.brief.startsWith(OUTCOME.description), 'x-jev-brief = description + Rules First の前提');
 });
 
 // ---------------------------------------------------------------- rules table（runtime では一致時にしか検証されないため表全体を検査）
@@ -198,7 +202,8 @@ test('A: ordinary free note article → Jev → publish candidate on route human
 });
 
 test('A2: same article but one uncertain question → min aggregation → review / human tier (thresholds untouched)', async () => {
-  const { engine } = engineWith(fakeProvider({ ...CLEAR_CANDIDATE, human_review_required: 0.3 }));
+  // 不確かな question は escalation-only でない revision_needed（human_review_required は 2026-09-26 Hybrid で min に入らない）
+  const { engine } = engineWith(fakeProvider({ ...CLEAR_CANDIDATE, revision_needed: 0.3 }));
   const r = await engine.decide(req(baseInput()));
   const jev = r.fallback.trace.find((t) => t.adapter === 'jev');
   assert.equal(jev.status, 'ok');
@@ -274,13 +279,14 @@ test('semantics pinned: deterministic blocked / hold without a content concern a
   }
 });
 
-test('known gap (Hybrid follow-up must close): Jev risk_level=high with human_review_required=false at high confidence → tier auto; safe only because publishing is always Human', async () => {
+test('gap closed (2026-09-26 Calibration): Jev risk_level=high with human_review_required=false at high confidence is a contradiction (x-outcome-invariants) → confidence 0 → human', async () => {
   const { engine } = engineWith(fakeProvider({ ...CLEAR_CANDIDATE, risk_level: { choice: 'high', confidence: 0.92 } }));
   const r = await engine.decide(req(baseInput()));
-  assert.equal(r.resolved_by, 'jev');
-  assert.equal(r.outcome.risk_level, 'high');
-  assert.equal(r.outcome.human_review_required, false);
-  assert.equal(r.tier, 'auto', 'no field-consistency check exists yet (MA-30 follow-up ② Hybrid / contradiction detection)');
+  assert.equal(r.tier, 'human');
+  assert.equal(r.resolved_by, 'human');
+  const jev = r.fallback.trace.find((a) => a.adapter === 'jev');
+  assert.equal(jev.status, 'ok');
+  assert.equal(jev.confidence, 0);
   assertNeverPublishes(r);
   assert.equal(DT.final_action, 'human-only');
 });

@@ -70,7 +70,10 @@ export function toGatewayQuestions(questions) {
   const out = {};
   for (const [name, q] of Object.entries(questions ?? {})) {
     if (q.type === 'noul') {
-      out[name] = { type: 'boolean', instructions: q.instructions };
+      // criteria は任意 { true, false }（schema の x-boolean-criteria がある field だけ。無ければ従来どおり送らない）
+      out[name] = q.criteria && typeof q.criteria.true === 'string' && typeof q.criteria.false === 'string'
+        ? { type: 'boolean', instructions: q.instructions, criteria: { true: q.criteria.true, false: q.criteria.false } }
+        : { type: 'boolean', instructions: q.instructions };
     } else if (q.type === 'choice') {
       // 内部 criteria は { option: null }（description不明。jev-adapter.mjs 参照）。
       // AI SDK は string の description を期待するため null → '' に変換する（option名は保持）

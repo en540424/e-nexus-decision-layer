@@ -74,6 +74,12 @@
       "rationale": "Threads は Human の明示 opt-in がある投稿だけを追跡対象にする（16_Threads運用ルール§7）"
     },
     {
+      "id": "confidential-or-secret",
+      "when": { "risk_flags.confidential_or_secret": true },
+      "outcome": { "publish_candidate": false, "revision_needed": false, "risk_level": "high", "human_review_required": true, "recommended_route": "hold" },
+      "rationale": "Secret・認証情報・社外秘・外部公開禁止情報が混入している（caller 検出）。本文は Jev へ渡さず決定的に止め、除去か公開取りやめかを Human が判断する（2026-09-26 実JEV Calibration で追加。プライバシー境界）"
+    },
+    {
       "id": "personal-information",
       "when": { "risk_flags.personal_information": true },
       "outcome": { "publish_candidate": false, "revision_needed": true, "risk_level": "high", "human_review_required": true, "recommended_route": "needs-revision" },

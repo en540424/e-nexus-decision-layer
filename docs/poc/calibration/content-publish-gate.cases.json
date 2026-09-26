@@ -117,6 +117,13 @@
       "facts": ["threads opt-in が無い"],
       "input": { "content_id": "cal-cp-r4", "content_type": "post", "channel": "threads", "channel_registered": true, "title": "短文", "summary": "短文。", "prior_publication_state": "unpublished" },
       "expected": { "resolver": "rules", "acceptable": { "recommended_route": ["hold"] }, "unacceptable": { "recommended_route": ["human-publish-review"] }, "ambiguity": "low" }
+    },
+    {
+      "case_id": "CP-R5-confidential-or-secret-flag",
+      "category": "Secret・外部公開禁止情報（caller flag・Rules First。2026-09-26 追加の rule）",
+      "facts": ["risk_flags.confidential_or_secret=true（本文は Jev に渡さない）"],
+      "input": { "content_id": "cal-cp-r5", "content_type": "article", "channel": "note", "channel_registered": true, "title": "設定メモ", "summary": "設定手順のメモ。", "prior_publication_state": "unpublished", "risk_flags": { "confidential_or_secret": true } },
+      "expected": { "resolver": "rules", "acceptable": { "recommended_route": ["hold"], "human_review_required": [true], "risk_level": ["high"] }, "unacceptable": { "recommended_route": ["human-publish-review"] }, "ambiguity": "low" }
     }
   ]
 }

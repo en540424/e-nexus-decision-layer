@@ -123,14 +123,19 @@ test('every outcome field maps to a Jev question (boolean / enum only) so Jev is
   assert.equal(request.questions.human_review_required.type, 'noul');
   assert.equal(request.questions.channel_status.type, 'choice');
   assert.equal(request.questions.content_channel_fit.type, 'choice');
-  assert.equal(request.questions.recommended_route.type, 'choice');
+  // 2026-09-26：route は channel_status から導出（x-jev-derive）。Jev への質問にはしない
+  assert.equal(fieldPlans.recommended_route.kind, 'derived');
+  assert.ok(!('recommended_route' in request.questions));
+  // Rules First 通過後に到達し得る値だけを提示（x-jev-enum）
+  assert.deepEqual(Object.keys(request.questions.channel_status.criteria), ['primary', 'secondary', 'not_recommended']);
+  assert.deepEqual(Object.keys(request.questions.content_channel_fit.criteria), ['high', 'medium', 'low']);
 });
 
 test('Vercel Gateway conversion (the Human smoke route) accepts this schema: no throw, non-empty criteria for every enum', () => {
   const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
   const gw = toGatewayQuestions(request.questions);
   assert.deepEqual(Object.keys(gw).sort(), Object.keys(request.questions).sort());
-  for (const field of ['channel_status', 'content_channel_fit', 'recommended_route']) {
+  for (const field of ['channel_status', 'content_channel_fit']) {
     for (const [v, text] of Object.entries(gw[field].criteria)) assert.ok(typeof text === 'string' && text.length > 0, `${field}.${v}`);
   }
 });
@@ -147,11 +152,18 @@ test('question design: every field has concrete instructions, every enum value h
   assert.match(OUTCOME.description, /separate decision \(content-publish-gate\)/);
   // human_review_required = 「このcontent×channelの組合せに焦点確認が要るか」。「投稿に Human 承認が要るか」（常に要る）と混同しない
   assert.match(OUTCOME.properties.human_review_required.description, /not about whether posting to this channel needs human approval/);
-  const texts = [OUTCOME.description, ...Object.values(OUTCOME.properties).flatMap((p) => [p.description, ...Object.values(p['x-enum-descriptions'] ?? {})])];
+  const texts = [OUTCOME.description, OUTCOME['x-jev-brief'], ...Object.values(OUTCOME.properties).flatMap((p) => [p.description, ...Object.values(p['x-enum-descriptions'] ?? {}), ...Object.values(p['x-boolean-criteria'] ?? {})])];
   for (const t of texts) for (const re of STEERING) assert.ok(!re.test(t), `steering phrase ${re} in: ${t.slice(0, 60)}`);
-  const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
+  const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [], inputSchema: DT.schema.properties.input });
   for (const [name, q] of Object.entries(request.questions)) assert.equal(q.instructions, OUTCOME.properties[name].description, name);
-  assert.equal(request.state.brief, OUTCOME.description);
+  // Jev には Rules First 通過後の前提を含む x-jev-brief を送る（公開承認ではないこと・content-publish-gate と別であることを含む）
+  assert.equal(request.state.brief, OUTCOME['x-jev-brief']);
+  assert.match(request.state.brief, /never a publishing approval/);
+  assert.match(request.state.brief, /separate decision \(content-publish-gate\)/);
+  // input_notes：input の enum 値（channel=note）の意味だけを schema の固定文から添える。他の input 値は増やさない
+  assert.deepEqual(request.state.input_notes, { channel: DT.schema.properties.input.properties.channel['x-enum-descriptions'].note });
+  assert.match(request.state.input_notes.channel, /note\.com/);
+  assert.deepEqual(request.state.input, baseInput(), 'input itself is passed unchanged');
 });
 
 // ---------------------------------------------------------------- rules table（runtime では一致時にしか検証されないため表全体を検査）
@@ -357,15 +369,24 @@ test('semantics pinned: deterministic not-a-candidate / hold without a fit conce
   }
 });
 
-test('known gap (mirrors content-publish-gate): Jev returning an internally inconsistent, high-confidence combo (channel_status=not_recommended with route=channel-candidate-review) still resolves tier=auto; no field-consistency check exists yet', async () => {
-  const { engine } = engineWith(fakeProvider({ ...CLEAR_PRIMARY, channel_status: { choice: 'not_recommended', confidence: 0.9 }, content_channel_fit: { choice: 'low', confidence: 0.88 }, recommended_route: { choice: 'channel-candidate-review', confidence: 0.9 } }));
+test('gap closed (2026-09-26 Calibration): recommended_route is derived from channel_status, so status/route cannot contradict; a status/fit contradiction at high confidence → invariant violation → confidence 0 → human', async () => {
+  // route は Jev に訊かない（x-jev-derive）。Jev が route を返しても使われない
+  const seen = [];
+  const { engine } = engineWith(fakeProvider({ ...CLEAR_PRIMARY, channel_status: { choice: 'not_recommended', confidence: 0.9 }, content_channel_fit: { choice: 'low', confidence: 0.88 }, recommended_route: { choice: 'channel-candidate-review', confidence: 0.9 } }, { seen }));
   const r = await engine.decide(req(baseInput()));
-  assert.equal(r.resolved_by, 'jev');
+  assert.ok(!('recommended_route' in seen[0].questions), 'route is not asked');
   assert.equal(r.outcome.channel_status, 'not_recommended');
-  assert.equal(r.outcome.recommended_route, 'channel-candidate-review', 'no field-consistency check exists yet (same known gap class as content-publish-gate, MA-30 follow-up 2)');
-  assert.equal(r.tier, 'auto', 'all field confidences are high, so min-aggregation does not catch the inconsistency either');
-  assert.equal(r.human_gate.required, false);
-  assertNeverPublishes(r);
+  assert.equal(r.outcome.recommended_route, 'not-a-candidate', 'derived from channel_status');
+  // primary × fit low は自己矛盾（x-outcome-invariants）→ 回答全体を信頼しない
+  const { engine: e2 } = engineWith(fakeProvider({ ...CLEAR_PRIMARY, channel_status: { choice: 'primary', confidence: 0.95 }, content_channel_fit: { choice: 'low', confidence: 0.95 } }));
+  const r2 = await e2.decide(req(baseInput()));
+  assert.equal(r2.tier, 'human');
+  assert.equal(r2.resolved_by, 'human');
+  const jev = r2.fallback.trace.find((a) => a.adapter === 'jev');
+  assert.equal(jev.status, 'ok');
+  assert.equal(jev.confidence, 0, 'contradiction ⇒ no confidence');
+  assert.equal(jev.networked, true, 'usage of the real call is kept');
+  assertNeverPublishes(r2);
   assert.equal(DT.final_action, 'human-only');
 });
 
