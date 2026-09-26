@@ -29,7 +29,7 @@ import { createLlmAdapterStub } from '../adapters/llm/llm-adapter-stub.mjs';
 import { createLocalAdapterStub } from '../adapters/local/local-adapter-stub.mjs';
 import { createHumanAdapter } from '../adapters/human/human-adapter.mjs';
 import { resolveJevProvider } from '../adapters/jev/jev-provider-interface.mjs';
-import { createFileMeter } from '../usage/metering.mjs';
+import { createFileMeter, defaultUsagePath } from '../usage/metering.mjs';
 import { readJson } from '../schemas/loader.mjs';
 
 export const ENGINE_MODES = Object.freeze(['production', 'verification']);
@@ -86,7 +86,7 @@ export function createDecisionLayerEngine({ env = process.env, mode = 'productio
   if (!ENGINE_MODES.includes(mode)) throw new Error(`engine mode must be one of ${ENGINE_MODES.join('|')}`);
   const core = createDecisionEngine({
     adapters: adapters ?? gatewayAdapters({ env, mode }),
-    meter: meter ?? createFileMeter(),
+    meter: meter ?? createFileMeter({ path: defaultUsagePath(env) }),
     ...rest,
   });
   return assertEngineShape({

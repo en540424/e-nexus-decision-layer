@@ -44,6 +44,8 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
 | `context` | 任意 | 参照用 ID。engine へは送られない |
 | `tenant` / `options` | 任意 | 既存どおり（`options.allow_paid_adapters` で高コスト LLM Adapter を opt-in） |
 | `via` | — | **Gateway が設定**（consumer 指定値は上書き）。`sdk` / `cli` / `http` / `mcp` |
+| `environment` | — | **Gateway が runtime 設定から設定**（consumer 指定値は上書き）。`dev` / `staging` / `production`（2026-09-26・§12） |
+| `expected_environment` | 任意 | consumer が想定する環境の宣言（envelope 項目。engine へは渡らない）。runtime と違えば `ENVIRONMENT_MISMATCH`（§12） |
 
 ### Response（envelope）
 
@@ -53,7 +55,7 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
   "ok": true,
   "request_id": "req_…", "correlation_id": "…|null",
   "decision": { /* 既存 DecisionResult（schemas/common/decision-result.schema.json）をそのまま */ },
-  "gateway": { "via": "cli", "engine": { "id": "e-nexus-decision-layer", "version": "0.1.0", "mode": "production" },
+  "gateway": { "via": "cli", "environment": "dev", "engine": { "id": "e-nexus-decision-layer", "version": "0.1.0", "mode": "production" },
                "latency_ms": 12, "timestamp": "…" }
 }
 ```
@@ -72,6 +74,7 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
 |---|---|---|---|
 | `INVALID_ENVELOPE` / `UNSUPPORTED_CONTRACT_VERSION` / `SCHEMA_INVALID` / `UNKNOWN_DECISION_TYPE` | invalid_request | false | 400 |
 | `HUMAN_GATE_VIOLATION`（engine が承認キーを返そうとした。outcome は返さない） | human_gate_violation | false | 422 |
+| `ENVIRONMENT_MISMATCH`（`expected_environment` ≠ runtime environment。engine を呼ばない・usage に書かない。§12） | environment_mismatch | false | 409 |
 | `GATEWAY_BUSY` | busy | true | 429 |
 | `GATEWAY_TIMEOUT` | timeout | true | 504 |
 | `ENGINE_ERROR`（生 message は返さない） | engine_error | true | 502 |
@@ -134,7 +137,8 @@ core の runtime-neutral 分離は今回行わない（2026-09-25 decision-log�
 
 ## 8. usage / metering / observability
 
-- 1 判定 = `data/usage/usage.jsonl` 1 行（既存）。Gateway 経由の行は `request_id`・`correlation_id`・`via` を持つ（旧行は null として読める）
+- 1 判定 = `data/usage/usage.jsonl` 1 行（既存）。Gateway 経由の行は `request_id`・`correlation_id`・`via`・`environment`（2026-09-26〜）を持つ（旧行は null として読める）
+- usage の既定の置き場所は環境で分かれる：`dev`＝従来どおり `data/usage/usage.jsonl`、`staging` / `production`＝`data/usage/<environment>/usage.jsonl`（`EDL_USAGE_PATH` があればそれが優先。§12）
 - `application_id` = consumer。`node src/cli.mjs usage --by application_id` で「誰が実際に使っているか」を確認する（「作ったが誰も使っていない」状態の検知）
 - health：`gateway health`（CLI）／`GET /v1/health`／MCP `enexus_gateway_health` = version・engine mode・adapters・Jev 経路状態（キーの有無のみ）・
   process 内 counters（requests / ok / failed / fallbacks / human_tier / errors_by_code / by_decision_type / by_via / latency last・max・avg）。
@@ -144,14 +148,15 @@ core の runtime-neutral 分離は今回行わない（2026-09-25 decision-log�
 
 consumer 側に作るのは **consumer adapter（request を組み、envelope を読む薄い層）だけ**。core・Gateway は変更しない。
 
+0. **どの実行環境の Gateway につなぐかを先に決める（§12）。** 本人用・内部用＝`dev`（今ある Gateway）。一般販売・外部ユーザー向けの SaaS／App／API／Agent は `production` 前提で、**今の DEV Gateway へつながない**（Production Gateway は未構築＝接続先・Secret・deploy は Human Required）。不明なら Production へ推測接続しない
 1. `application_id` を決める（例 `hermes` / `openai-agent` / `line-crm` / `en-sns-hub`）
 2. 入口面を選ぶ：Node 同居 = SDK、別言語・別マシン = HTTP、MCP 対応 Agent = MCP、shell / 別 repo = CLI
 3. `input` は decision_type schema の構造情報だけ（Secret・PII・本文全文を入れない）。`correlation_id` に自分の業務 ID
-4. `ok:false` は必ず `failure.policy` に従う。`ok:true` でも承認ではない
+4. `ok:false` は必ず `failure.policy` に従う。`ok:true` でも承認ではない。request に `expected_environment` を付け、envelope の `gateway.environment` も確認する（不一致・欠落は fail-closed）
 5. deterministic な安全規則（consent・unsubscribe・frequency cap・公開停止等）は consumer / Growth Core 側の Rules に残し、Jev に丸投げしない
 6. 新しい decision_type が要るときは architecture §7（schema + index + rules + tests）。Gateway は変えない
 
-| consumer | 状態（2026-09-25） | 次に作るもの |
+| consumer | 状態（2026-09-26） | 次に作るもの |
 |---|---|---|
 | en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate` コマンド・CLI transport）。2026-09-26 実 Jev 到達確認 | — |
 | Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。2026-09-26 実 Jev 到達確認。MCP は Human 接続待ち | — |
@@ -159,7 +164,7 @@ consumer 側に作るのは **consumer adapter（request を組み、envelope �
 | Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |
 | LINE / CRM | 未接続（MA-31 G5-0 は触らない） | `lead-triage` schema 化の後、HTTP |
-| SNS / Growth | 未接続（**次**） | 先に `channel-selection`／`content-publish-gate` の実 Jev Calibration（decision-log 2026-09-26）→ note 系 Skill / en-sns-hub から接続 |
+| SNS / Growth（`channel-selection`・`content-publish-gate`） | **接続済み（2026-09-26・dev）**：en-sns-hub `src/growth-decision.mjs`（thin adapter・CLI transport・`expected_environment: dev`）＋ `POST /api/decide`。実 Jev 到達確認（`real-jev-evidence.mjs --expect en-sns-hub`）。Claude Code 経路は Skill `enexus-decision` | en-sns-hub の Worker 版は HTTP Gateway が要る（deploy は Human-only）。他 SNS は GrowthCandidate への写像を足す |
 
 ## 10. Engine の差し替え
 
@@ -216,3 +221,29 @@ tests は実 Jev を呼ばない（decision-layer は明示 env `{}`・一時 us
 - `human_review_required` は escalation-only（follow-up ② Hybrid）：true なら confidence に関わらず `tier:human`、false のときはその質問の確信度を全体 confidence に入れない
 - Jev の回答が自己矛盾（schema の `x-outcome-invariants`。例：`paid_generation_required=false` かつ route `en-generate-hub`）していれば attempt の confidence は 0 になり human へ進む（usage は attempt に残る）
 - 実測（synthetic 評価・holdout）は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`。`tier:auto` はどの type でも承認ではない
+
+## 12. Runtime environment（2026-09-26・Environment Isolation）
+
+上位原則の正本は Vault「技術スタック選定・管理_正本」§3-8（E-NEXUS 共通基盤は**コードは共通、実行環境は分離**。DEV / STAGING / PRODUCTION）。
+Decision Gateway への具体適用は Vault Decision Layer 正本 §18-7。ここには repo 側の実装事実だけを書く。
+
+| 項目 | 実装 |
+|---|---|
+| 識別子 | `dev`（PERSONAL / DEV）／`staging`／`production`。`src/core/environment.mjs` |
+| 決め方 | **Gateway を動かす runtime の env `EDL_ENVIRONMENT`**。未設定・空＝`dev`。それ以外の値（`prod` 等）は起動を拒否する（推測で補わない） |
+| consumer の値 | request の `environment` は `via` と同じく **Gateway が上書き**（consumer の自由入力を信頼しない）。consumer は任意の `expected_environment` で想定環境を宣言でき、不一致は `ENVIRONMENT_MISMATCH`（409・engine を呼ばない・usage に書かない・fail-closed） |
+| 可視化 | envelope `gateway.environment`・`gateway.version()`／`GET /health`・`/version`・`gateway health`・usage 行の `environment` |
+| usage / logs | `dev` は従来の `data/usage/usage.jsonl`（既存履歴・`scripts/real-jev-evidence.mjs` と互換）。`staging` / `production` は `data/usage/<environment>/usage.jsonl` |
+| mock | `verification`（mock-jev）は **dev 専用**。`staging` / `production` の runtime では Gateway が起動を拒否する |
+| engine mode との違い | engine の `mode: production`＝「mock-jev を入れない判定モード」。**実行環境の PRODUCTION ではない**。実行環境は `environment` だけで表す |
+
+**CLI / SDK の同居実行は DEV 扱い。** 子 process で CLI を起動する consumer は自分の env（`EDL_*` を含む）を Gateway に継がせるので、
+CLI / SDK では「環境を決めているのは実質 consumer の process env」になる。したがって **`staging` / `production` を名乗れるのは、
+deploy された HTTP Gateway の runtime 設定だけ**とする（consumer は HTTP の endpoint・service token を環境ごとに別に持つ）。
+local CLI transport の consumer adapter は `dev` 以外を指定されたら接続せず fail-closed にする（en-sns-hub `src/growth-decision.mjs` が最初の実装例）。
+
+**現在の実体（2026-09-26）**：実行環境は **dev だけ**。STAGING / PRODUCTION の Gateway・Backend は存在しない（未 deploy）。
+Production を作るとき（Human-only）の要件：環境ごとに別の Secret（Jev key・`EDL_GATEWAY_TOKEN`）・endpoint・usage/log 置き場・rate limit・provider config、
+PRODUCTION は pinned version（`master` / latest を無条件に追従しない）と安定版への rollback、DEV → STAGING → PRODUCTION の昇格、
+一般販売 SaaS の client（iOS / Android / browser）は Gateway を直接呼ばず E-NEXUS Backend 経由（client に Secret を置かない）、
+multi-tenant 識別は `application_id`・`tenant`（opaque ID）・`environment`、Production PII を Calibration / 開発試験に使わない。

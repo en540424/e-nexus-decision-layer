@@ -21,6 +21,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, isAbsolute } from 'node:path';
 import { ROOT } from '../core/paths.mjs';
+import { resolveRuntimeEnvironment, DEFAULT_RUNTIME_ENVIRONMENT } from '../core/environment.mjs';
 
 export const USAGE_FIELDS = Object.freeze([
   'timestamp', 'decision_id', 'application_id', 'project_id', 'tenant',
@@ -30,6 +31,8 @@ export const USAGE_FIELDS = Object.freeze([
   'attempts', 'usage_total',
   // 2026-09-25 Common Decision Gateway：どの consumer の、どの request が、どの入口から来たか（旧行には無い＝null 扱い）
   'request_id', 'correlation_id', 'via',
+  // 2026-09-26 Environment Isolation：どの runtime environment（dev|staging|production）で判定したか。Gateway が付ける（旧行・直接 decide() は null）
+  'environment',
 ]);
 
 /** attempts[] の1要素が持つフィールド（fallback.trace の record から `ms`（latency_ms と同値）だけ落とした射影） */
@@ -39,10 +42,16 @@ export const ATTEMPT_FIELDS = Object.freeze([
   'retry_count', 'final', 'continue_reason',
 ]);
 
+/**
+ * usage の置き場所。EDL_USAGE_PATH があればそれ。無ければ dev は従来どおり data/usage/usage.jsonl（既存の履歴・証跡 script と互換）、
+ * staging / production は data/usage/<environment>/usage.jsonl に分ける（usage / logs の環境分離。技術スタック正本 §3-8-3）。
+ */
 export function defaultUsagePath(env = process.env) {
   const p = env.EDL_USAGE_PATH;
   if (p) return isAbsolute(p) ? p : join(ROOT, p);
-  return join(ROOT, 'data', 'usage', 'usage.jsonl');
+  const environment = resolveRuntimeEnvironment(env);
+  if (environment === DEFAULT_RUNTIME_ENVIRONMENT) return join(ROOT, 'data', 'usage', 'usage.jsonl');
+  return join(ROOT, 'data', 'usage', environment, 'usage.jsonl');
 }
 
 /** fallback.trace（attempt record の配列）→ attempts[]。純粋な射影で、新しい情報は作らない */
@@ -98,6 +107,7 @@ export function buildUsageRecord({ request, result, adapter, adapterResult, fall
     request_id: request.request_id ?? null,
     correlation_id: request.correlation_id ?? null,
     via: request.via ?? null,
+    environment: request.environment ?? null,
   };
 }
 

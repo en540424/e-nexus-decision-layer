@@ -17,6 +17,10 @@
   **Common Decision Gateway（`src/gateway/`・`docs/gateway.md`）の契約だけ**を使う。
 - **Gateway は承認しない・fail-open しない。** `policies/gateway/failure-policy.json` は `human-required`／`deny` 以外を持てない。
   HTTP を loopback 以外へ bind するのは token 必須、MCP の接続・常駐・deploy は Human-only。
+- **コードは共通、実行環境は分離（2026-09-26）。** 上位正本は Vault「技術スタック選定・管理_正本」§3-8、repo 側は `docs/gateway.md` §12。
+  一般販売・外部ユーザー向けの SaaS／App／API／Agent を**今の DEV Gateway（ローカル CLI / SDK）へつながない**。環境が不明なら Production へ推測接続しない。
+  DEV の変更を Production へ自動反映しない。環境別のコード複製（`decision-layer-prod` 等）を作らない。`EDL_ENVIRONMENT` を AI が staging / production に設定しない
+  （Production の deploy・Secret・Gateway 切替は Human-only）。engine の `mode: production` は実行環境の PRODUCTION ではない。
 - **Git**：Vault の CLAUDE.md「Git運用」「Human-only操作」に従う。force push / reset / rebase / stash / branch削除は禁止。
   remote 作成（`gh repo create`）と push 先の設定は Human-only。
 

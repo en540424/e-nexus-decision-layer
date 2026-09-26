@@ -11,17 +11,22 @@
  *       contract_version, ok, request_id, correlation_id,
  *       decision,          // ok=true：既存 DecisionResult をそのまま（名前を複製しない。tier / human_gate.required / outcome を読む）
  *       error, failure,    // ok=false：構造化エラーと failure policy（human-required | deny。fail-open は存在しない）
- *       gateway: { via, engine:{id,version,mode}, latency_ms, timestamp }
+ *       gateway: { via, environment, engine:{id,version,mode}, latency_ms, timestamp }
  *     }
  *
  * Gateway が持つもの：envelope 検証・request_id 採番・timeout・同時実行上限・failure policy・structured error・
  *   process 内 stats（health 用）。Decision の中身（schema / rules / routing / fallback / Human Gate / metering）は
  *   engine（既定＝Decision Layer core）の責務で、ここに重複実装しない。
+ * Runtime environment（2026-09-26）：environment（dev|staging|production）は Gateway の runtime 設定（EDL_ENVIRONMENT・未設定は dev）で決まる。
+ *   consumer が request に書いた environment は via と同じく上書きする。consumer は任意の expected_environment で「自分が想定している環境」を
+ *   宣言でき、runtime と違えば ENVIRONMENT_MISMATCH（fail-closed）。CLI / SDK の同居実行は consumer の process env を継ぐので DEV 扱いであり、
+ *   staging / production を名乗れるのは deploy された HTTP Gateway の runtime 設定だけ（docs/gateway.md §12）。
  * Gateway は承認しない。ok=true でも tier=auto でも、既存の Human-only ゲート（MA-17 承認・SNS 公開・Hub 更新ボタン等）は別。
  */
 import { randomUUID } from 'node:crypto';
 import { readJson } from '../schemas/loader.mjs';
 import { createDecisionLayerEngine, assertEngineShape } from './engine.mjs';
+import { resolveRuntimeEnvironment, isRuntimeEnvironment, RUNTIME_ENVIRONMENTS, DEFAULT_RUNTIME_ENVIRONMENT } from '../core/environment.mjs';
 import { HumanGateViolationError, SchemaValidationError, DecisionLayerError } from '../core/errors.mjs';
 
 export const GATEWAY_CONTRACT_VERSION = '1';
@@ -36,6 +41,7 @@ const ERROR_KINDS = Object.freeze({
   UNKNOWN_DECISION_TYPE: { kind: 'invalid_request', retryable: false },
   INVALID_ENVELOPE: { kind: 'invalid_request', retryable: false },
   UNSUPPORTED_CONTRACT_VERSION: { kind: 'invalid_request', retryable: false },
+  ENVIRONMENT_MISMATCH: { kind: 'environment_mismatch', retryable: false },
   HUMAN_GATE_VIOLATION: { kind: 'human_gate_violation', retryable: false },
   GATEWAY_TIMEOUT: { kind: 'timeout', retryable: true },
   GATEWAY_BUSY: { kind: 'busy', retryable: true },
@@ -100,14 +106,21 @@ export function createGateway({
   timeoutMs = Number(env.EDL_GATEWAY_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
   maxConcurrent = Number(env.EDL_GATEWAY_MAX_CONCURRENT) || DEFAULT_MAX_CONCURRENT,
   now = () => new Date(),
+  environment = resolveRuntimeEnvironment(env),
 } = {}) {
+  if (!isRuntimeEnvironment(environment)) throw new Error(`environment must be one of ${RUNTIME_ENVIRONMENTS.join('|')}`);
   const eng = assertEngineShape(engine ?? createDecisionLayerEngine({ env }));
+  // mock-jev（verification）は配管検証専用。staging / production の runtime では使わない（DEV 以外で模擬判定を返さない）
+  if (environment !== DEFAULT_RUNTIME_ENVIRONMENT && eng.mode !== 'production') {
+    throw new Error(`engine mode ${JSON.stringify(eng.mode)} is not allowed in the ${environment} environment (verification / mock is dev-only)`);
+  }
   loadFailurePolicy(failurePolicy);
   const stats = newStats();
 
   function gatewayBlock(via, started) {
     return {
       via,
+      environment,
       engine: { id: eng.id, version: eng.version, mode: eng.mode },
       latency_ms: Date.now() - started,
       timestamp: now().toISOString(),
@@ -116,9 +129,15 @@ export function createGateway({
 
   function prepare(raw, via) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw envelopeError('INVALID_ENVELOPE', 'request must be a JSON object');
-    const { contract_version: cv, ...request } = raw;
+    const { contract_version: cv, expected_environment: expected, ...request } = raw;
     if (cv !== undefined && cv !== GATEWAY_CONTRACT_VERSION) {
       throw envelopeError('UNSUPPORTED_CONTRACT_VERSION', `contract_version ${JSON.stringify(cv)} is not supported (supported: "${GATEWAY_CONTRACT_VERSION}")`);
+    }
+    if (expected !== undefined) {
+      if (!isRuntimeEnvironment(expected)) throw envelopeError('INVALID_ENVELOPE', `expected_environment must be one of ${RUNTIME_ENVIRONMENTS.join('|')}`);
+      if (expected !== environment) {
+        throw envelopeError('ENVIRONMENT_MISMATCH', `consumer expects the ${expected} environment but this Gateway runs in ${environment}`);
+      }
     }
     for (const f of ['request_id', 'correlation_id']) {
       if (request[f] !== undefined && (typeof request[f] !== 'string' || !ID_PATTERN.test(request[f]))) {
@@ -127,6 +146,7 @@ export function createGateway({
     }
     request.request_id ??= `req_${randomUUID()}`;
     request.via = via; // consumer 指定値は上書き（入口は Gateway が知っている）
+    request.environment = environment; // 同上（環境は runtime が知っている。consumer の自由入力を信頼しない）
     return request;
   }
 
@@ -195,7 +215,7 @@ export function createGateway({
 
   /** 公開してよい最小情報（認証なしの /health 用） */
   function version() {
-    return { contract_version: GATEWAY_CONTRACT_VERSION, engine: { id: eng.id, version: eng.version, mode: eng.mode } };
+    return { contract_version: GATEWAY_CONTRACT_VERSION, environment, engine: { id: eng.id, version: eng.version, mode: eng.mode } };
   }
 
   /** 詳細 health（認証済みの入口だけが返す。Secret は含まない） */
@@ -218,5 +238,5 @@ export function createGateway({
     }));
   }
 
-  return { decide, health, version, decisionTypes, engine: eng };
+  return { decide, health, version, decisionTypes, engine: eng, environment };
 }

@@ -25,6 +25,7 @@ const DEFAULT_MAX_BODY = 64 * 1024;
 const STATUS_BY_KIND = Object.freeze({
   invalid_request: 400,
   human_gate_violation: 422,
+  environment_mismatch: 409,
   busy: 429,
   timeout: 504,
   engine_error: 502,

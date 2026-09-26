@@ -35,7 +35,8 @@ test('contract v1: ok envelope wraps the existing DecisionResult unchanged (no d
   assert.deepEqual(errs, []);
   assert.equal(env.decision.resolved_by, 'rules');
   assert.equal(env.decision.outcome.recommended_route, 'remotion');
-  assert.deepEqual(Object.keys(env.gateway).sort(), ['engine', 'latency_ms', 'timestamp', 'via']);
+  assert.deepEqual(Object.keys(env.gateway).sort(), ['engine', 'environment', 'latency_ms', 'timestamp', 'via']);
+  assert.equal(env.gateway.environment, 'dev', 'EDL_ENVIRONMENT unset = dev (2026-09-26)');
   assert.equal(env.gateway.engine.id, 'e-nexus-decision-layer');
   assert.equal(env.gateway.engine.mode, 'production');
 });
@@ -181,7 +182,7 @@ test('health / version expose no secret values and report Jev route status by ke
   assert.equal(text.includes('gw-secret'), false);
   assert.equal(h.engine_health.jev.usable, true);
   assert.equal(h.engine_health.adapters.includes('mock-jev'), false);
-  assert.deepEqual(Object.keys(gateway.version()).sort(), ['contract_version', 'engine']);
+  assert.deepEqual(Object.keys(gateway.version()).sort(), ['contract_version', 'engine', 'environment']);
   const types = gateway.decisionTypes();
   assert.ok(types.find((t) => t.decision_type === 'paid-generation-gate' && t.failure_policy === 'human-required'));
 });

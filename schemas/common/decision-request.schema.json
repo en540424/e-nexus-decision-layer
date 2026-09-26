@@ -9,6 +9,7 @@
     "request_id": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Common Decision Gateway（src/gateway/）の request 識別子。Gateway が未指定なら採番する。usage.jsonl に記録（2026-09-25追加・任意・後方互換）" },
     "correlation_id": { "type": "string", "minLength": 1, "maxLength": 128, "description": "consumer 側の業務IDとの対応付け（例：en-generate-hub の request hash）。PIIを入れない。usage.jsonl に記録（2026-09-25追加・任意）" },
     "via": { "type": "string", "enum": ["sdk", "cli", "http", "mcp"], "description": "Gateway の入口面。consumer ではなく Gateway が設定する（consumer 指定値は上書きされる）。直接 decide() を呼んだ場合は無し（2026-09-25追加・任意）" },
+    "environment": { "type": "string", "enum": ["dev", "staging", "production"], "description": "判定した runtime environment（2026-09-26 Environment Isolation）。consumer ではなく Gateway が runtime 設定（EDL_ENVIRONMENT・未設定は dev）から設定する（consumer 指定値は上書きされる）。consumer が想定環境を宣言したい場合は envelope の expected_environment を使う（docs/gateway.md §12）。直接 decide() を呼んだ場合は無し（任意・後方互換）" },
     "application_id": { "type": "string", "minLength": 1, "description": "呼び出し元アプリ／Agent／IDE（例: claude-code, cursor, hermes, openmontage, travel-rate-camera）" },
     "project_id": { "type": "string", "minLength": 1, "description": "registries/projects.json の id" },
     "tenant": { "type": ["string", "null"], "description": "販売版でのユーザー／テナント識別子。原価集計用。PIIは入れない" },

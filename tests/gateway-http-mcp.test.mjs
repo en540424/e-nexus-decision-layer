@@ -49,7 +49,7 @@ test('HTTP: /health and /version are minimal (no stats, no provider detail) and 
   await withServer({ token: 'tok' }, async (port) => {
     const h = await call(port, { path: '/health' });
     assert.equal(h.status, 200);
-    assert.deepEqual(Object.keys(h.json).sort(), ['contract_version', 'engine', 'status']);
+    assert.deepEqual(Object.keys(h.json).sort(), ['contract_version', 'engine', 'environment', 'status']);
     const v = await call(port, { path: '/version' });
     assert.equal(v.json.contract_version, '1');
   });
