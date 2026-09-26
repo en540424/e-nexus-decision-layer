@@ -142,3 +142,38 @@ for (const [name, opts, reason, networked, expectedCalls] of FAILURES) {
     assert.ok(!JSON.stringify(row).includes('test-key-not-real'));
   });
 }
+
+test('Gateway does not degrade what Jev receives (2026-09-26 Calibration §28): state.input equals the consumer input exactly (types kept, nothing dropped or renamed), input_notes / narrowed options / derived route reach the provider', async () => {
+  const seen = [];
+  const { gateway } = gatewayWith({
+    evaluateImpl: async (args) => {
+      seen.push(args);
+      return {
+        answers: {
+          channel_status: { type: 'choice', choice: 'primary', probabilities: { primary: 0.95 } },
+          content_channel_fit: { type: 'choice', choice: 'high', probabilities: { high: 0.95 } },
+          human_review_required: { type: 'boolean', probability: 0.1 },
+        },
+        usage: { inputTokens: 1300, outputTokens: 90 },
+        response: { modelId: 'typesafe-ai/jev' },
+        providerMetadata: { typesafe: { confidence: { channel_status: 0.95, content_channel_fit: 0.93 } } },
+      };
+    },
+  });
+  const input = {
+    content_id: 'cal-gw-1', source_type: 'dev-log', content_type: 'article', media_type: 'text', channel: 'note',
+    channel_registered: true, channel_publication_state: 'not-published', title: 't', summary: 's', language: 'ja',
+    paid_listing: false, human_channel_preference: 'none',
+  };
+  const env = await gateway.decide({ decision_type: 'channel-selection', application_id: 'claude-code', project_id: 'e-nexus-decision-layer', input }, { via: 'cli' });
+  assert.equal(env.ok, true);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].state.input, input, 'consumer input reaches Jev unchanged');
+  assert.equal(seen[0].state.input.channel_registered, true, 'boolean stays boolean');
+  assert.match(seen[0].state.input_notes.channel, /note\.com/);
+  assert.deepEqual(Object.keys(seen[0].questions).sort(), ['channel_status', 'content_channel_fit', 'human_review_required']);
+  assert.deepEqual(Object.keys(seen[0].questions.channel_status.criteria), ['primary', 'secondary', 'not_recommended']);
+  assert.equal(env.decision.outcome.recommended_route, 'channel-candidate-review', 'route derived from status');
+  assert.equal(env.decision.resolved_by, 'jev');
+  assert.equal(env.decision.tier, 'auto', 'human_review_required=false is escalation-only; other fields ≥ 0.85');
+});

@@ -94,6 +94,10 @@ consumer 展開できる水準へ調整した記録。Gateway 方式・Common Co
 
 `scripts/real-jev-evidence.mjs --since 2026-09-26T03:10:00Z --expect claude-code,en-generate-hub` → exit 0。
 
+## 6-1. Gateway は Jev への入力を劣化させない（§28）
+
+`tests/gateway-real-jev-path.test.mjs`「Gateway does not degrade what Jev receives」：Gateway の `decide` → production と同じ adapter 並び → Vercel provider の受信引数で、`state.input` が consumer の `input` と完全一致（boolean は boolean のまま・field の欠落／改名なし）、`input_notes`・絞った選択肢・導出 route が届くことを確認（tests 240/240）。
+
 ## 7. 残り・次
 
 - 本番入力の分布は synthetic と違う。consumer 接続後に usage.jsonl の attempts で confidence・tier を継続観測する
