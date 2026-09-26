@@ -386,7 +386,8 @@ def format_console(e):
     if ev == "launcher_start":
         return f"[{t}] 起動    E-NEXUS OpenMontage Launcher v{LAUNCHER_VERSION}（DEV）監視: {e.get('projects_dir')}"
     if ev == "agent_start":
-        return f"[{t}] 起動    OpenMontage agent pid={e.get('pid')}（有料provider鍵を外した数: {e.get('stripped_env_count')}）"
+        return (f"[{t}] 起動    OpenMontage agent pid={e.get('pid')}（子envから外した鍵：有料provider {e.get('stripped_paid_count')}件"
+                f"・Decision Engine用 {e.get('stripped_engine_count')}件）")
     if ev == "agent_exit":
         return f"[{t}] 終了    OpenMontage agent exit={e.get('code')}"
     if ev == "checkpoint_detected":
@@ -812,7 +813,9 @@ class Launcher:
         self.agent = AgentProcess(argv, cwd, env, console=self.cfg.agent_console, capture=self.cfg.capture_agent_output, log=self.log)
         pid = self.agent.start()
         # 値は出さない。外した「名前」の件数だけ
+        paid = [k for k in stripped if PAID_PROVIDER_ENV.search(k.upper())]
         self.log.emit("agent_start", pid=pid, argv0=Path(argv[0]).name, cwd=cwd, stripped_env_count=len(stripped),
+                      stripped_paid_count=len(paid), stripped_engine_count=len(stripped) - len(paid),
                       brief=self.cfg.agent_brief, console=self.cfg.agent_console, lifetime_bound=bool(self.agent.job))
 
     def _install_signals(self):
