@@ -65,7 +65,10 @@ launch-openmontage.cmd autostart uninstall   # 登録を削除し、常駐 watch
   起きない）。常駐 watcher がいる時の `launch-openmontage.cmd` は **OpenMontage agent だけ**を起動し、監視は常駐側が行う。常駐がいない時は
   従来どおり Launcher 自身が監視し、Launcher が終われば次の繰り返しで常駐 watcher が引き継ぐ。`watch` を重ねて起動しても 0 で即終了する
 - **Launcher を通さず clone で直接 OpenMontage / claude を起動しても**常駐 watcher が gate を検知して判定する。ただしその経路では agent の
-  env から有料 provider の鍵を外せない（Launcher 経由だけの構造的な保護）。代わりに：
+  env から有料 provider の鍵を外せない（Launcher 経由だけの構造的な保護）。**2026-09-26 以降は鍵そのものが env に無い**：
+  en-generate-hub の Paid Provider Secret Boundary（Vault MA-17 正本 §21・MA-30 正本 §18-13）で、有料 provider の鍵を Windows User
+  環境変数から Windows 資格情報マネージャーへ移し、MA-17 承認済み実行だけが取得する（Human 移行の完了後に有効）。Launcher の鍵除去は
+  defense-in-depth として残す。確認は en-generate-hub `scripts/secret-boundary-probe.ps1`。以下の通知は引き続き有効：
   - 判定が Human の注意を要する時（有料候補・human-review・再試行中・取得失敗・Decision 無しで後段開始）に **Windows の通知**を出す
     （PowerShell の WinRT toast・追加依存なし。無料経路は通知しない）
   - OpenMontage の `events.jsonl` を追い、**OpenMontage 内で有料 tool が実行された（`cost_usd > 0`）／有料候補の tool が開始された**ことを
