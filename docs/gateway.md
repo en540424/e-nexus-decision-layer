@@ -188,7 +188,11 @@ en-generate-hub と en-sns-hub の transport 部分（`resolveEdlHome`・`loadEn
 7. **Gateway 呼び出し**：入口面を選ぶ（Node 同居 = SDK、shell / 別 repo = CLI、別言語・別マシン = HTTP、MCP 対応 Agent = MCP）。CLI は §9-4 の transport 契約に従う
 8. **typed result 検証**：`contract_version`・`ok`・`decision` の有無・`gateway.environment` を確認し、`decision.outcome` / `tier` / `human_gate` を読む
 9. **Human-only 境界**：`ok:true`・`tier:auto` でも承認ではない。結果に承認・実行キーを作らない。有料実行・公開・送信・deploy は既存 Human-only ゲートを通る
-10. **failure / mismatch**：`ok:false` は `failure.policy`（human-required / deny）に従う。環境不一致・欠落・Gateway 不在・timeout・不正応答は fail-closed。自動 retry・自動続行しない
+10. **failure / mismatch**：`ok:false` は `failure.policy`（human-required / deny）に従う。環境不一致・欠落・Gateway 不在・timeout・不正応答は fail-closed。**自動続行しない**。
+    自動 retry は既定でしない。例外は常駐して判定を「取り直せる」consumer（2026-09-26〜 OpenMontage Launcher）だけで、範囲を次に限る：
+    Engine に届いていない失敗（`GATEWAY_BUSY`・起動失敗）は短い即時 retry（最大 2 回）、Engine が走り続けて usage・課金が発生しうる失敗
+    （`GATEWAY_TIMEOUT`・`ENGINE_ERROR`・不正応答。§2 timeout の既知の制約）は即時に呼び直さず pending にして遅延再試行（上限あり）、
+    尽きたら human-review。再試行中も結果は human-review 扱いで、承認・実行へは進まない（Performance-First：Vault 技術スタック正本 §3-0-7）
 11. **usage evidence**：`usage --by application_id` と `scripts/real-jev-evidence.mjs --expect <application_id>` で「実際に使われている」ことを確認できる（§11-3）
 12. **tests**：transport は `consumer-kit/conformance/transport-cases.json` を全件通す。consumer 固有部分は builder（送らない情報）・解釈（承認でない・不明 route は human）を test
 13. **real smoke**：synthetic input で 1〜2 回（burst 429 実測あり）。事前に `gateway health` で経路を確認し、事後に `--since` と `request_id` を照合（§11-4）
@@ -221,7 +225,7 @@ HTTP / Production 用 transport は Production Gateway の構築（Human-only）
 | en-generate-hub（`paid-generation-gate`） | **接続済み**（`decision-gate`・CLI transport）。2026-09-26 実 Jev 到達確認。同日 `expected_environment: dev` と environment 照合を追加（標準準拠） | transport を `consumer-kit/node/cli-transport.mjs` へ寄せるのは任意（次に触る時） |
 | Claude Code | **接続済み**（Vault Skill `enexus-decision` + CLAUDE.md の発動ルール・CLI）。2026-09-26 実 Jev 到達確認。同日 Skill の request に `expected_environment: dev` を追加。MCP は Human 接続待ち | — |
 | SNS / Growth（`channel-selection`・`content-publish-gate`） | **接続済み（2026-09-26・dev）**：en-sns-hub `src/growth-decision.mjs`（thin adapter・CLI transport・`expected_environment: dev`）＋ `POST /api/decide`。実 Jev 到達確認 | Worker 版は HTTP Gateway が要る（deploy は Human-only）。transport の kit 移行は任意 |
-| **OpenMontage（`paid-generation-gate`）** | **workflow 接続済み（2026-09-26・dev・proposal gate 境界）**：thin adapter `integrations/openmontage/enexus_openmontage_decision.py`（Python・CLI transport・`application_id: openmontage`）＋ preflight wrapper `enexus_openmontage_preflight.py`（OpenMontage の proposal checkpoint＝`awaiting_human` の production plan を JSON で読み、生成系 tool ごとに adapter を呼ぶ）。OpenMontage 上流の checkpoint writer が書いた checkpoint から実 Jev 到達確認。route=en-generate-hub は /en-generate（MA-17）への引き継ぎ候補で、OpenMontage 内蔵の有料 tool は使わない | OpenMontage の agent が自分で preflight を呼ぶには上流 `AGENT_GUIDE.md` 等への追記が要る（上流 clone は編集しない・Human 判断）。現在の呼び出しは Claude Code Skill `enexus-decision` の案内から |
+| **OpenMontage（`paid-generation-gate`）** | **workflow 接続済み（2026-09-26・dev・proposal gate 境界）**：thin adapter `integrations/openmontage/enexus_openmontage_decision.py`（Python・CLI transport・`application_id: openmontage`）＋ preflight wrapper `enexus_openmontage_preflight.py`（OpenMontage の proposal checkpoint＝`awaiting_human` の production plan を JSON で読み、生成系 tool ごとに adapter を呼ぶ）。OpenMontage 上流の checkpoint writer が書いた checkpoint から実 Jev 到達確認。route=en-generate-hub は /en-generate（MA-17）への引き継ぎ候補で、OpenMontage 内蔵の有料 tool は使わない。**2026-09-26 自動化**：`enexus_openmontage_launcher.py`（Launcher）が OpenMontage を起動し、gate checkpoint（proposal／proposal の無い pipeline は scene_plan）を監視して preflight を自動実行する（Human / agent が wrapper を覚えて呼ぶ必要はない・上流無改変）。agent の env から有料 provider の鍵を外し、報告の場所を session 限りの追記指示で伝える | Launcher を経由しない起動（clone で直接 `claude`）は監視されない（次回 Launcher 起動時の再走査で拾う）。常駐（OS 起動時の自動開始・Mac mini daemon）は Human 判断 |
 | Cursor | 未接続 | MCP 設定（Human）か `.cursor/rules` で CLI |
 | Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter（Python なら openmontage adapter の transport を kit へ移して使う） |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |

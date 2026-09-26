@@ -5,3 +5,4 @@ node_modules/
 data/usage/*.jsonl
 *.log
 __pycache__/
+data/openmontage-launcher/

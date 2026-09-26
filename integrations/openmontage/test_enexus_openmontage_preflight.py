@@ -102,6 +102,70 @@ class ExtractTest(unittest.TestCase):
             pf.load_checkpoint(d / "c.json")
 
 
+SCENE_PLAN_CP = {
+    "version": "1.0", "project_id": "enexus-fixture-th", "stage": "scene_plan", "status": "awaiting_human",
+    "pipeline_type": "talking-head", "timestamp": "2026-09-26T00:00:00+00:00",
+    "artifacts": {"scene_plan": {"scenes": [
+        {"id": "s1", "description": "朝のキッチン", "start_seconds": 0, "end_seconds": 3,
+         "required_assets": [{"type": "video", "description": "実写風の朝のキッチン", "source": "generate"},
+                             {"type": "Music", "description": "明るいBGM", "source": "generate"},
+                             {"type": "image", "description": "ロゴ", "source": "provided"}]},
+        {"id": "s2", "description": "製品", "start_seconds": 3, "end_seconds": 5,
+         "required_assets": [{"type": "video", "description": "製品の寄り", "source": "generate"},
+                             {"type": "hologram", "description": "謎の演出", "source": "generate"}]}]}},
+}
+
+
+class ScenePlanGateTest(unittest.TestCase):
+    def test_generate_assets_grouped_by_capability(self):
+        cp = pf.validate_gate_checkpoint(json.loads(json.dumps(SCENE_PLAN_CP)))
+        c = {x["capability"]: x for x in pf.extract_candidates(cp)}
+        self.assertEqual(sorted(c), ["music_generation", "unclassified_generation", "video_generation"])
+        self.assertEqual(c["video_generation"]["duration_sec"], 5)
+        self.assertIn("x2", c["video_generation"]["role"])
+        self.assertIsNone(c["video_generation"]["tool"])
+        req = om.build_paid_generation_gate_request(pf.to_asset_request(c["unclassified_generation"]))
+        self.assertEqual(req["input"]["asset_kind"], "other")
+        self.assertNotIn("tool", req["context"])
+
+    def test_scene_plan_validation(self):
+        bad = dict(SCENE_PLAN_CP, artifacts={})
+        with self.assertRaises(pf.CheckpointError):
+            pf.validate_gate_checkpoint(bad)
+        with self.assertRaises(pf.CheckpointError):
+            pf.validate_gate_checkpoint(dict(SCENE_PLAN_CP, stage="assets"))
+
+    def test_project_dir_resolves_scene_plan_when_no_proposal(self):
+        d = Path(tempfile.mkdtemp(prefix="om-th-"))
+        (d / "checkpoint_scene_plan.json").write_text(json.dumps(SCENE_PLAN_CP), encoding="utf-8")
+        self.assertEqual(pf._resolve_checkpoint(["--project-dir", str(d)]).name, "checkpoint_scene_plan.json")
+        shutil.copy(FIX / "proposal-free-subtitle.json", d / "checkpoint_proposal.json")
+        self.assertEqual(pf._resolve_checkpoint(["--project-dir", str(d)]).name, "checkpoint_proposal.json")
+
+
+class PlanIdentityTest(unittest.TestCase):
+    def test_identity_ignores_timestamp_status_approval_but_tracks_plan(self):
+        cp = pf.load_checkpoint(FIX / "proposal-paid-video.json")
+        base = pf.plan_identity(cp)
+        approved = dict(cp, status="completed", human_approved=True, timestamp="2026-09-27T00:00:00+00:00")
+        self.assertEqual(pf.plan_identity(approved), base)
+        changed = json.loads(json.dumps(cp))
+        changed["artifacts"]["proposal_packet"]["production_plan"]["stages"][0]["tools"][0]["estimated_cost_usd"] = 0.7
+        self.assertNotEqual(pf.plan_identity(changed), base)
+
+    def test_parallel_preserves_order(self):
+        import time as _t
+        d = project_with("proposal-paid-video.json")
+
+        def slow_first(req, env=None):
+            if req["capability"] == "video_generation":
+                _t.sleep(0.1)
+            return fake_decide("remotion")(req)
+        r = pf.run_preflight(d / "checkpoint_proposal.json", decide=slow_first, max_workers=2)
+        self.assertEqual([x["tool"] for x in r["decisions"]], ["video_selector", "subtitle_gen"])
+        self.assertIn("plan_identity", r["openmontage_checkpoint"])
+
+
 class PreflightTest(unittest.TestCase):
     def assert_never_approval(self, r):
         self.assertIs(r["proceed_automatically"], False)
