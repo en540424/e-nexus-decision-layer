@@ -609,5 +609,264 @@ class RealAdapterFakeGatewayTest(Base):
         self.assertEqual((e["status"], e["overall"]), ("failed", "human-review"))
 
 
+# ------------------------------------------------------------------ 常駐（always-on）：lock・race・agent-only・復帰・events 監視・通知・status
+
+LOCK_HOLDER = r"""
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import enexus_openmontage_launcher as la
+lk = la.SingleInstanceLock(la.Path(sys.argv[2]) / la.LOCK_NAME)
+ok = lk.acquire({"role": sys.argv[3], "projects_dir": sys.argv[4]})
+print("acquired" if ok else "busy", flush=True)
+time.sleep(60)
+"""
+
+
+class FakeNotifier:
+    def __init__(self):
+        self.enabled = True
+        self.sent = []
+
+    def notify(self, title, body):
+        self.sent.append((title, body))
+        return True
+
+
+def spawn_lock_holder(state_dir, role="autostart", projects_dir=""):
+    import subprocess
+    p = subprocess.Popen([sys.executable, "-c", LOCK_HOLDER, str(HERE), str(state_dir), role, str(projects_dir)],
+                         stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().strip() == "acquired"
+    return p
+
+
+class AlwaysOnTest(Base):
+    def launcher(self, gw=None, cfg=None, clock=None, notifier=None):
+        launcher = la.Launcher(cfg or self.cfg, decide=gw, stream=io.StringIO(), clock=clock or time.time,
+                               sleep=lambda s: None, notifier=notifier or FakeNotifier())
+        self.launchers.append(launcher)
+        return launcher
+
+    def test_os_lock_is_released_when_holder_process_dies(self):
+        holder = spawn_lock_holder(self.cfg.state_dir, projects_dir=self.P)
+        try:
+            L = self.launcher(FakeGateway())
+            self.assertTrue(L.lock.held_elsewhere())
+            with self.assertRaises(la.LockBusy):
+                L.start()
+            self.assertEqual(la.build_status(self.cfg)["role"], "autostart")
+        finally:
+            holder.kill()
+            holder.wait(10)
+            holder.stdout.close()
+        # process が死ねば OS が解放する（stale lock・pid 再利用で誰も監視しない状態にならない）
+        L2 = self.launcher(FakeGateway())
+        L2.start()
+        self.assertTrue(L2.lock.held)
+
+    def test_concurrent_watch_processes_leave_exactly_one_watcher(self):
+        import subprocess
+        env = dict(os.environ, **self.cfg.gateway_env)
+        cmd = [sys.executable, str(HERE / "enexus_openmontage_launcher.py"), "watch", "--quiet", "--no-notify",
+               "--state-dir", str(self.cfg.state_dir), "--projects-dir", str(self.P)]
+        procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for _ in range(3)]
+        try:
+            deadline = time.time() + 20
+            while time.time() < deadline and sum(p.poll() is not None for p in procs) < 2:
+                time.sleep(0.1)
+            exited = [p for p in procs if p.poll() is not None]
+            self.assertEqual(len(exited), 2)
+            self.assertTrue(all(p.returncode == la.EXIT_ALREADY_RUNNING for p in exited))
+            self.assertTrue(la.SingleInstanceLock(self.cfg.state_dir / la.LOCK_NAME).held_elsewhere())
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(10)
+
+    def test_launcher_reuses_running_watcher_and_starts_only_agent(self):
+        gw = FakeGateway()
+        W = self.launcher(gw)
+        W.start()
+        stop = threading.Event()
+        th = threading.Thread(target=lambda: [(W.tick(), stop.wait(0.02)) for _ in iter(stop.is_set, True)])
+        th.start()
+        try:
+            cfg = make_cfg(self.tmp, agent=[sys.executable, "-c", AGENT_SCRIPT, json.dumps(proposal_with([SUB])), "0"],
+                           agent_console="inherit", capture_agent_output=True)
+            A = self.launcher(FakeGateway(), cfg=cfg)
+            rc = A.run()
+        finally:
+            stop.set()
+            th.join()
+        self.assertEqual(rc, 0)
+        self.assertFalse(A.lock.held)
+        self.assertTrue(events(cfg, "agent_only"))
+        self.assertEqual(W.state.get("agent-made/proposal")["status"], "done")   # 常駐側が判定した
+        self.assertEqual(len(gw.calls), 1)
+
+    def test_agent_only_refuses_when_watcher_watches_other_dir(self):
+        holder = spawn_lock_holder(self.cfg.state_dir, projects_dir=self.tmp / "elsewhere")
+        try:
+            cfg = make_cfg(self.tmp, agent=[sys.executable, "-c", "pass"])
+            with self.assertRaises(la.ConfigError):
+                self.launcher(FakeGateway(), cfg=cfg).run()
+        finally:
+            holder.kill()
+            holder.wait(10)
+            holder.stdout.close()
+
+    def test_resume_gap_forces_full_rescan(self):
+        clock = Clock(time.time())
+        L = self.launcher(FakeGateway(), clock=clock)
+        L.start()
+        L.tick()
+        L.scanner.last_full = time.monotonic()
+        clock.t += 3600   # sleep から復帰
+        L.tick()
+        self.assertTrue(events(self.cfg, "resume_detected"))
+        self.assertTrue(L.scanner.last_was_full)
+
+    def test_gate_written_while_asleep_is_decided_after_resume(self):
+        clock = Clock(time.time())
+        gw = FakeGateway()
+        L = self.launcher(gw, clock=clock)
+        L.start()
+        L.tick()
+        L.scanner.full_rescan_s = 3600
+        L.scanner.last_full = time.monotonic()
+        d = self.P / "slept"
+        d.mkdir()
+        m = os.stat(d).st_mtime_ns
+        L.tick()
+        write_cp(self.P, "slept", "proposal", "awaiting_human", proposal_with([SUB]))
+        os.utime(d, ns=(m - 10_000_000_000, m - 10_000_000_000))   # 最近の変更に見えない dir
+        clock.t += 3600
+        self.settle(L)
+        self.assertEqual(L.state.get("slept/proposal")["status"], "done")
+
+    def _events(self, pid, lines):
+        d = self.P / pid
+        d.mkdir(exist_ok=True)
+        with open(d / "events.jsonl", "a", encoding="utf-8") as f:
+            for e in lines:
+                f.write(json.dumps(e) + "\n")
+
+    def test_events_tail_detects_paid_tool_run_but_not_history_or_free(self):
+        self._events("p1", [{"tool": "kling_video", "event": "finish", "cost_usd": 0.5}])   # 起動前の履歴
+        n = FakeNotifier()
+        L = self.launcher(FakeGateway(), notifier=n)
+        L.start()
+        L.tick()
+        self.assertEqual(events(self.cfg, "paid_tool_executed"), [])
+        self._events("p1", [{"tool": "subtitle_gen", "event": "finish", "cost_usd": 0.0},
+                            {"tool": "kling_video", "event": "finish", "cost_usd": 0.35, "depth": 1},
+                            {"tool": "video_selector", "event": "finish", "cost_usd": 0.35}])
+        L.scanner.last_full = 0.0
+        L.tick()
+        hits = events(self.cfg, "paid_tool_executed")
+        self.assertEqual([(h["tool"], h["cost_usd"]) for h in hits], [("video_selector", 0.35)])
+        self.assertEqual(len(n.sent), 1)
+        self.assertEqual(L.recent_error["kind"], "paid_tool_executed")
+
+    def test_events_tail_new_project_after_start_is_read_from_beginning(self):
+        L = self.launcher(FakeGateway())
+        L.start()
+        L.tick()
+        self._events("new1", [{"tool": "image_selector", "event": "finish", "cost_usd": 0.04}])
+        L.scanner.last_full = 0.0
+        L.tick()
+        self.assertEqual(len(events(self.cfg, "paid_tool_executed")), 1)
+
+    def test_handoff_tool_start_is_flagged(self):
+        L = self.launcher(FakeGateway())
+        L.start()
+        write_cp(self.P, "h1", "proposal", "awaiting_human", proposal_with([VID]))
+        self.settle(L)
+        self._events("h1", [{"tool": "video_selector", "event": "start"}])
+        L.scanner.last_full = 0.0
+        L.tick()
+        self.assertEqual(events(self.cfg, "paid_candidate_tool_started")[0]["tool"], "video_selector")
+
+    def test_notifications_only_when_human_attention_is_needed(self):
+        n = FakeNotifier()
+        L = self.launcher(FakeGateway(errors={"image_generation": ["ENVIRONMENT_MISMATCH"]}), notifier=n)
+        L.start()
+        write_cp(self.P, "free", "proposal", "awaiting_human", proposal_with([SUB]))
+        self.settle(L)
+        self.assertEqual(n.sent, [])                                  # 無料経路は静か
+        write_cp(self.P, "paid", "proposal", "awaiting_human", proposal_with([VID]))
+        self.settle(L)
+        self.assertIn("有料生成の候補", n.sent[-1][0])
+        self.assertIn("/en-generate", n.sent[-1][1])
+        write_cp(self.P, "bad", "proposal", "awaiting_human", proposal_with([IMG]))
+        self.settle(L)
+        self.assertIn("取得できません", n.sent[-1][0])
+
+    def test_notifier_dedupes_and_never_raises(self):
+        calls = []
+        n = la.Notifier(True, None, spawn=lambda t, b: calls.append(t))
+        self.assertTrue(n.notify("a", "b"))
+        self.assertFalse(n.notify("a", "b"))
+        self.assertTrue(n.notify("a", "c"))
+
+        def boom(t, b):
+            raise OSError("no shell")
+        self.assertFalse(la.Notifier(True, None, spawn=boom).notify("x", "y"))
+        self.assertFalse(la.Notifier(False, None, spawn=boom).notify("x", "y"))
+
+    def test_status_reports_running_watcher_and_last_decision(self):
+        L = self.launcher(FakeGateway())
+        L.start()
+        write_cp(self.P, "s1", "proposal", "awaiting_human", proposal_with([VID]))
+        self.settle(L)
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc = la.main(["status", "--json", "--state-dir", str(self.cfg.state_dir), "--projects-dir", str(self.P)])
+        self.assertEqual(rc, 0)
+        s = json.loads(buf.getvalue())
+        self.assertTrue(s["running"])
+        self.assertEqual(s["environment"], "dev")
+        self.assertEqual(s["last_decision"]["overall"], "paid-handoff")
+        self.assertEqual(s["last_checkpoint"]["key"], "s1/proposal")
+        self.assertEqual(s["awaiting_human_with_decision"], ["s1/proposal"])
+        self.assertNotIn("KEY", json.dumps(s).upper().replace("KEY\"", ""))  # Secret 名・値を持たない（"key" field 以外）
+        L.shutdown()
+        with mock.patch("sys.stdout", io.StringIO()) as out2:
+            la.main(["status", "--json", "--state-dir", str(self.cfg.state_dir), "--projects-dir", str(self.P)])
+        self.assertFalse(json.loads(out2.getvalue())["running"])
+
+    def test_main_works_without_stdout_like_pythonw(self):
+        with mock.patch("sys.stdout", None):
+            rc = la.main(["status", "--state-dir", str(self.cfg.state_dir), "--projects-dir", str(self.P)])
+        self.assertEqual(rc, 0)
+
+    def test_direct_start_by_independent_process_is_decided(self):
+        # Launcher の子ではない process（clone で直接起動した agent 相当）が gate を書く
+        import subprocess
+        gw = FakeGateway()
+        L = self.launcher(gw)
+        L.start()
+        stop = threading.Event()
+        th = threading.Thread(target=lambda: [(L.tick(), stop.wait(0.02)) for _ in iter(stop.is_set, True)])
+        th.start()
+        try:
+            code = ("import json,os,sys;d=os.path.join(sys.argv[1],'direct');os.makedirs(d,exist_ok=True);"
+                    "cp={'version':'1.0','project_id':'direct','pipeline_type':'talking-head','stage':'scene_plan','status':'awaiting_human',"
+                    "'timestamp':'t','artifacts':{'scene_plan':{'scenes':[{'id':'s1','start_seconds':0,'end_seconds':3,"
+                    "'required_assets':[{'type':'image','description':'x','source':'generate'}]}]}}};"
+                    "t=os.path.join(d,'checkpoint_scene_plan.json.tmp');open(t,'w').write(json.dumps(cp));"
+                    "os.replace(t,os.path.join(d,'checkpoint_scene_plan.json'))")
+            subprocess.run([sys.executable, "-c", code, str(self.P)], check=True)
+            deadline = time.time() + 10
+            while time.time() < deadline and (L.state.get("direct/scene_plan") or {}).get("status") != "done":
+                time.sleep(0.02)
+        finally:
+            stop.set()
+            th.join()
+        self.assertEqual(L.state.get("direct/scene_plan")["status"], "done")
+        self.assertEqual(gw.calls[0]["capability"], "image_generation")
+
+
 if __name__ == "__main__":
     unittest.main()

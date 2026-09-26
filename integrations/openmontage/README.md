@@ -47,6 +47,34 @@ Human -> Launcher（enexus_openmontage_launcher.py）
   OpenMontage の `.env` に有料 provider の鍵が書かれていれば起動時に警告する（Launcher は .env を変えない）
 - **監視されない経路**：Launcher を通さず clone で直接 agent を起動した場合、その間は監視されない（次に Launcher を起動した時の走査で拾う）
 
+## 常駐：Windows ログオン時に watcher を自動起動する（2026-09-26〜・Launcher の起動を忘れても Decision が入る）
+
+```text
+launch-openmontage.cmd autostart install     # 登録して今すぐ起動（同じ内容で上書き＝何度実行してもよい・管理者不要）
+launch-openmontage.cmd autostart status      # 登録状態・watcher の現在地（running / pid / 最後の検知・判定 / 保留 / 直近の要確認）
+launch-openmontage.cmd autostart restart     # code を更新した時：常駐 watcher を止めて起動し直す
+launch-openmontage.cmd autostart uninstall   # 登録を削除し、常駐 watcher も止める（解除はこれ 1 回）
+```
+
+- Task Scheduler の Task「E-NEXUS OpenMontage Watcher」（Current User・InteractiveToken・LeastPrivilege・Hidden）。action は
+  `pythonw.exe enexus_openmontage_launcher.py watch --autostart --quiet --notify`（console を出さない・agent は起動しない）
+- trigger：ログオン時（即時）＋登録時刻から 1 分ごとの繰り返し（watchdog）。`IgnoreNew` なので動いている間は何もせず、落ちた時だけ
+  1 分以内に戻る（実測 50s）。LogonTrigger の繰り返しは次のログオンまで有効にならず、`RestartOnFailure` は kill で再起動しなかったため
+- 72 時間の実行時間制限・電池で停止・idle 終了で停止の既定値は外している
+- 二重起動しない：lock は OS の file lock（Windows `msvcrt`・POSIX `flock`）で、process が落ちれば OS が解放する（stale lock・pid 再利用が
+  起きない）。常駐 watcher がいる時の `launch-openmontage.cmd` は **OpenMontage agent だけ**を起動し、監視は常駐側が行う。常駐がいない時は
+  従来どおり Launcher 自身が監視し、Launcher が終われば次の繰り返しで常駐 watcher が引き継ぐ。`watch` を重ねて起動しても 0 で即終了する
+- **Launcher を通さず clone で直接 OpenMontage / claude を起動しても**常駐 watcher が gate を検知して判定する。ただしその経路では agent の
+  env から有料 provider の鍵を外せない（Launcher 経由だけの構造的な保護）。代わりに：
+  - 判定が Human の注意を要する時（有料候補・human-review・再試行中・取得失敗・Decision 無しで後段開始）に **Windows の通知**を出す
+    （PowerShell の WinRT toast・追加依存なし。無料経路は通知しない）
+  - OpenMontage の `events.jsonl` を追い、**OpenMontage 内で有料 tool が実行された（`cost_usd > 0`）／有料候補の tool が開始された**ことを
+    検知して通知する（事後検知で、止めることはできない）
+- sleep / resume：tick の間隔が 10 秒を超えたら全体を再走査する。停止中（ログオフ・再起動・watcher 停止）に書かれた gate は起動時の走査で拾い、
+  処理済みは再判定しない
+- 常駐負荷（実測・project 1 件）：CPU 1 コアの 0.5%（全体 0.025%）・working set 27MB・disk 書き込みは heartbeat だけ（1 分 4 回・3KB）・読み込み 0
+- macOS（Mac mini 移行用）：同じ `autostart install` が LaunchAgent（RunAtLoad・KeepAlive・ThrottleInterval 60）を書く。**未検証**
+
 ## 置き場所の理由
 
 - consumer adapter は本来 consumer 側に置くが、OpenMontage の clone は上流 `calesthio/OpenMontage`（AGPL-3.0）そのもので

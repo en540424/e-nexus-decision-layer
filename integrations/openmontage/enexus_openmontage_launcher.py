@@ -53,13 +53,20 @@ import enexus_openmontage_decision as om
 import enexus_openmontage_preflight as pf
 
 LAUNCHER_ID = "openmontage-launcher"
-LAUNCHER_VERSION = "1"
+LAUNCHER_VERSION = "2"
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 DEFAULT_STATE_DIR = REPO / "data" / "openmontage-launcher"
 CONFIG_NAME = "config.json"
 STATE_NAME = "state.json"
 LOCK_NAME = "launcher.lock"
+OWNER_NAME = "launcher.owner.json"
+HEARTBEAT_NAME = "watcher-status.json"
+HEARTBEAT_S = 15.0
+RESUME_GAP_S = 10.0             # tick の間隔がこれを超えたら sleep / resume（または長い停止）とみなして全体を再走査する
+EVENTS_TAIL_MAX_BYTES = 1_000_000
+NOTIFY_DEDUPE_S = 60.0
+EXIT_ALREADY_RUNNING = 0        # watch：既に watcher が動いていれば 0 で終わる（Task Scheduler の再起動対象にしない）
 EVENTS_NAME = "launcher-events.jsonl"
 REPORTS_DIRNAME = "reports"
 CONTROL_DIRNAME = "control"
@@ -130,6 +137,7 @@ class LauncherConfig:
     deferred_backoff_s: tuple = DEFERRED_BACKOFF_S
     recovery_max_age_s: float = RECOVERY_MAX_AGE_S
     console: bool = True
+    notify: bool = False
 
     @property
     def reports_dir(self):
@@ -229,6 +237,7 @@ def build_config(args=None, env=None):
         poll_s=float(a.get("poll_s") or local.get("poll_s") or DEFAULT_POLL_S),
         gateway_concurrency=int(local.get("gateway_concurrency") or DEFAULT_GATEWAY_CONCURRENCY),
         console=not a.get("quiet"),
+        notify=bool(a.get("notify")) if a.get("notify") is not None else bool(local.get("notify", mode == "watch" and a.get("command") == "watch")),
     )
 
 
@@ -282,70 +291,150 @@ class StateStore:
         _atomic_write(self.path, json.dumps(self.doc, ensure_ascii=False, indent=1) + "\n")
 
 
-def _pid_alive(pid):
+def process_create_time(pid):
+    """pid が生きていれば process の作成時刻（epoch 秒。取れなければ 0.0）、いなければ None（status の表示用）"""
     if not isinstance(pid, int) or pid <= 0:
-        return False
+        return None
     if os.name == "nt":
         try:
-            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True,
-                                 text=True, timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return f'"{pid}"' in out.stdout
-        except (OSError, subprocess.SubprocessError):
-            return True  # 判定できないときは生きている扱い（二重起動しない側へ倒す）
+            import ctypes
+            from ctypes import wintypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+            k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return 0.0 if ctypes.get_last_error() == 5 else None  # 5 = ACCESS_DENIED（存在はする）
+            try:
+                code = wintypes.DWORD()
+                if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:  # STILL_ACTIVE
+                    return None
+                c, e, k, u = (wintypes.FILETIME() for _ in range(4))
+                if not k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k), ctypes.byref(u)):
+                    return 0.0
+                return ((c.dwHighDateTime << 32) | c.dwLowDateTime) / 1e7 - 11644473600.0
+            finally:
+                k32.CloseHandle(h)
+        except (OSError, AttributeError, ValueError):
+            return 0.0
     try:
         os.kill(pid, 0)
-        return True
+        return 0.0
     except ProcessLookupError:
-        return False
+        return None
     except PermissionError:
-        return True
+        return 0.0
+
+
+def _pid_alive(pid):
+    return process_create_time(pid) is not None
+
+
+def _os_lock(fd):
+    """排他 lock（非 blocking）。取れなければ OSError。process が終われば OS が解放する（stale lock・pid 再利用が起きない）"""
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _os_unlock(fd):
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+class LockBusy(ConfigError):
+    """同じ state dir の watcher が既に動いている"""
 
 
 class SingleInstanceLock:
-    """同じ state dir で Launcher を 2 つ動かさない（二重判定・state の取り合いを防ぐ）。死んだ pid の lock は回収する"""
+    """同じ state dir で watcher を 2 つ動かさない（二重判定・state の取り合いを防ぐ）。
+
+    OS の file lock（Windows msvcrt / POSIX flock）を process の寿命のあいだ握る。process が落ちれば OS が解放するので、
+    再起動後の stale lock や pid の再利用で「誰も監視しない」状態にならない。所有者の情報は別 file（表示用）
+    """
 
     def __init__(self, path):
         self.path = Path(path)
-        self.held = False
+        self.info_path = self.path.with_name(OWNER_NAME)
+        self.fd = None
 
-    def acquire(self):
+    @property
+    def held(self):
+        return self.fd is not None
+
+    def acquire(self, info=None):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump({"pid": os.getpid(), "started_at": now_iso()}, f)
-                self.held = True
-                return True
-            except FileExistsError:
-                owner = self.owner()
-                if owner and _pid_alive(owner.get("pid")):
-                    return False
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            _os_lock(fd)
+        except OSError:
+            os.close(fd)
+            return False
+        self.fd = fd
+        doc = {"pid": os.getpid(), "create_time": process_create_time(os.getpid()), "acquired_at": now_iso(), **(info or {})}
+        try:
+            _atomic_write(self.info_path, json.dumps(doc, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        return True
+
+    def held_elsewhere(self):
+        """他の process（または同じ process の別 instance）が lock を握っているか。確かめるだけで握り続けない"""
+        if self.fd is not None:
+            return False
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            return False
+        try:
+            _os_lock(fd)
+        except OSError:
+            os.close(fd)
+            return True
+        _os_unlock(fd)
+        os.close(fd)
         return False
 
     def owner(self):
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(self.info_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
 
     def release(self):
-        if self.held:
+        if self.fd is not None:
             try:
-                self.path.unlink()
-            except FileNotFoundError:
+                own = self.owner()
+                if own and own.get("pid") == os.getpid():
+                    self.info_path.unlink()
+            except OSError:
                 pass
-            self.held = False
+            _os_unlock(self.fd)
+            os.close(self.fd)
+            self.fd = None
 
 
 CONSOLE_EVENTS = {
     "launcher_start", "launcher_stop", "agent_start", "agent_exit", "checkpoint_detected", "decision_done",
     "decision_pending", "decision_failed", "decision_retry", "late_checkpoint", "paid_stage_without_decision",
-    "paid_stage_with_handoff", "invalid_checkpoint", "warning", "retry_requested",
+    "paid_stage_with_handoff", "invalid_checkpoint", "warning", "retry_requested", "agent_only", "resume_detected",
+    "paid_tool_executed", "paid_candidate_tool_started",
 }
 
 
@@ -354,8 +443,8 @@ class EventLog:
 
     def __init__(self, path, console=True, stream=None):
         self.path = Path(path)
-        self.console = console
-        self.stream = stream or sys.stdout
+        self.stream = stream if stream is not None else sys.stdout
+        self.console = console and self.stream is not None   # pythonw（Task Scheduler）では stdout が無い
         self._lock = threading.Lock()
 
     def emit(self, event, **fields):
@@ -412,6 +501,14 @@ def format_console(e):
         return f"[{t}] 無視    {k}: {e.get('error')}"
     if ev == "retry_requested":
         return f"[{t}] 再判定  {e.get('project_id')} を再判定します"
+    if ev == "agent_only":
+        return f"[{t}] 共用    常駐 watcher（pid={e.get('watcher_pid')}）が監視中。OpenMontage agent だけを起動します"
+    if ev == "resume_detected":
+        return f"[{t}] 復帰    {e.get('gap_s')}s の停止（sleep 等）を検知。全体を再走査します"
+    if ev == "paid_tool_executed":
+        return f"[{t}] 警告    {k}: OpenMontage 内で有料 tool {e.get('tool')} が実行されました（{e.get('cost_usd')} USD）。MA-17 を通っていない可能性"
+    if ev == "paid_candidate_tool_started":
+        return f"[{t}] 警告    {k}: 有料候補の {e.get('tool')} が OpenMontage 内で開始されました。/en-generate（MA-17）へ回すこと"
     if ev == "launcher_stop":
         return f"[{t}] 停止    判定 {e.get('decided')} 件・保留 {e.get('pending')} 件・重複スキップ {e.get('duplicates')} 件"
     return f"[{t}] {ev} {e.get('message', '')}"
@@ -447,6 +544,8 @@ class CheckpointScanner:
         self.last_full = 0.0
         self.scan_count = 0
         self.scan_total_s = 0.0
+        self.last_was_full = False
+        self.project_dirs = []
 
     def forget(self, path):
         if path:
@@ -466,10 +565,13 @@ class CheckpointScanner:
         full = (time.monotonic() - self.last_full) >= self.full_rescan_s
         if full:
             self.last_full = time.monotonic()
+        self.last_was_full = full
         try:
             projects = [e for e in os.scandir(self.projects_dir) if e.is_dir(follow_symlinks=False)]
         except OSError:
             projects = []
+        if full:
+            self.project_dirs = [Path(e.path) for e in projects]
         for pe in projects:
             pdir = Path(pe.path)
             try:
@@ -672,6 +774,61 @@ class AgentProcess:
 # ------------------------------------------------------------------ launcher core
 
 
+class Notifier:
+    """Human の目に届く通知（常駐 watcher は console が無く、直接起動した agent は報告の場所を知らないため）。
+
+    Windows は PowerShell の WinRT toast（追加の依存なし・window を出さない）、macOS は osascript。失敗しても判定は止めない。
+    無料経路（free-path）は通知しない。同じ内容は NOTIFY_DEDUPE_S のあいだ 1 回だけ
+    """
+
+    def __init__(self, enabled=False, log=None, spawn=None):
+        self.enabled = enabled
+        self.log = log
+        self.spawn = spawn or self._spawn
+        self._recent = {}
+
+    def notify(self, title, body):
+        if not self.enabled:
+            return False
+        now = time.monotonic()
+        k = (title, body)
+        if now - self._recent.get(k, -1e9) < NOTIFY_DEDUPE_S:
+            return False
+        self._recent[k] = now
+        try:
+            self.spawn(title, body)
+            if self.log:
+                self.log.emit("notified", title=title)
+            return True
+        except (OSError, ValueError) as e:
+            if self.log:
+                self.log.emit("notify_failed", error=str(e)[:200])
+            return False
+
+    @staticmethod
+    def _spawn(title, body):
+        if os.name == "nt":
+            import base64
+            script = (
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+                "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+                "$n = $t.GetElementsByTagName('text');"
+                "$n.Item(0).AppendChild($t.CreateTextNode($env:ENEXUS_TOAST_TITLE)) > $null;"
+                "$n.Item(1).AppendChild($t.CreateTextNode($env:ENEXUS_TOAST_BODY)) > $null;"
+                "$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';"
+                "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($t))"
+            )
+            enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            env = dict(os.environ, ENEXUS_TOAST_TITLE=title[:120], ENEXUS_TOAST_BODY=body[:300])
+            subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", enc],
+                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        elif sys.platform == "darwin":
+            q = lambda x: x.replace("\\", "\\\\").replace('"', '\\"')  # noqa: E731
+            subprocess.Popen(["osascript", "-e", f'display notification "{q(body[:300])}" with title "{q(title[:120])}"'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _slim(interp):
     """state に残す判定（reason 等の本文は報告 file だけに置く）"""
     keys = ("status", "route", "tier", "human_check", "paid_candidate", "confidence", "resolved_by", "provider",
@@ -682,8 +839,9 @@ def _slim(interp):
 class Launcher:
     """監視・判定・agent lifecycle。UI（CLI / 将来の GUI・tray・Hermes・Mac mini daemon）は on_event と status() だけを使う"""
 
-    def __init__(self, cfg, decide=None, stream=None, clock=time.time, sleep=time.sleep):
+    def __init__(self, cfg, decide=None, stream=None, clock=time.time, sleep=time.sleep, notifier=None, role="launcher"):
         self.cfg = cfg
+        self.role = role   # launcher（run・対話）/ watch（常駐）/ autostart（ログオン時の Task）
         self.decide_fn = decide or om.decide
         self.clock, self.sleep = clock, sleep
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
@@ -700,6 +858,14 @@ class Launcher:
         self.agent = None
         self.started_at = None
         self.counters = {"decided": 0, "pending": 0, "failed": 0, "duplicates": 0, "gateway_calls": 0, "cache_hits": 0}
+        self.notifier = notifier or Notifier(cfg.notify, self.log)
+        self.last_checkpoint = None
+        self.last_decision = None
+        self.recent_error = None
+        self._last_tick_wall = None
+        self._last_heartbeat = 0.0
+        self._event_offsets = {}
+        self._events_primed = False
 
     def _count(self, name):
         with self._mu:
@@ -708,9 +874,11 @@ class Launcher:
     # ---------- public API
 
     def start(self):
-        if not self.lock.acquire():
+        info = {"role": self.role, "projects_dir": str(self.cfg.projects_dir), "state_dir": str(self.cfg.state_dir),
+                "environment": self.cfg.expected_environment, "version": LAUNCHER_VERSION, "started_at": now_iso()}
+        if not self.lock.acquire(info):
             owner = self.lock.owner() or {}
-            raise ConfigError(f"別の Launcher が動いています（pid={owner.get('pid')}）。status で確認してください")
+            raise LockBusy(f"別の watcher が動いています（pid={owner.get('pid')}・{owner.get('role')}）。status で確認してください")
         self.started_at = self.clock()
         self.cfg.reports_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.control_dir.mkdir(parents=True, exist_ok=True)
@@ -720,17 +888,41 @@ class Launcher:
                       agent=bool(self.cfg.agent))
         self._warn_upstream_env()
         self._recover()
+        self._write_heartbeat(force=True)
 
     def tick(self):
-        """1 周：control 要求 -> 走査 -> 遅延再試行。main loop・scan-once・test から呼ぶ"""
+        """1 周：復帰検知 -> control 要求 -> 走査 -> events 監視 -> 遅延再試行 -> heartbeat。main loop・scan-once・test から呼ぶ"""
+        self._detect_resume()
         self._consume_control()
         for ch in self.scanner.scan():
             self._on_change(ch)
+        if self.scanner.last_was_full:
+            self._tail_events()
         self._schedule_due()
+        self._write_heartbeat()
+
+    def _detect_resume(self):
+        """sleep / resume・長い停止の後は mtime の差分に頼らず全体を読み直す（停止中に書かれた gate を取りこぼさない）"""
+        now = self.clock()
+        last, self._last_tick_wall = self._last_tick_wall, now
+        if last is not None and now - last > RESUME_GAP_S:
+            self.log.emit("resume_detected", gap_s=round(now - last, 1))
+            self.scanner.last_full = 0.0
+            self.scanner.dir_mtime.clear()
 
     def run(self):
-        """agent を起動し、終わるまで監視する。戻り値は process の exit code"""
-        self.start()
+        """agent を起動し、終わるまで監視する。戻り値は process の exit code。
+
+        同じ state dir の watcher（ログオン時の常駐など）が既に動いていれば、監視はそちらに任せて agent だけを起動する
+        """
+        if self.cfg.agent and self.lock.held_elsewhere():
+            return self._run_agent_only()
+        try:
+            self.start()
+        except LockBusy:
+            if self.cfg.agent:   # 同時起動の race で負けた：既存 watcher を使う
+                return self._run_agent_only()
+            raise
         exit_code = 0
         restore = self._install_signals()
         try:
@@ -751,6 +943,34 @@ class Launcher:
                 exit_code = 130 if self.agent is not None else 0
         finally:
             self.shutdown()
+            restore()
+        return exit_code
+
+    def _run_agent_only(self):
+        owner = self.lock.owner() or {}
+        op = owner.get("projects_dir")
+        if op and Path(op).resolve() != Path(self.cfg.projects_dir).resolve():
+            raise ConfigError(f"動いている watcher（pid={owner.get('pid')}）は別の projects dir（{op}）を監視しています。"
+                              "同じ state dir で別の場所を監視すると報告が届かないため起動しません")
+        self.log.emit("agent_only", watcher_pid=owner.get("pid"), watcher_role=owner.get("role"))
+        restore = self._install_signals()
+        exit_code = 0
+        try:
+            self._start_agent()
+            while not self.stop_event.is_set():
+                code = self.agent.poll()
+                if code is not None:
+                    self.agent.wait_readers()
+                    self.log.emit("agent_exit", code=code, abnormal=code != 0)
+                    exit_code = 0 if code == 0 else 3
+                    break
+                self.stop_event.wait(self.cfg.poll_s)
+            else:
+                exit_code = 130
+        finally:
+            if self.agent is not None and self.agent.poll() is None:
+                self.log.emit("agent_exit", code=self.agent.stop(), stopped_by_launcher=True)
+            self.pool.shutdown(wait=False, cancel_futures=True)
             restore()
         return exit_code
 
@@ -797,10 +1017,87 @@ class Launcher:
                           duplicates=self.counters["duplicates"], gateway_calls=self.counters["gateway_calls"],
                           cache_hits=self.counters["cache_hits"], scan_avg_ms=self.scanner.scan_avg_ms,
                           scans=self.scanner.scan_count)
+            self._write_heartbeat(force=True, stopping=True)
             self.lock.release()
 
     def status(self):
         return build_status(self.cfg)
+
+    # ---------- heartbeat / events.jsonl 監視
+
+    def _write_heartbeat(self, force=False, stopping=False):
+        """status / Hermes 用の現在地（Secret なし）。書くのは HEARTBEAT_S ごと（毎 tick は書かない）"""
+        if not self.lock.held:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_heartbeat < HEARTBEAT_S:
+            return
+        self._last_heartbeat = now
+        doc = {
+            "pid": os.getpid(), "role": self.role, "version": LAUNCHER_VERSION,
+            "environment": self.cfg.expected_environment, "projects_dir": str(self.cfg.projects_dir),
+            "started_at": datetime.fromtimestamp(self.started_at, timezone.utc).isoformat(timespec="seconds") if self.started_at else None,
+            "heartbeat_at": now_iso(), "stopping": stopping, "notify": self.notifier.enabled,
+            "agent_pid": self.agent.proc.pid if self.agent is not None and self.agent.proc is not None and self.agent.poll() is None else None,
+            "last_checkpoint": self.last_checkpoint, "last_decision": self.last_decision, "recent_error": self.recent_error,
+            "inflight": len(self.inflight), "counters": dict(self.counters),
+            "scan_avg_ms": self.scanner.scan_avg_ms,
+        }
+        try:
+            _atomic_write(self.cfg.state_dir / HEARTBEAT_NAME, json.dumps(doc, ensure_ascii=False, indent=1) + "\n")
+        except OSError:
+            pass
+
+    def _tail_events(self):
+        """OpenMontage の events.jsonl（BaseTool が書く tool の start / finish）を追い、有料 tool の実行を検知する。
+
+        Launcher を通さず直接起動した agent は有料 provider の鍵を持ちうる（env を外せない）。その経路で MA-17 を迂回した
+        実行が起きたら、事後だが即座に分かるようにする（止めることはできない）。起動時点の履歴は通知しない
+        """
+        for pdir in self.scanner.project_dirs:
+            p = pdir / "events.jsonl"
+            try:
+                size = os.stat(p).st_size
+            except OSError:
+                continue
+            off = self._event_offsets.get(p)
+            if off is None:
+                off = size if not self._events_primed else 0
+            if size < off:
+                off = 0   # 作り直された
+            if size == off:
+                self._event_offsets[p] = off
+                continue
+            try:
+                with open(p, "rb") as f:
+                    f.seek(off)
+                    chunk = f.read(min(size - off, EVENTS_TAIL_MAX_BYTES))
+            except OSError:
+                continue
+            end = chunk.rfind(b"\n")
+            if end < 0:
+                continue   # 行の途中。次の走査で読む
+            self._event_offsets[p] = off + end + 1
+            gate = next((self.state.get(f"{pdir.name}/{s}") for s in pf.GATE_STAGES if self.state.get(f"{pdir.name}/{s}")), None) or {}
+            handoff = set(gate.get("handoff") or [])
+            for raw in chunk[:end].splitlines():
+                try:
+                    e = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if not isinstance(e, dict) or e.get("depth"):
+                    continue   # selector が provider を呼ぶ入れ子は depth 0 だけ数える
+                tool, ev, cost = e.get("tool"), e.get("event"), e.get("cost_usd")
+                if ev == "finish" and isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
+                    self.log.emit("paid_tool_executed", key=pdir.name, tool=tool, cost_usd=cost)
+                    self.recent_error = {"at": now_iso(), "key": pdir.name, "kind": "paid_tool_executed", "tool": tool}
+                    self.notifier.notify("E-NEXUS：OpenMontage内で有料toolが実行されました",
+                                         f"{pdir.name}: {tool}（{cost} USD）。MA-17（/en-generate）を通っていない可能性があります")
+                elif ev == "start" and tool in handoff:
+                    self.log.emit("paid_candidate_tool_started", key=pdir.name, tool=tool)
+                    self.notifier.notify("E-NEXUS：有料候補のtoolが開始されました",
+                                         f"{pdir.name}: {tool} は /en-generate（MA-17 Human承認）へ回す対象です")
+        self._events_primed = True
 
     # ---------- agent
 
@@ -936,6 +1233,7 @@ class Launcher:
         latency_ms = max(0, round((detected_at - ch.mtime_ns / 1e9) * 1000))
         self.log.emit("checkpoint_detected", key=ch.key, status=status, identity=identity, detect_latency_ms=latency_ms,
                       gate_already_approved=status == "completed" or None)
+        self.last_checkpoint = {"key": ch.key, "status": status, "at": now_iso(), "detect_latency_ms": latency_ms}
         self._submit(ch.key, ch, cp, identity, detected_at, latency_ms)
 
     def _on_late_stage(self, ch):
@@ -945,6 +1243,8 @@ class Launcher:
         key = f"{ch.project_id}/{ch.stage}"
         if gate is None or gate.get("status") not in ("done",):
             self.log.emit("paid_stage_without_decision", key=key, gate_status=(gate or {}).get("status"))
+            self.notifier.notify("E-NEXUS：Decisionの記録なしで後段が始まりました",
+                                 f"{key}: gate を通らずに進んだ可能性があります。Human が確認してください")
             return
         handoff = gate.get("handoff") or []
         if handoff and ch.stage == "assets":
@@ -1040,6 +1340,8 @@ class Launcher:
         except Exception as e:  # noqa: BLE001 - 想定外でも Launcher 全体は止めない。この gate だけ human-review
             self.state.update(key, status="failed", overall="human-review", last_error_codes=[type(e).__name__])
             self.log.emit("decision_failed", key=key, codes=[type(e).__name__], error=str(e)[:300])
+            self.recent_error = {"at": now_iso(), "key": key, "kind": "decision_failed", "codes": [type(e).__name__]}
+            self.notifier.notify("E-NEXUS：判定を取得できませんでした", f"{key}: human-review（自動で進めない）")
             return
         preflight_ms = round((time.perf_counter() - t0) * 1000)
         deferrable = [c for c in errors if c in DEFERRED_RETRY_CODES or c in IMMEDIATE_RETRY_CODES]
@@ -1071,16 +1373,29 @@ class Launcher:
                           cache=cache, retry_round=retry_round + (1 if status == "pending" else 0), next_retry_at=next_at,
                           last_error_codes=errors, decided_at=launcher_meta["decided_at"], preflight_ms=preflight_ms,
                           detect_latency_ms=latency_ms, report=str(rpath))
+        self.last_decision = {"key": key, "status": status, "overall": report["overall"], "handoff": handoff,
+                              "at": launcher_meta["decided_at"], "preflight_ms": preflight_ms}
         if status == "done":
             self._count("decided")
             self.log.emit("decision_done", key=key, overall=report["overall"], handoff=handoff, summary=summary,
                           preflight_ms=preflight_ms, report=rpath.name)
+            if report["overall"] == "paid-handoff":
+                self.notifier.notify("E-NEXUS：有料生成の候補があります",
+                                     f"{ch.project_id}: {', '.join(handoff)} は OpenMontage 内で実行せず /en-generate（MA-17 Human承認）へ")
+            elif report["overall"] == "human-review":
+                self.notifier.notify("E-NEXUS：Human確認が必要です", f"{key}: human-review（報告 {rpath.name}）")
         elif status == "pending":
             self._count("pending")
             self.log.emit("decision_pending", key=key, codes=errors, retry_in_s=backoff[retry_round], report=rpath.name)
+            self.recent_error = {"at": now_iso(), "key": key, "kind": "decision_pending", "codes": errors}
+            self.notifier.notify("E-NEXUS：判定を再試行中です",
+                                 f"{key}: Gateway の一時障害。{int(backoff[retry_round])}秒後に再試行（その間は human-review 扱い）")
         else:
             self._count("failed")
             self.log.emit("decision_failed", key=key, codes=errors, report=rpath.name)
+            self.recent_error = {"at": now_iso(), "key": key, "kind": "decision_failed", "codes": errors}
+            self.notifier.notify("E-NEXUS：判定を取得できませんでした", f"{key}: human-review（自動で進めない）")
+        self._write_heartbeat(force=True)
 
     def _write_report(self, project_id, stage, report):
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", project_id)[:100]
@@ -1098,19 +1413,31 @@ class Launcher:
 
 
 def build_status(cfg):
+    """watcher の現在地（Secret なし）。Human・Hermes・GUI 用。running は OS の lock で判定する（heartbeat の古さでは判定しない）"""
     lock = SingleInstanceLock(cfg.state_dir / LOCK_NAME)
-    owner = lock.owner()
-    running = bool(owner and _pid_alive(owner.get("pid")))
+    running = lock.held_elsewhere()
+    owner = lock.owner() if running else None
+    try:
+        hb = json.loads((cfg.state_dir / HEARTBEAT_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        hb = {}
     st = StateStore(cfg.state_dir / STATE_NAME)
     entries = st.entries()
     by = {}
     for e in entries.values():
         by[e.get("status")] = by.get(e.get("status"), 0) + 1
     recent = sorted(entries.items(), key=lambda kv: kv[1].get("updated_at", ""), reverse=True)[:10]
+    pending = [k for k, e in entries.items() if e.get("status") == "pending"]
+    human_gates = [k for k, e in entries.items() if e.get("overall") in ("paid-handoff", "human-review")
+                   and e.get("checkpoint_status") == "awaiting_human"]
     return {
         "launcher": LAUNCHER_ID, "version": LAUNCHER_VERSION, "running": running,
-        "pid": owner.get("pid") if running else None, "projects_dir": str(cfg.projects_dir),
-        "state_dir": str(cfg.state_dir), "counts": by,
+        "pid": (owner or {}).get("pid"), "role": (owner or {}).get("role"), "environment": cfg.expected_environment,
+        "started_at": (owner or {}).get("started_at"), "heartbeat_at": hb.get("heartbeat_at") if running else None,
+        "projects_dir": str(cfg.projects_dir), "state_dir": str(cfg.state_dir),
+        "last_checkpoint": hb.get("last_checkpoint"), "last_decision": hb.get("last_decision"),
+        "recent_error": hb.get("recent_error"), "notify": hb.get("notify"),
+        "pending": pending, "awaiting_human_with_decision": human_gates, "counts": by,
         "recent": [{"key": k, "status": e.get("status"), "overall": e.get("overall"), "handoff": e.get("handoff"),
                     "decided_at": e.get("decided_at"), "next_retry_at": e.get("next_retry_at"), "report": e.get("report")}
                    for k, e in recent],
@@ -1118,18 +1445,38 @@ def build_status(cfg):
 
 
 def format_status(s):
-    lines = [f"E-NEXUS OpenMontage Launcher v{s['version']}：{'稼働中 pid=' + str(s['pid']) if s['running'] else '停止中'}",
-             f"監視: {s['projects_dir']}", f"件数: {s['counts'] or '（まだ判定なし）'}"]
+    head = (f"稼働中 pid={s['pid']}（{s['role']}・{s['environment']}・開始 {s['started_at']}・heartbeat {s['heartbeat_at']}）"
+            if s["running"] else "停止中")
+    lines = [f"E-NEXUS OpenMontage Watcher v{s['version']}：{head}", f"監視: {s['projects_dir']}",
+             f"件数: {s['counts'] or '（まだ判定なし）'}／保留: {len(s['pending'])}件"]
+    if s.get("last_checkpoint"):
+        lines.append(f"最後の検知: {s['last_checkpoint'].get('key')}（{s['last_checkpoint'].get('at')}）")
+    if s.get("last_decision"):
+        d = s["last_decision"]
+        lines.append(f"最後の判定: {d.get('key')} → {d.get('overall')}（{d.get('at')}）")
+    if s.get("recent_error"):
+        lines.append(f"直近の要確認: {s['recent_error']}")
     for r in s["recent"]:
         extra = f" 有料候補={r['handoff']}" if r.get("handoff") else ""
         lines.append(f"- {r['key']}: {r['status']} / {r['overall']}{extra}  {r.get('decided_at') or ''}")
     return "\n".join(lines)
 
 
+_DEVNULL = None
+
+
+def _devnull():
+    global _DEVNULL
+    if _DEVNULL is None:
+        _DEVNULL = open(os.devnull, "w", encoding="utf-8")  # process の寿命まで使う
+    return _DEVNULL
+
+
 def _parser():
     p = argparse.ArgumentParser(prog="enexus_openmontage_launcher", description="E-NEXUS OpenMontage Launcher（DEV）")
-    p.add_argument("command", nargs="?", default="run", choices=["run", "watch", "scan-once", "status", "retry", "init"])
-    p.add_argument("target", nargs="?", help="retry の project_id")
+    p.add_argument("command", nargs="?", default="run",
+                   choices=["run", "watch", "scan-once", "status", "retry", "init", "autostart"])
+    p.add_argument("target", nargs="?", help="retry の project_id / autostart の install・uninstall・status")
     p.add_argument("--openmontage-root")
     p.add_argument("--projects-dir")
     p.add_argument("--state-dir")
@@ -1140,6 +1487,9 @@ def _parser():
     p.add_argument("--poll-s", type=float)
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--notify", dest="notify", action="store_true", default=None, help="Human 向けの通知（watch の既定）")
+    p.add_argument("--no-notify", dest="notify", action="store_false")
+    p.add_argument("--autostart", action="store_true", help="ログオン時の Task から起動された watcher（表示用の role）")
     return p
 
 
@@ -1152,7 +1502,7 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     args.agent_args = agent_args
     args.mode = {"run": "run", "watch": "watch", "scan-once": "watch"}.get(args.command, "watch")
-    out = sys.stdout
+    out = sys.stdout if sys.stdout is not None else _devnull()   # pythonw では None
     try:
         if hasattr(out, "reconfigure"):
             out.reconfigure(encoding="utf-8", errors="replace")
@@ -1171,6 +1521,9 @@ def main(argv=None):
             _atomic_write(state_dir / CONFIG_NAME, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
             out.write(f"保存しました: {state_dir / CONFIG_NAME}（local 専用・git 管理外）\n")
             return 0
+        if args.command == "autostart":
+            import enexus_openmontage_autostart as auto
+            return auto.main(args, out)
         cfg = build_config(args)
         if args.command == "status":
             s = build_status(cfg)
@@ -1191,10 +1544,20 @@ def main(argv=None):
                         st.update(key, identity=None, cache={}, status="retry_requested", retry_round=0)
                 out.write(f"次回の起動時に再判定します: {args.target}\n")
             return 0
-        launcher = Launcher(cfg)
-        if args.command == "scan-once":
-            return launcher.scan_once()
-        return launcher.run()
+        role = "autostart" if args.autostart else ("watch" if args.command in ("watch", "scan-once") else "launcher")
+        launcher = Launcher(cfg, role=role)
+        try:
+            if args.command == "scan-once":
+                return launcher.scan_once()
+            return launcher.run()
+        except LockBusy as e:
+            # 常駐 watcher が既にいる：何もしないで正常終了（Task Scheduler の繰り返し起動はここで終わる）
+            out.write(f"[E-NEXUS OpenMontage Watcher] {e}\n")
+            return EXIT_ALREADY_RUNNING
+        except Exception as e:  # noqa: BLE001 - pythonw では例外が見えないので log に残す
+            import traceback
+            launcher.log.emit("crash", error=f"{type(e).__name__}: {e}"[:500], traceback=traceback.format_exc()[-2000:])
+            raise
     except ConfigError as e:
         out.write(f"[E-NEXUS OpenMontage Launcher] 起動できません：{e}\n")
         return 1
