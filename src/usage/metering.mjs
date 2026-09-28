@@ -40,6 +40,9 @@ export const ATTEMPT_FIELDS = Object.freeze([
   'adapter', 'status', 'provider', 'model', 'route', 'confidence', 'tier', 'reason',
   'latency_ms', 'networked', 'usage_known', 'input_tokens', 'output_tokens', 'estimated_cost_usd_micros',
   'retry_count', 'final', 'continue_reason',
+  // 2026-09-29（Fable追加レビューP D1・D3）：実版（取れなければ null）と観測用 evidence（response_model・routing・probabilities）。
+  // Jev adapter の ok attempt だけが持つ。旧行・他 adapter には無い
+  'model_version', 'evidence',
 ]);
 
 /**

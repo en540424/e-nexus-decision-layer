@@ -89,8 +89,9 @@ test('toDirectShapedResponse: boolean→noul, choice/score confidence lifted fro
   };
   const raw = toDirectShapedResponse(result, { questions });
   assert.deepEqual(raw.answers.a, { type: 'noul', noul: 0.1 });
-  assert.deepEqual(raw.answers.b, { type: 'choice', choice: 'x', confidence: 0.55 });
-  assert.deepEqual(raw.answers.c, { type: 'score', score: 2.6, confidence: 0.6 });
+  // probabilities は観測用に保持する（2026-09-29 review P D3）。confidence は providerMetadata の値だけ
+  assert.deepEqual(raw.answers.b, { type: 'choice', choice: 'x', confidence: 0.55, probabilities: { x: 0.7, y: 0.3 } });
+  assert.deepEqual(raw.answers.c, { type: 'score', score: 2.6, confidence: 0.6, probabilities: { '0': 0, '1': 0.2, '2': 0.8 } });
   assert.deepEqual(raw.usage, { input_tokens: 1000, output_tokens: 10 });
   assert.equal(raw.model, 'typesafe-ai/jev');
 });
@@ -99,7 +100,8 @@ test('toDirectShapedResponse: missing confidence on choice/score is never synthe
   const questions = { b: { type: 'choice' } };
   const result = { answers: { b: { type: 'choice', choice: 'x', probabilities: { x: 0.99, y: 0.01 } } }, usage: {} };
   const raw = toDirectShapedResponse(result, { questions });
-  assert.deepEqual(raw.answers.b, { type: 'choice', choice: 'x' }, 'no confidence field is fabricated from probabilities');
+  assert.ok(!('confidence' in raw.answers.b), 'no confidence field is fabricated from probabilities');
+  assert.deepEqual(raw.answers.b.probabilities, { x: 0.99, y: 0.01 });
   assert.throws(
     () => parseJevResponse(raw, { fieldPlans: { b: { kind: 'choice', enumValues: ['x', 'y'] } } }),
     (e) => e instanceof AdapterUnavailableError && e.details.reason === 'JEV_MALFORMED_RESPONSE',

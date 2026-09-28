@@ -22,7 +22,7 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 ## 使い方
 
 ```bash
-npm test                                     # 272 tests, 依存ゼロ（node --test）
+npm test                                     # 284 tests, 依存ゼロ（node --test）
 python -m unittest discover -s integrations/openmontage -p "test_*.py"   # OpenMontage adapter（Python stdlib・npm test とは別）
 echo '<request json>' | node src/cli.mjs gateway decide --stdin   # Common Decision Gateway（consumer 向け正式入口・envelope を返す）
 node src/cli.mjs gateway health              # version・engine mode・Jev 経路状態（Secret なし）・counters

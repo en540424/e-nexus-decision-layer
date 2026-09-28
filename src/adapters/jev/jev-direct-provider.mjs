@@ -91,10 +91,16 @@ async function classifyResponse(res) {
   return json;
 }
 
-/** noul の criteria（x-boolean-criteria 由来。Vercel Gateway の boolean criteria 用）は Direct API の仕様で未確認のため送らない */
+/**
+ * noul の criteria（x-boolean-criteria 由来）：公式 API（docs.typesafe.ai/api.md・2026-09-29 Fable追加レビューP D6 で確認）で
+ * Noul の `criteria: { true, false }` は optional として対応済み。以前は「仕様未確認」で strip していたが、Vercel 経路と同じ
+ * 質問を Direct にも送るため、true / false が両方 string の正しい形のときだけ送る（形が崩れたものは送らない＝推測で補わない）。
+ */
 export function toDirectRequest(request) {
   const questions = Object.fromEntries(Object.entries(request?.questions ?? {}).map(([k, q]) => {
     if (q?.type !== 'noul' || !('criteria' in q)) return [k, q];
+    const c = q.criteria;
+    if (c && typeof c.true === 'string' && typeof c.false === 'string') return [k, { ...q, criteria: { true: c.true, false: c.false } }];
     const { criteria, ...rest } = q; // eslint-disable-line no-unused-vars
     return [k, rest];
   }));

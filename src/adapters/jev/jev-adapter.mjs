@@ -38,6 +38,12 @@
  *
  * APIキーの値をログ・例外メッセージ・結果へ含めない。
  *
+ * model_version / evidence（2026-09-29・Fable追加レビューP D1・D3）:
+ *   model_version = 応答から分かる実版（例 jev-1.13.0）。Direct は応答 `model` が版なら、Vercel は provider が providerMetadata 等から
+ *   拾えた場合だけ。alias（jev / jev-latest / typesafe-ai/jev）しか無ければ null（alias を版として記録しない）。
+ *   evidence = 観測用の補助記録（tier・confidence 合成には使わない）：response_model・model_version_source・Gateway routing・
+ *   question ごとの probabilities（choice/score は Jev の分布、noul は { true: p, false: 1-p }。小数4桁）。
+ *
  * attempt metering（2026-09-19）:
  *   正常応答は networked:true・route（direct/vercel）・model（応答の実モデルID）・retry_count（Provider が meta に書いた場合のみ）を
  *   AdapterResult に付ける。送信後の失敗（HTTP/timeout/応答不正）は Provider／parseJevResponse が details.networked=true を付けて throw し、
@@ -94,7 +100,7 @@ function jevEnumOf(name, fieldSchema) {
 function planForField(name, fieldSchema, decisionType) {
   const instructions = fieldSchema?.description || `Determine ${name} for this ${decisionType} decision.`;
   if (fieldSchema?.type === 'boolean') {
-    // x-boolean-criteria（任意）：true / false それぞれの意味。Vercel Gateway の boolean criteria へ渡す（Direct には送らない）
+    // x-boolean-criteria（任意）：true / false それぞれの意味。Vercel Gateway の boolean criteria・Direct の noul criteria へ渡す（2026-09-29〜 Direct も送る）
     const bc = fieldSchema['x-boolean-criteria'];
     const criteria = bc && typeof bc.true === 'string' && typeof bc.false === 'string' ? { true: bc.true, false: bc.false } : null;
     return { question: { type: 'noul', instructions, ...(criteria ? { criteria } : {}) }, plan: { kind: 'noul' } };
@@ -172,6 +178,49 @@ export function buildJevRequest({ decisionType, outcomeSchema, input, candidates
   return { request, fieldPlans };
 }
 
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+/** 版らしい文字列（数字.数字 を含む）か。alias は false（jev-vercel-provider.mjs の looksVersioned と同じ判定。循環 import を避けて複製） */
+function looksVersioned(v) {
+  return typeof v === 'string' && SAFE_ID.test(v) && /\d+\.\d+/.test(v);
+}
+
+const round4 = (x) => Math.round(x * 10000) / 10000;
+
+/** answer.probabilities（{ 値: 確率 }）を小数4桁で写す。形が不正なら null（推測で作らない） */
+function probabilitiesOf(answer, kind) {
+  if (kind === 'noul') return { true: round4(answer.noul), false: round4(1 - answer.noul) };
+  const p = answer?.probabilities;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+  const entries = Object.entries(p).filter(([k, v]) => k.length <= 120 && typeof v === 'number' && v >= 0 && v <= 1);
+  if (!entries.length || entries.length > 32) return null;
+  return Object.fromEntries(entries.map(([k, v]) => [k, round4(v)]));
+}
+
+/** 応答から実版と観測用 evidence を組み立てる（tier には使わない） */
+function evidenceOf(raw, probabilities) {
+  const responseModel = typeof raw.model === 'string' && SAFE_ID.test(raw.model) ? raw.model : null;
+  let modelVersion = null;
+  let source = null;
+  if (looksVersioned(raw.model_version)) {
+    modelVersion = raw.model_version;
+    source = typeof raw.model_version_source === 'string' && SAFE_ID.test(raw.model_version_source) ? raw.model_version_source : 'provider';
+  } else if (looksVersioned(responseModel)) {
+    modelVersion = responseModel;
+    source = 'response.model';
+  }
+  const routing = raw.routing && typeof raw.routing === 'object' ? Object.fromEntries(Object.entries(raw.routing)
+    .filter(([k, v]) => ['resolved_provider', 'canonical_slug', 'generation_id'].includes(k) && typeof v === 'string' && SAFE_ID.test(v))) : {};
+  return {
+    model_version: modelVersion,
+    evidence: {
+      response_model: responseModel,
+      model_version_source: source,
+      ...(Object.keys(routing).length ? { routing } : {}),
+      probabilities,
+    },
+  };
+}
+
 /** noul の確率から Decision Layer 独自の confidence を導出する（公式にはconfidence無し） */
 function noulConfidence(noul) {
   return Math.abs(2 * noul - 1);
@@ -199,6 +248,7 @@ export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, i
   }
   const outcome = {};
   const fieldConfidence = {};
+  const probabilities = {};
   for (const [name, plan] of Object.entries(fieldPlans)) {
     if (plan.kind === 'derived') continue; // 質問していない（下で元 field の答えから写像する）
     const answer = raw.answers[name];
@@ -211,6 +261,7 @@ export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, i
       }
       outcome[name] = answer.noul >= 0.5;
       fieldConfidence[name] = noulConfidence(answer.noul);
+      probabilities[name] = probabilitiesOf(answer, 'noul');
     } else if (plan.kind === 'choice') {
       if (typeof answer.choice !== 'string' || !plan.enumValues.includes(answer.choice)) {
         throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid choice: ${name}`, networked: true });
@@ -220,6 +271,7 @@ export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, i
       }
       outcome[name] = answer.choice;
       fieldConfidence[name] = answer.confidence;
+      probabilities[name] = probabilitiesOf(answer, 'choice');
     } else if (plan.kind === 'score') {
       if (typeof answer.score !== 'number') {
         throw new AdapterUnavailableError('jev', 'JEV_MALFORMED_RESPONSE', { detail: `invalid score: ${name}`, networked: true });
@@ -230,6 +282,7 @@ export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, i
       const levelIndex = Math.min(Math.max(Math.round(answer.score), 0), plan.levels - 1);
       outcome[name] = plan.minimum + levelIndex;
       fieldConfidence[name] = answer.confidence;
+      probabilities[name] = probabilitiesOf(answer, 'score');
     }
   }
   const derivedFrom = {};
@@ -279,6 +332,8 @@ export function parseJevResponse(raw, { fieldPlans = {}, outcomeSchema = null, i
     // 応答を parse できた＝実際に送信した。model は provider が実際に使ったID（応答に無ければ付けない＝adapter.model のまま）
     networked: true,
     ...(typeof raw.model === 'string' && raw.model ? { model: raw.model } : {}),
+    // 実版（取れなければ null）と観測用 evidence。tier・confidence には影響しない
+    ...evidenceOf(raw, probabilities),
   };
 }
 

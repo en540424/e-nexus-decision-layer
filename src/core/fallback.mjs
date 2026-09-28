@@ -20,6 +20,7 @@
  *     usage_known: boolean,                    // false のとき tokens/cost は null（0 と混同しない）
  *     input_tokens, output_tokens, estimated_cost_usd_micros,   // usage_known=false なら null
  *     retry_count: number|null,                // provider 内部の再試行回数（取得できた場合のみ。1 attempt=1 decide() 呼び出し）
+ *     model_version, evidence,                 // 任意（2026-09-29）：AdapterResult が持つときだけ。実版（取れなければ null）と観測用記録
  *     final: boolean,                          // この attempt が decision を確定したか
  *     continue_reason,                         // ok だが final でない（tier human で chain 継続）ときだけ
  *   }
@@ -71,6 +72,9 @@ export function buildOkAttempt({ adapter, result, tier, ms }) {
     networked,
     ...usageFields(result.usage, networked),
     retry_count: retryCountOf(result.retry_count),
+    // 観測用（tier には使わない）。adapter が key を返したときだけ付ける（rules / human 等の record は従来どおり）
+    ...('model_version' in result ? { model_version: typeof result.model_version === 'string' ? result.model_version : null } : {}),
+    ...(result.evidence && typeof result.evidence === 'object' ? { evidence: result.evidence } : {}),
     final: false,
   };
 }

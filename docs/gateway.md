@@ -269,6 +269,8 @@ usage.jsonl の行の `attempts[]` に **`adapter=jev`・`status=ok`・`networke
 node scripts/real-jev-evidence.mjs --since <smoke開始のISO時刻> --expect claude-code,en-generate-hub   # 両 consumer に証跡が無ければ exit 1
 ```
 
+2026-09-29〜：Jev の ok attempt は任意フィールド `model_version`（応答から分かる実版。alias しか無ければ `null`）と `evidence`（`response_model`・`model_version_source`・Gateway `routing.resolved_provider`・question ごとの `probabilities`）を持つ。**観測用で tier・confidence には使わない**。Contract v1 の envelope 項目は変えていない（`decision.fallback.trace` の attempt record へ任意項目を足しただけ・後方互換）。Vercel 経路の 403 は `JEV_FORBIDDEN` のまま、内側の原因（例 `RestrictedModelsError`・`no_providers_available`）を calibration の診断に残す（`docs/poc/calibration/2026-09-29-extended-calibration.md`）。
+
 ### 11-4. smoke 手順（Human が env を設定した後。有料生成・公開・production mutation はしない）
 
 1. `node src/cli.mjs gateway health` → `jev.usable: true`・`provider: vercel`

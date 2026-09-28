@@ -107,22 +107,32 @@ export function toDirectShapedResponse(result, { questions }) {
     } else if (q.type === 'choice') {
       if (raw.type === 'choice' && typeof raw.choice === 'string') {
         const confidence = typesafeConfidence[name];
-        answers[name] = typeof confidence === 'number'
-          ? { type: 'choice', choice: raw.choice, confidence }
-          : { type: 'choice', choice: raw.choice };
+        answers[name] = {
+          type: 'choice', choice: raw.choice,
+          ...(typeof confidence === 'number' ? { confidence } : {}),
+          ...(isProbabilityMap(raw.probabilities) ? { probabilities: raw.probabilities } : {}),
+        };
       }
     } else if (q.type === 'score') {
       if (raw.type === 'score' && typeof raw.score === 'number') {
         const confidence = typesafeConfidence[name];
-        answers[name] = typeof confidence === 'number'
-          ? { type: 'score', score: raw.score, confidence }
-          : { type: 'score', score: raw.score };
+        answers[name] = {
+          type: 'score', score: raw.score,
+          ...(typeof confidence === 'number' ? { confidence } : {}),
+          ...(isProbabilityMap(raw.probabilities) ? { probabilities: raw.probabilities } : {}),
+        };
       }
     }
   }
   const usage = result?.usage ?? {};
+  const version = modelVersionOf(result);
+  const routing = gatewayRoutingOf(result?.providerMetadata);
   return {
+    // response.modelId は AI SDK がリクエストした modelId をそのまま返す（@ai-sdk/gateway の GatewayEvaluationModel 実体で確認・
+    // 2026-09-29）。alias（typesafe-ai/jev）であって実版ではないので model_version とは別に扱う
     model: result?.response?.modelId,
+    ...(version ? { model_version: version.value, model_version_source: version.source } : {}),
+    ...(routing ? { routing } : {}),
     answers,
     usage: {
       input_tokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : 0,
@@ -131,11 +141,65 @@ export function toDirectShapedResponse(result, { questions }) {
   };
 }
 
+/** probabilities（{ 選択肢/段: 確率 }）として使える形か。キーは短い識別子、値は 0〜1 の数だけ */
+function isProbabilityMap(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return false;
+  const entries = Object.entries(p);
+  return entries.length > 0 && entries.length <= 32
+    && entries.every(([k, v]) => k.length <= 120 && typeof v === 'number' && v >= 0 && v <= 1);
+}
+
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+/** 版らしい文字列（数字.数字 を含む）。alias（jev / jev-latest / typesafe-ai/jev）は版として扱わない */
+export function looksVersioned(v) {
+  return typeof v === 'string' && SAFE_ID.test(v) && /\d+\.\d+/.test(v);
+}
+
+/**
+ * 実版（例 jev-1.13.0）を応答から探す（2026-09-29 Fable追加レビューP D1）。Vercel 経路で版がどこに載るかは成功応答で未確認のため、
+ * 候補キーを allowlist で見るだけで推測しない。見つからなければ null（alias で埋めない）。値は SAFE_ID を満たすものだけ
+ */
+export function modelVersionOf(result) {
+  const ts = result?.providerMetadata?.typesafe ?? {};
+  for (const k of ['model', 'modelVersion', 'model_version', 'version', 'modelId', 'resolvedModel']) {
+    if (looksVersioned(ts[k])) return { value: ts[k], source: `providerMetadata.typesafe.${k}` };
+  }
+  const body = result?.response?.body;
+  if (body && typeof body === 'object') {
+    for (const k of ['model', 'modelVersion', 'model_version']) {
+      if (looksVersioned(body[k])) return { value: body[k], source: `response.body.${k}` };
+    }
+  }
+  return null;
+}
+
+/**
+ * Gateway の routing（providerMetadata.gateway）から、どの provider に解決されたかだけを取り出す。
+ * 2026-09-29 の 403 応答で `resolvedProvider: digitalocean`（typesafe-ai は fallback）を確認＝alias の背後の実行先が変わり得るため記録する
+ */
+export function gatewayRoutingOf(providerMetadata) {
+  const g = providerMetadata?.gateway;
+  if (!g || typeof g !== 'object') return null;
+  const r = g.routing ?? {};
+  const out = {};
+  if (SAFE_ID.test(r.resolvedProvider ?? '')) out.resolved_provider = r.resolvedProvider;
+  if (SAFE_ID.test(r.canonicalSlug ?? '')) out.canonical_slug = r.canonicalSlug;
+  if (SAFE_ID.test(g.generationId ?? '')) out.generation_id = g.generationId;
+  return Object.keys(out).length ? out : null;
+}
+
 /** 診断用の安全な allowlist（値は文字列/数値/真偽のみ。message・headers・body・キーは含めない） */
 function safeDiagnostic(err) {
   const d = {};
   if (typeof err?.name === 'string' && /^[A-Za-z_]{1,64}$/.test(err.name)) d.error_name = err.name;
   if (typeof err?.type === 'string' && /^[a-z_]{1,64}$/.test(err.type)) d.error_type = err.type; // Gateway error の type（例 rate_limit_exceeded）
+  // 内側（APICallError.data）の分類名。2026-09-29：403 の外側 type は internal_server_error だが、内側は
+  // RestrictedModelsError / no_providers_available（Vercel 無料枠でモデル不可）で、原因はこちらでしか分からない
+  const inner = err?.cause?.data?.error;
+  if (typeof inner?.param?.name === 'string' && /^[A-Za-z_]{1,64}$/.test(inner.param.name)) d.error_cause_name = inner.param.name;
+  if (typeof inner?.type === 'string' && /^[a-z_]{1,64}$/.test(inner.type)) d.error_cause_type = inner.type;
+  const routing = gatewayRoutingOf(err?.cause?.data?.providerMetadata);
+  if (routing?.resolved_provider) d.resolved_provider = routing.resolved_provider;
   return d;
 }
 

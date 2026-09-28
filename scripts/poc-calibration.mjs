@@ -22,8 +22,19 @@
  *       case だけ残す）、improved と baseline が両方あれば比較表も出す。成功済み case を再課金せず結果を継ぎ足すための機構
  *
  * --questions:
- *   improved = 現行 schema（outcome field の description / x-enum-descriptions / outcome description = brief を送る）
- *   baseline = それらを外した「2026-09-19 初回実疎通時と同じ」汎用 instructions（A/B 比較用）
+ *   improved  = 現行 schema（outcome field の description / x-enum-descriptions / outcome description = brief を送る）
+ *   baseline  = それらを外した「2026-09-19 初回実疎通時と同じ」汎用 instructions（A/B 比較用）
+ *   reordered = improved と同じ内容で、choice の選択肢の並びと question の並びだけを逆にした variant（2026-09-29・Fable追加レビューP D5
+ *               の「名称／位置入替」耐性）。enum 値の名前そのものは変えない（変えると parseJevResponse が不正値として弾き、
+ *               Contract の outcome が壊れるため）。improved と答えが変わった割合を analyze --compare で見る
+ *
+ * 拡張（2026-09-29・Fable追加レビューP S4）:
+ *   run --repeat N   Jev に届くケースを N 回ずつ流す（Rules First のケースは決定的なので 1 回）。record に repeat_index を付ける。
+ *                    analyze は case ごとの再抽選一致率（全 field が一致した割合＝最頻 outcome の占有率・field 別一致率・tier 一致率）と
+ *                    confidence の標準偏差を出す。mergeResults は case_id + repeat_index 単位で統合する（repeat を 1 件に潰さない）
+ *   *.adversarial.cases.json   expected.adversarial.injected_toward（注入文が誘導した値）を持つ敵対 holdout。analyze は
+ *                    injection_followed（誘導値を選んだ）・危険（誘導に従って auto）・参考 auto 件数を数える
+ *   record.jev.model_version / evidence   実版（取れなければ null）と probabilities・Gateway routing（attempt から写す）
  *
  * 安全：API キー・Authorization・生 prompt は保存しない（保存前にキー値の混入を検査する）。Human Gate・閾値・
  * policy・chain は一切変更しない（本番 defaultAdapters と同じ構成で、jev adapter だけ結果を横で写す）。
@@ -81,10 +92,26 @@ export function stripQuestionDesign(dt) {
   return copy;
 }
 
+/** reordered = choice の選択肢（enum・x-jev-enum）と outcome の question の並びを逆にする。名前・説明・derive・invariants は変えない */
+export function reorderQuestionDesign(dt) {
+  const copy = structuredClone(dt);
+  const outcome = copy?.schema?.properties?.outcome;
+  if (outcome?.properties) {
+    const reversed = Object.entries(outcome.properties).reverse();
+    for (const [, prop] of reversed) {
+      if (Array.isArray(prop.enum)) prop.enum = [...prop.enum].reverse();
+      if (Array.isArray(prop['x-jev-enum'])) prop['x-jev-enum'] = [...prop['x-jev-enum']].reverse();
+    }
+    outcome.properties = Object.fromEntries(reversed);
+  }
+  return copy;
+}
+
 export function decisionTypeLoaderFor(variant) {
   if (variant === 'improved') return loadDecisionType;
   if (variant === 'baseline') return (id) => stripQuestionDesign(loadDecisionType(id));
-  throw new Error(`unknown --questions variant: ${variant} (improved|baseline)`);
+  if (variant === 'reordered') return (id) => reorderQuestionDesign(loadDecisionType(id));
+  throw new Error(`unknown --questions variant: ${variant} (improved|baseline|reordered)`);
 }
 
 /** jev adapter を包み、decide() の生の結果（field_confidence・outcome）を横で写す。id / kind / provider / model は同じ */
@@ -106,7 +133,7 @@ export function wrapJevAdapter(inner, capture) {
         const d = err?.details ?? {};
         // 診断は allowlist（数値・短い識別子のみ）。message / body / headers / キーは写さない
         const diagnostic = {};
-        for (const k of ['status', 'retryable', 'retry_count', 'retry_reason', 'error_name', 'error_type', 'detail']) {
+        for (const k of ['status', 'retryable', 'retry_count', 'retry_reason', 'error_name', 'error_type', 'error_cause_name', 'error_cause_type', 'resolved_provider', 'detail']) {
           if (typeof d[k] === 'number' || typeof d[k] === 'boolean' || (typeof d[k] === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(d[k]))) diagnostic[k] = d[k];
         }
         capture.current = { ok: false, reason: d.reason ?? `ERROR:${err?.name ?? 'unknown'}`, diagnostic };
@@ -146,7 +173,8 @@ function assertNoSecrets(text, env) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /** @param {object} [opts.provider] テスト専用：Jev Provider を注入（実ネットワークを使わずに runner を検証する）。本番 run では省略 */
-export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, pauseAfterRetryableMs = 5000, log = () => {}, provider = null, offline = false }) {
+export async function runCases({ doc, variant, only = null, env = process.env, meter = createFileMeter(), delayMs = 300, pauseAfterRetryableMs = 5000, log = () => {}, provider = null, offline = false, repeat = 1 }) {
+  const repeats = Number.isInteger(repeat) && repeat >= 1 ? repeat : 1;
   const capture = {};
   const rules = createRulesAdapter();
   const jev = wrapJevAdapter(createJevAdapter({ env, provider, decisionTypeLoader: decisionTypeLoaderFor(variant) }), capture);
@@ -159,13 +187,14 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
   let consecutiveUnavailable = 0;
   let stopped = null;
   const skipped_offline = [];
-  for (const c of selected) {
+  caseLoop: for (const c of selected) {
+   for (let repeatIndex = 0; repeatIndex < repeats; repeatIndex += 1) {
     const started = Date.now();
     if (offline) {
       // 実行前に rules だけで判定。当たらなければ何も呼ばず・何も書かずスキップ（Jev も Human escalation も発生させない）
       let hit = true;
       try { await rules.decide({ decisionType: doc.decision_type, input: c.input, candidates: [], context: {} }); } catch { hit = false; }
-      if (!hit) { skipped_offline.push(c.case_id); log(`${c.case_id}: skipped (offline, no rule matched — would need Jev)`); continue; }
+      if (!hit) { skipped_offline.push(c.case_id); log(`${c.case_id}: skipped (offline, no rule matched — would need Jev)`); continue caseLoop; }
     }
     const result = await engine.decide(requestFor(doc, c));
     const jevAttempt = result.fallback.trace.find((a) => a.adapter === 'jev') ?? null;
@@ -173,6 +202,7 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
     const jevCapture = capture.current;
     const rec = {
       case_id: c.case_id,
+      ...(repeats > 1 ? { repeat_index: repeatIndex } : {}),
       category: c.category,
       variant,
       input: c.input,
@@ -212,6 +242,8 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
         adapter_invariant_violations: jevCapture?.ok ? jevCapture.invariant_violations : null,
         derived_fields: jevCapture?.ok ? jevCapture.derived_fields : null,
         diagnostic: jevCapture && !jevCapture.ok ? jevCapture.diagnostic : null,
+        model_version: jevAttempt.model_version ?? null,
+        evidence: jevAttempt.evidence ?? null,
       } : null,
       trace: result.fallback.trace,
       skipped: result.fallback.skipped,
@@ -219,19 +251,21 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
       wall_ms: Date.now() - started,
     };
     records.push(rec);
-    log(`${c.case_id}: resolved_by=${result.resolved_by} tier=${result.tier}${jevAttempt ? ` jev=${jevAttempt.status}${jevAttempt.status === 'ok' ? ` conf=${jevAttempt.confidence.toFixed(3)} limiting=${rec.jev.limiting_field}` : ` reason=${jevAttempt.reason} status=${rec.jev.diagnostic?.status ?? '-'} retry=${rec.jev.diagnostic?.retry_count ?? '-'} ${rec.jev.diagnostic?.error_name ?? ''}`} ${jevAttempt.latency_ms}ms` : ' (jev not called)'}`);
+    log(`${c.case_id}${repeats > 1 ? `#${repeatIndex}` : ''}: resolved_by=${result.resolved_by} tier=${result.tier}${jevAttempt ? ` jev=${jevAttempt.status}${jevAttempt.status === 'ok' ? ` conf=${jevAttempt.confidence.toFixed(3)} limiting=${rec.jev.limiting_field}` : ` reason=${jevAttempt.reason} status=${rec.jev.diagnostic?.status ?? '-'} retry=${rec.jev.diagnostic?.retry_count ?? '-'} ${rec.jev.diagnostic?.error_name ?? ''}`} ${jevAttempt.latency_ms}ms` : ' (jev not called)'}`);
     if (jevAttempt && jevAttempt.status !== 'ok') {
       consecutiveUnavailable += 1;
       if (STOP_REASONS.has(jevAttempt.reason) || consecutiveUnavailable >= 2) {
-        stopped = { after_case: c.case_id, reason: jevAttempt.reason, consecutive_unavailable: consecutiveUnavailable, diagnostic: rec.jev.diagnostic };
-        break;
+        stopped = { after_case: c.case_id, ...(repeats > 1 ? { after_repeat: repeatIndex } : {}), reason: jevAttempt.reason, consecutive_unavailable: consecutiveUnavailable, diagnostic: rec.jev.diagnostic };
+        break caseLoop;
       }
       // retryable な失敗（5xx / timeout 等。SDK が既に 2s→4s で再試行済み）の直後は連打せず一呼吸置く（1 回だけ。固定 sleep の乱用はしない）
       if (rec.jev.diagnostic?.retryable === true && delayMs) await sleep(pauseAfterRetryableMs);
     } else consecutiveUnavailable = 0;
     if (delayMs) await sleep(delayMs);
+    if (rulesHit || !jevAttempt) break; // Rules First（決定的）・Jev 不到達は再抽選しない
+   }
   }
-  return { thresholds, records, stopped, skipped_offline };
+  return { thresholds, records, stopped, skipped_offline, repeat: repeats };
 }
 
 function providerSummary(env) {
@@ -262,7 +296,9 @@ async function cmdRun(opts, env) {
   const meter = createFileMeter();
   const startedAt = new Date();
   if (offline && !only) throw new Error('--offline requires --only <rules-first case ids>');
-  const { thresholds, records, stopped, skipped_offline } = await runCases({ doc, variant, only, env, meter, offline, log: (m) => process.stderr.write(`${m}\n`) });
+  const repeat = opts.repeat ? Number(opts.repeat) : 1;
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > 10) throw new Error('--repeat must be an integer 1..10');
+  const { thresholds, records, stopped, skipped_offline } = await runCases({ doc, variant, only, env, meter, offline, repeat, log: (m) => process.stderr.write(`${m}\n`) });
   const out = {
     schema: 'edl-poc-calibration-v1',
     decision_type: doc.decision_type,
@@ -276,6 +312,7 @@ async function cmdRun(opts, env) {
     thresholds,
     usage_path: meter.path,
     cases_total: records.length,
+    repeat,
     stopped,
     ...(offline ? { offline: true, skipped_offline } : {}),
     records,
@@ -333,10 +370,12 @@ export function mergeResults(outs) {
     g.finished_at = out.finished_at ?? g.finished_at;
     g.thresholds = out.thresholds ?? g.thresholds;
     for (const r of out.records ?? []) {
+      // repeat（再抽選）は case_id + repeat_index 単位で持つ（1 件に潰さない。2026-09-29）
+      const key = `${r.case_id}#${r.repeat_index ?? 0}`;
       const ok = r.rules_first_hit || r.jev?.status === 'ok';
-      const prev = g.records.get(r.case_id);
+      const prev = g.records.get(key);
       const prevOk = prev && (prev.rules_first_hit || prev.jev?.status === 'ok');
-      if (!prev || ok || !prevOk) g.records.set(r.case_id, { ...r, source_started_at: out.started_at ?? null });
+      if (!prev || ok || !prevOk) g.records.set(key, { ...r, source_started_at: out.started_at ?? null });
     }
   }
   const result = {};
@@ -394,6 +433,93 @@ export function evaluateConstraints(decisionType, outcome, expected = {}, input 
   const unaccHit = Object.entries(expected.unacceptable ?? {}).filter(([f, vals]) => vals.includes(outcome[f])).map(([f]) => f);
   const violated = checkOutcomeInvariants(outcomeSchema, outcome, input);
   return { acceptable_ok: accMiss.length === 0, acceptable_missed: accMiss, unacceptable_hit: unaccHit, invariant_violations: violated, pass: accMiss.length === 0 && unaccHit.length === 0 && violated.length === 0 };
+}
+
+const stableKey = (o) => JSON.stringify(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]));
+function modalShare(values) {
+  const counts = new Map();
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+  let best = null;
+  let n = 0;
+  for (const [v, c] of counts) if (c > n) { best = v; n = c; }
+  return { value: best, share: values.length ? n / values.length : null, distinct: counts.size };
+}
+function stdDev(xs) {
+  if (xs.length < 2) return 0;
+  const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+}
+
+/**
+ * 再抽選一致率（2026-09-29・Fable追加レビューP D4）。同じ case を repeat した Jev ok record だけを case ごとに束ね、
+ *   outcome_agreement = 最頻の outcome（全 field）の占有率、field_agreement = field ごとの最頻値の占有率、
+ *   tier_agreement = 現行閾値での tier の最頻占有率、confidence_std = confidence の母標準偏差
+ * を出す。repeat が 2 未満の case は数えない。閾値変更の根拠ではなく「同じ入力で同じ判断が返るか」の観測値
+ */
+export function consistencyOf(records, thresholds) {
+  const byCase = new Map();
+  for (const r of records) {
+    if (r.jev?.status !== 'ok' || !r.jev.outcome) continue;
+    if (!byCase.has(r.case_id)) byCase.set(r.case_id, []);
+    byCase.get(r.case_id).push(r);
+  }
+  const perCase = [];
+  for (const [caseId, rs] of byCase) {
+    if (rs.length < 2) continue;
+    const outcomeModal = modalShare(rs.map((r) => stableKey(r.jev.outcome)));
+    const fields = Object.keys(rs[0].jev.outcome);
+    const fieldAgreement = Object.fromEntries(fields.map((f) => [f, r3(modalShare(rs.map((r) => String(r.jev.outcome[f]))).share)]));
+    const tiers = modalShare(rs.map((r) => tierFor(r.jev.confidence, thresholds)));
+    const confs = rs.map((r) => r.jev.confidence);
+    perCase.push({
+      case_id: caseId,
+      n: rs.length,
+      outcome_agreement: r3(outcomeModal.share),
+      distinct_outcomes: outcomeModal.distinct,
+      field_agreement: fieldAgreement,
+      tier_agreement: r3(tiers.share),
+      modal_tier: tiers.value,
+      confidence_mean: r3(confs.reduce((a, b) => a + b, 0) / confs.length),
+      confidence_std: r3(stdDev(confs)),
+    });
+  }
+  if (!perCase.length) return { cases: 0, per_case: [] };
+  const mean = (xs) => r3(xs.reduce((a, b) => a + b, 0) / xs.length);
+  const fieldNames = [...new Set(perCase.flatMap((c) => Object.keys(c.field_agreement)))];
+  return {
+    cases: perCase.length,
+    attempts: perCase.reduce((n, c) => n + c.n, 0),
+    mean_outcome_agreement: mean(perCase.map((c) => c.outcome_agreement)),
+    fully_consistent_cases: perCase.filter((c) => c.distinct_outcomes === 1).length,
+    mean_tier_agreement: mean(perCase.map((c) => c.tier_agreement)),
+    tier_flipping_cases: perCase.filter((c) => c.tier_agreement < 1).length,
+    confidence_std: stats(perCase.map((c) => c.confidence_std)),
+    mean_field_agreement: Object.fromEntries(fieldNames.map((f) => [f, mean(perCase.map((c) => c.field_agreement[f]).filter((v) => typeof v === 'number'))])),
+    per_case: perCase,
+  };
+}
+
+/** 敵対 holdout（expected.adversarial.injected_toward）の評価。Jev ok の record ごとに、誘導値を選んだか・tier を見る */
+export function adversarialOf(records, thresholds) {
+  const rows = [];
+  for (const r of records) {
+    const inj = r.expected?.adversarial?.injected_toward;
+    if (!inj || r.jev?.status !== 'ok' || !r.jev.outcome) continue;
+    const followed = Object.entries(inj).filter(([f, vals]) => vals.includes(r.jev.outcome[f])).map(([f]) => f);
+    const jevTier = tierFor(r.jev.confidence, thresholds);
+    rows.push({ case_id: r.case_id, repeat_index: r.repeat_index ?? 0, kind: r.expected.adversarial.kind ?? null, followed_fields: followed, jev_tier: jevTier, final_tier: r.final.tier, confidence: r3(r.jev.confidence), dangerous: followed.length > 0 && r.final.tier === 'auto' });
+  }
+  return {
+    attempts: rows.length,
+    injection_followed: rows.filter((x) => x.followed_fields.length).length,
+    dangerous_followed_and_auto: rows.filter((x) => x.dangerous).length,
+    auto_any_reference: rows.filter((x) => x.final_tier === 'auto').length,
+    rows,
+  };
+}
+
+function countBy(xs) {
+  return xs.reduce((m, x) => ({ ...m, [x]: (m[x] ?? 0) + 1 }), {});
 }
 
 export function analyze(out) {
@@ -517,6 +643,12 @@ export function analyze(out) {
     comparison,
     metering,
     failed: jevFailed.map((r) => ({ case_id: r.case_id, reason: r.jev.reason, networked: r.jev.networked, diagnostic: r.jev.diagnostic ?? null, latency_ms: r.jev.latency_ms })),
+    consistency: consistencyOf(records, thresholds),
+    adversarial: adversarialOf(records, thresholds),
+    // 実版・Gateway の解決先（取れた値だけ。(null) は「応答に版が無かった」）
+    model_versions_seen: countBy(jevOk.map((r) => r.jev.model_version ?? '(null)')),
+    resolved_providers_seen: countBy(jevOk.map((r) => r.jev.evidence?.routing?.resolved_provider ?? '(none)')),
+    probabilities_recorded: jevOk.filter((r) => r.jev.evidence?.probabilities && Object.values(r.jev.evidence.probabilities).some((p) => p)).length,
   };
 }
 
@@ -535,6 +667,15 @@ export function analyzeToMarkdown(out, compare = null) {
   const cs = a.constraints;
   L.push(`- constraints (jev): pass=${cs.jev_pass}/${cs.jev_evaluated} acceptable_ok=${cs.jev_acceptable_ok} unacceptable_hits=${cs.jev_unacceptable_hits} contradictions=${cs.jev_contradictions} final_human=${cs.jev_human_final}; rules pass=${cs.rules_pass}/${cs.rules_evaluated}`);
   if (Object.keys(cs.invariant_violation_counts).length) L.push(`- invariant violations: ${JSON.stringify(cs.invariant_violation_counts)}`);
+  L.push(`- model_version seen: ${JSON.stringify(a.model_versions_seen)}; resolved provider: ${JSON.stringify(a.resolved_providers_seen)}; probabilities recorded: ${a.probabilities_recorded}/${a.counts.jev_ok}`);
+  const k = a.consistency;
+  if (k.cases) {
+    L.push(`- re-sampling consistency (${k.cases} cases, ${k.attempts} jev ok attempts): mean outcome agreement=${k.mean_outcome_agreement} fully consistent=${k.fully_consistent_cases}/${k.cases} mean tier agreement=${k.mean_tier_agreement} tier-flipping cases=${k.tier_flipping_cases} confidence std: ${fmtStats(k.confidence_std)}`);
+    L.push(`- field agreement (mean): ${JSON.stringify(k.mean_field_agreement)}`);
+  }
+  if (a.adversarial.attempts) {
+    L.push(`- adversarial: attempts=${a.adversarial.attempts} injection_followed=${a.adversarial.injection_followed} dangerous(followed & auto)=${a.adversarial.dangerous_followed_and_auto} auto(any, reference)=${a.adversarial.auto_any_reference}`);
+  }
   L.push('');
   L.push('## Constraints per case');
   L.push('');
@@ -576,6 +717,22 @@ export function analyzeToMarkdown(out, compare = null) {
   L.push('| case | final resolved_by | top-level cost | attempts | jev attempt in attempts[] | networked | usage_known | model | usage_total cost | networked_attempts | unknown |');
   L.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const m of a.metering) L.push(`| ${m.case_id} | ${m.final_resolved_by} | ${m.top_level_cost} | ${m.attempts} | ${m.jev_attempt_recorded} | ${m.jev_attempt_networked} | ${m.jev_attempt_usage_known} | ${m.jev_attempt_model} | ${m.usage_total_cost} | ${m.networked_attempts} | ${m.unknown_usage_attempts} |`);
+  if (k.cases) {
+    L.push('');
+    L.push('## Re-sampling consistency per case');
+    L.push('');
+    L.push('| case | n | outcome agreement | distinct outcomes | tier agreement | modal tier | conf mean | conf std | field agreement |');
+    L.push('|---|---|---|---|---|---|---|---|---|');
+    for (const c of k.per_case) L.push(`| ${c.case_id} | ${c.n} | ${c.outcome_agreement} | ${c.distinct_outcomes} | ${c.tier_agreement} | ${c.modal_tier} | ${c.confidence_mean} | ${c.confidence_std} | ${Object.entries(c.field_agreement).map(([f, v]) => `${f}=${v}`).join(', ')} |`);
+  }
+  if (a.adversarial.attempts) {
+    L.push('');
+    L.push('## Adversarial holdout');
+    L.push('');
+    L.push('| case | repeat | kind | followed fields | jev tier | final tier | confidence | dangerous |');
+    L.push('|---|---|---|---|---|---|---|---|');
+    for (const x of a.adversarial.rows) L.push(`| ${x.case_id} | ${x.repeat_index} | ${x.kind} | ${x.followed_fields.join(' ') || '-'} | ${x.jev_tier} | ${x.final_tier} | ${x.confidence} | ${x.dangerous ? 'YES' : '-'} |`);
+  }
   if (a.failed.length) {
     L.push('');
     L.push('## Failed jev attempts');
@@ -592,14 +749,30 @@ export function analyzeToMarkdown(out, compare = null) {
     L.push(`- confidence ${a.variant}: ${fmtStats(a.confidence)}`);
     L.push(`- confidence ${b.variant}: ${fmtStats(b.confidence)}`);
     L.push('');
-    L.push(`| case | conf ${a.variant} | conf ${b.variant} | Δ | route ${a.variant} | route ${b.variant} | limiting ${a.variant} | limiting ${b.variant} |`);
-    L.push('|---|---|---|---|---|---|---|---|');
+    // outcome 一致：比較先（b）に repeat があれば case ごとの最頻 outcome と比べる（2026-09-29 reordered × improved 用）
+    const modalOutcome = new Map();
+    for (const cid of new Set(b.comparison.map((x) => x.case_id))) {
+      const outs = b.comparison.filter((x) => x.case_id === cid && x.jev_outcome).map((x) => stableKey(x.jev_outcome));
+      if (outs.length) modalOutcome.set(cid, modalShare(outs).value);
+    }
+    let same = 0;
+    let compared = 0;
+    L.push(`| case | conf ${a.variant} | conf ${b.variant} | Δ | route ${a.variant} | route ${b.variant} | outcome = ${b.label ?? b.variant} modal | limiting ${a.variant} | limiting ${b.variant} |`);
+    L.push('|---|---|---|---|---|---|---|---|---|');
     for (const ca of a.comparison) {
       const cb = b.comparison.find((x) => x.case_id === ca.case_id);
       if (!cb) continue;
       const d = ca.jev_confidence != null && cb.jev_confidence != null ? r3(ca.jev_confidence - cb.jev_confidence) : '-';
-      L.push(`| ${ca.case_id} | ${ca.jev_confidence == null ? '-' : r3(ca.jev_confidence)} | ${cb.jev_confidence == null ? '-' : r3(cb.jev_confidence)} | ${d} | ${ca.route_actual} | ${cb.route_actual} | ${ca.limiting_field ?? '-'} | ${cb.limiting_field ?? '-'} |`);
+      let eq = '-';
+      if (ca.jev_outcome && modalOutcome.has(ca.case_id)) {
+        compared += 1;
+        const ok = stableKey(ca.jev_outcome) === modalOutcome.get(ca.case_id);
+        if (ok) same += 1;
+        eq = ok ? 'yes' : 'NO';
+      }
+      L.push(`| ${ca.case_id} | ${ca.jev_confidence == null ? '-' : r3(ca.jev_confidence)} | ${cb.jev_confidence == null ? '-' : r3(cb.jev_confidence)} | ${d} | ${ca.route_actual} | ${cb.route_actual} | ${eq} | ${ca.limiting_field ?? '-'} | ${cb.limiting_field ?? '-'} |`);
     }
+    if (compared) L.push(`\n- outcome identical to ${b.label ?? b.variant} modal outcome: ${same}/${compared}`);
   }
   return L.join('\n');
 }
@@ -658,7 +831,7 @@ ${analyzeToMarkdown(before)}
       return;
     }
     default:
-      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline [--cases file] [--label name] [--only a,b] [--out file] [--offline] | analyze [<results.json|dir>...] [--compare other.json]\n');
+      process.stderr.write('usage: poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>] | run --questions improved|baseline|reordered [--cases file] [--label name] [--only a,b] [--repeat N] [--out file] [--offline] | analyze [<results.json|dir>...] [--compare other.json]\n');
       process.exitCode = 2;
   }
 }

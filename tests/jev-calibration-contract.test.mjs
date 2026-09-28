@@ -89,7 +89,7 @@ test('invalid annotations fail loudly instead of guessing', () => {
   assert.throws(() => parseJevResponse({ answers: { r: { type: 'choice', choice: 'b', confidence: 0.9 } } }, { fieldPlans: plans }), (e) => e.details.reason === 'JEV_MALFORMED_RESPONSE');
 });
 
-test('boolean criteria reach the Vercel Gateway question but are stripped from the Direct API request', () => {
+test('boolean criteria reach both the Vercel Gateway question and the Direct API noul question (review P D6)', () => {
   const outcome = loadDecisionType('paid-generation-gate').schema.properties.outcome;
   const { request } = buildJevRequest({ decisionType: 'paid-generation-gate', outcomeSchema: outcome, input: { asset_kind: 'image', purpose: 'p' }, candidates: [] });
   assert.ok(request.questions.human_review_required.criteria.true.length > 20);
@@ -99,7 +99,11 @@ test('boolean criteria reach the Vercel Gateway question but are stripped from t
   const plain = toGatewayQuestions({ f: { type: 'noul', instructions: 'i' } });
   assert.deepEqual(plain.f, { type: 'boolean', instructions: 'i' }, 'fields without x-boolean-criteria send none');
   const direct = toDirectRequest(request);
-  assert.ok(!('criteria' in direct.questions.human_review_required));
+  assert.deepEqual(direct.questions.human_review_required.criteria, request.questions.human_review_required.criteria);
+  assert.ok(!('criteria' in direct.questions.recommended_route) || direct.questions.recommended_route.criteria === request.questions.recommended_route.criteria);
+  // 形が崩れた noul criteria（片側欠け）は推測で補わず送らない
+  const broken = toDirectRequest({ model: 'm', state: {}, questions: { f: { type: 'noul', instructions: 'i', criteria: { true: 'yes' } } } });
+  assert.deepEqual(broken.questions.f, { type: 'noul', instructions: 'i' });
   assert.deepEqual(direct.questions.recommended_route, request.questions.recommended_route, 'choice criteria untouched');
 });
 
