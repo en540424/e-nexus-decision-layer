@@ -229,7 +229,12 @@ test('service definitions: systemd / launchd / windows run run-gateway.mjs with 
   const ld = renderService({ ...a, target: 'launchd', node: '/opt/homebrew/bin/node' });
   assert.match(ld.content, /<string>scripts\/run-gateway\.mjs<\/string>/);
   assert.match(ld.content, /<key>StandardErrorPath<\/key>/);
-  assert.match(ld.content, /<key>PATH<\/key>/, 'launchd gets an explicit PATH (node must be found)');
+  assert.ok(!/<key>PATH<\/key>/.test(ld.content), 'no guessed PATH when node is given as an absolute path');
+  const ldPath = renderService({ ...a, target: 'launchd', path: '/opt/homebrew/bin:/usr/bin:/bin' });
+  assert.match(ldPath.content, /<key>PATH<\/key><string>\/opt\/homebrew\/bin:\/usr\/bin:\/bin<\/string>/, 'PATH only from --path（実機で確定）');
+  assert.ok(validateServiceArgs({ ...a, target: 'launchd' }).some((e) => e.includes('--node')), 'launchd without --node / --path is refused (node would not be found)');
+  assert.ok(validateServiceArgs({ ...a, target: 'launchd', path: 'relative:/usr/bin' }).length > 0);
+  assert.ok(validateServiceArgs({ ...a, target: 'launchd', path: '/usr/bin;rm -rf /' }).length > 0);
   const win = renderService({ ...a, target: 'windows', dir: 'C:\\edl', envFile: 'C:\\edl-env\\gateway-staging.env', environment: 'staging', node: 'C:\\Program Files\\nodejs\\node.exe' });
   assert.match(win.content, /Register-ScheduledTask/);
   for (const r of [sd, ld, win]) assert.ok(!/TOKEN=|KEY=|Bearer/.test(r.content), 'no secrets in definitions');

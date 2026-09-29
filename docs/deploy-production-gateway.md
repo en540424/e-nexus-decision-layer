@@ -12,7 +12,7 @@ AI が用意したのは、その操作を安全に行うための実装・生�
 | `gateway serve` の起動条件 | `src/gateway/serve-config.mjs`：staging / production は **token 32 文字以上・`release.json`・`EDL_EXPECTED_RELEASE` 一致**が無いと起動しない（pinned version。意図しない版で動かない）。loopback 以外は全環境で token 必須。mock-jev は dev 専用（従来） |
 | 運用機能 | rate limit（`EDL_GATEWAY_RATE_LIMIT_PER_MIN`・staging/production 既定 600/分・`/v1/*`・429＋Retry-After）／access log（stderr・1 request 1 行 JSON・body／token／IP／outcome なし）／`GET /ready`（draining 中 503）／graceful shutdown（SIGTERM → 受付停止 → 進行中 decision を SHUTDOWN で abort〈送信済み Jev は usage に残る〉→ `EDL_GATEWAY_DRAIN_MS` 後に接続を閉じる） |
 | 起動 wrapper | `scripts/run-gateway.mjs --env-file <path>`：env file を読み、`credential:E-NEXUS/edl/<name>` の値を OS 資格情報ストア（Windows 資格情報マネージャー／macOS Keychain）から解決（Secret を平文ファイル・User 環境変数に置かない） |
-| service 定義 | `scripts/gateway-service.mjs --target systemd|launchd|windows`：定義を生成するだけ（登録はしない）。Secret を含まない |
+| service 定義 | `scripts/gateway-service.mjs --target systemd|launchd|windows`：定義を生成するだけ（登録はしない）。Secret を含まない。launchd は `--node <node の絶対パス>` か `--path` が必須（2026-09-29：Homebrew の PATH を固定で書くのをやめた。実機で `command -v node`） |
 | pinned release | `scripts/gateway-release.mjs stamp|show|previous`：deploy 先の checkout の HEAD を `release.json` へ固定し、`releases.jsonl` から rollback 先を出す |
 | smoke | `scripts/gateway-smoke.mjs`：/health・/ready・/version（release）・401・403・認証付き health・rules だけで決まる判定（Jev を呼ばない） |
 | consumer 側 | `consumer-kit/node/http-transport.mjs`・`consumer-kit/python/enexus_http_transport.py`（Hermes 等）：https 必須・環境照合・fail-closed |
@@ -60,7 +60,7 @@ EDL_GATEWAY_RATE_LIMIT_PER_MIN=600
 - 詳細：`GET /v1/health`（要認証）＝ stats（requests・failed・errors_by_code・aborted・abandoned・latency）・rate limit・release
 - ログ：stderr の JSON 行（`event: listening|refused_to_start|draining|stopped` と access log）。service manager のログ（journalctl／launchd の `StandardErrorPath`／Task Scheduler）で見る
 - usage：`node src/cli.mjs usage --by application_id`（`EDL_ENVIRONMENT` を合わせて実行すると、その環境の usage を読む）
-- 異常 digest（2026-09-29）：`node scripts/usage-digest.mjs --environment <staging|production> --hours 24 --access-log <保存した stderr> --fail-on-anomaly [--webhook credential:E-NEXUS/edl/digest-webhook --webhook-format slack]`。定期実行（systemd timer・launchd `StartCalendarInterval`・Task Scheduler の日次）と webhook URL の資格情報ストアへの保存は Human。exit 1＝異常あり（scheduler 側で失敗として見える）
+- 異常 digest（2026-09-29）：`node scripts/usage-digest.mjs --environment <staging|production> --hours 24 --access-log <保存した stderr> --fail-on-anomaly [--webhook credential:E-NEXUS/edl/digest-webhook --webhook-format slack]`。定期実行（systemd timer・launchd `StartCalendarInterval`・Task Scheduler の日次）と webhook URL の資格情報ストアへの保存は Human。launchd／Task Scheduler の定義は `node scripts/scheduled-job-service.mjs --job usage-digest --target launchd|windows ...` で生成できる（生成だけ・2026-09-29）。Mac mini への配置は `deploy/macos/MIGRATION.md`。exit 1＝異常あり（scheduler 側で失敗として見える）
 
 ## 6. やらないこと（設計判断・変えない）
 

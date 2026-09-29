@@ -4,16 +4,19 @@
  *
  *   node scripts/gateway-service.mjs --target <systemd|launchd|windows> --environment <staging|production>
  *        --dir <deploy先の repo の絶対パス> --env-file <env file の絶対パス> [--host 127.0.0.1] [--port 8787] [--node <node の絶対パス>] [--user <実行ユーザー>]
+ *        [--path <launchd の PATH（コロン区切りの絶対パス）>]
  *
  * どの定義も `node scripts/run-gateway.mjs --env-file …` を起動する（Secret は env file の `credential:` 参照か、root だけが読める env file。
  * 定義ファイル自体に Secret を書かない）。停止は SIGTERM（Windows は Stop-ScheduledTask）→ graceful shutdown。再起動は失敗時のみ。
- * 実機依存の値（パス・ユーザー・node の場所）は引数で受け取り、推測で埋めない。
+ * 実機依存の値（パス・ユーザー・node の場所・PATH）は引数で受け取り、推測で埋めない。launchd は `--node`（node の絶対パス）か `--path` が要る
+ * （LaunchAgent の既定 PATH は /usr/bin:/bin:/usr/sbin:/sbin で node が見つからない。Homebrew の場所は機械で違う＝2026-09-29 固定値をやめた）。
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TARGETS = ['systemd', 'launchd', 'windows'];
 const ENVS = ['staging', 'production'];
+const UNSAFE = /["'`$\n\r;&|<>]/;
 
 function xml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -29,6 +32,8 @@ export function validateServiceArgs(a) {
   }
   if (a.node && /["'`$\n\r;&|<>]/.test(a.node)) errors.push('--node contains characters that are not allowed');
   if (a.user && !/^[a-z_][a-z0-9_-]{0,31}$/i.test(a.user)) errors.push('--user is not a valid user name');
+  if (a.path !== undefined && (typeof a.path !== 'string' || !a.path.split(':').every((d) => d.startsWith('/') && !UNSAFE.test(d)))) errors.push('--path must be colon-separated absolute directories');
+  if (a.target === 'launchd' && !a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定：`command -v node` の結果）');
   if (!/^(127\.0\.0\.1|::1|0\.0\.0\.0|localhost|[0-9.]{7,15})$/.test(a.host)) errors.push('--host must be an IP address or localhost');
   if (!Number.isInteger(Number(a.port)) || Number(a.port) < 1 || Number(a.port) > 65535) errors.push('--port must be 1-65535');
   return errors;
@@ -89,7 +94,7 @@ export function renderService(a) {
         '  <key>ExitTimeOut</key><integer>20</integer>',
         `  <key>StandardOutPath</key><string>${xml(`${a.dir}/data/gateway-${a.environment}.out.log`)}</string>`,
         `  <key>StandardErrorPath</key><string>${xml(`${a.dir}/data/gateway-${a.environment}.err.log`)}</string>`,
-        '  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>',
+        ...(a.path ? [`  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(a.path)}</string></dict>`] : []),
         '</dict>',
         '</plist>',
         '',
@@ -118,7 +123,7 @@ export function renderService(a) {
 
 function parse(argv) {
   const a = { host: '127.0.0.1', port: 8787 };
-  const map = { '--target': 'target', '--environment': 'environment', '--dir': 'dir', '--env-file': 'envFile', '--host': 'host', '--port': 'port', '--node': 'node', '--user': 'user' };
+  const map = { '--target': 'target', '--environment': 'environment', '--dir': 'dir', '--env-file': 'envFile', '--host': 'host', '--port': 'port', '--node': 'node', '--user': 'user', '--path': 'path' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];
