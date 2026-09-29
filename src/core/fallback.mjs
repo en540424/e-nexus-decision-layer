@@ -108,7 +108,12 @@ export function buildFailedAttempt({ adapter, err, ms }) {
  * DecisionAbortedError を投げる（details.trace＝それまでの attempt。送信済みの Jev 等の usage を metering で失わないため）。
  * in-flight の Adapter には decide({ ..., signal }) で渡す（signal を使わない Adapter はそのまま完了してよい）。
  */
-export async function runFallbackChain({ chain, decisionType, input, candidates, context, thresholds, signal }) {
+/**
+ * costLimitUsdMicros（任意・2026-09-29 FB-14）：policies/cost/limits.json の per_decision_estimated_cost_usd_micros_max。数値のときだけ、
+ * estimateCost() を持つ Adapter を呼ぶ前に「この判定で既に使った既知の費用＋その Adapter の見積もり」を上限と比べ、超えるなら呼ばずに
+ * COST_GATE_ESTIMATE_OVER_LIMIT（networked:false＝送っていない・費用 0 が確定）で次の Adapter へ進む。null は強制しない（記録だけ）。
+ */
+export async function runFallbackChain({ chain, decisionType, input, candidates, context, thresholds, signal, costLimitUsdMicros = null }) {
   const trace = [];
   let best = null;
   const abortIfNeeded = () => {
@@ -121,10 +126,21 @@ export async function runFallbackChain({ chain, decisionType, input, candidates,
     return { chosen: entry, trace, fallback_occurred: trace.length > 1 };
   };
 
+  const spentSoFar = () => trace.reduce((a, t) => a + (t.usage_known === true ? (t.estimated_cost_usd_micros ?? 0) : 0), 0);
   for (const adapter of chain) {
     abortIfNeeded();
     const started = Date.now();
     let done = null;
+    if (typeof costLimitUsdMicros === 'number' && typeof adapter.estimateCost === 'function') {
+      let estimate = null;
+      try { estimate = await adapter.estimateCost({ decisionType, input, candidates }); } catch { estimate = null; }
+      // 見積もれない有料 Adapter は上限を守れると言えないので呼ばない（fail-closed）
+      if (typeof estimate !== 'number' || !Number.isFinite(estimate) || spentSoFar() + estimate > costLimitUsdMicros) {
+        const err = new AdapterUnavailableError(adapter.id, typeof estimate === 'number' ? 'COST_GATE_ESTIMATE_OVER_LIMIT' : 'COST_GATE_ESTIMATE_UNAVAILABLE', { networked: false });
+        trace.push(buildFailedAttempt({ adapter, err, ms: Date.now() - started }));
+        continue;
+      }
+    }
     try {
       const raw = await adapter.decide({ decisionType, input, candidates, context, ...(signal ? { signal } : {}) });
       let result;

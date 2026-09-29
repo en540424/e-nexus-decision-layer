@@ -49,6 +49,12 @@ export function forcedHumanKey(outcome, safety) {
   return null;
 }
 
+/** policies/cost/limits.json の 1 判定あたり上限（USD micros）。正の整数だけを有効にし、null・0・不正値は「強制しない」 */
+export function costLimitOf(costPolicy) {
+  const v = costPolicy?.per_decision_estimated_cost_usd_micros_max;
+  return Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
 function assertNoApprovalKeys(outcome, safety) {
   const forbidden = safety.forbidden_outcome_keys ?? [];
   const found = Object.keys(outcome).filter((k) => forbidden.includes(k));
@@ -122,6 +128,7 @@ export function createDecisionEngine({
         context: { ...(request.context ?? {}), escalation_reason: humanOnly ? 'human-only decision type' : undefined },
         thresholds,
         signal,
+        costLimitUsdMicros: costLimitOf(costPolicy),
       });
     } catch (err) {
       if (err instanceof DecisionAbortedError) {

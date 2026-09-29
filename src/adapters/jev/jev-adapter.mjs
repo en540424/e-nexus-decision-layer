@@ -50,6 +50,7 @@
  *   AdapterResult に付ける。送信後の失敗（HTTP/timeout/応答不正）は Provider／parseJevResponse が details.networked=true を付けて throw し、
  *   送信前のゲート（NETWORK_DISABLED / *_KEY_MISSING / JEV_UNSUPPORTED_OUTCOME_FIELD 等）は付けない（core が false と扱う）。
  */
+import { Buffer } from 'node:buffer';
 import { AdapterUnavailableError } from '../../core/errors.mjs';
 import { assertJevProviderShape, resolveJevProvider } from './jev-provider-interface.mjs';
 import { loadDecisionType } from '../../schemas/loader.mjs';
@@ -227,6 +228,14 @@ function noulConfidence(noul) {
   return Math.abs(2 * noul - 1);
 }
 
+/**
+ * 送る前の保守的な token 見積もり（2026-09-29 FB-14）：request JSON の UTF-8 バイト数 ÷ 3。日本語は 1 文字（3 バイト）≒ 1 token、
+ * 英語は 4 文字 ≒ 1 token なので英語側は多め（上限を超えにくい方向＝安全側）。実測の input_tokens とは別物で、cost gate だけに使う。
+ */
+export function estimateRequestTokens(request) {
+  return Math.ceil(Buffer.byteLength(JSON.stringify(request), 'utf8') / 3);
+}
+
 function estimateCostUsdMicros(inputTokens) {
   try {
     const entry = getEntry('models', 'jev');
@@ -357,6 +366,15 @@ export function createJevAdapter({ env = process.env, provider = null, decisionT
     },
     supports() {
       return true; // 対応可否は decide 時に環境で判断する（型付き判定は全 decision_type が対象）
+    },
+    /** cost gate 用の送信前見積もり（USD micros）。decide と同じ request を組んで数える（送らない） */
+    async estimateCost({ decisionType, input, candidates }) {
+      const dt = decisionTypeLoader(decisionType);
+      const model = env[JEV_ENV.model] || DEFAULT_MODEL;
+      const { request } = buildJevRequest({
+        decisionType, outcomeSchema: dt?.schema?.properties?.outcome ?? null, input, candidates, model, inputSchema: dt?.schema?.properties?.input ?? null,
+      });
+      return estimateCostUsdMicros(estimateRequestTokens(request));
     },
     async decide({ decisionType, input, candidates, signal }) {
       const p = resolveProvider();

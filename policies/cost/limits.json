@@ -1,5 +1,5 @@
 {
-  "$comment": "Cost Gate。paid_providers（高コストな汎用LLM）の Adapter は request.options.allow_paid_adapters=true のときだけ chain に残る。Jev（typesafe-ai）は「高額AIを呼ぶ前の低コストGate」が役割なので paid_providers に含めず、APIキーと EDL_ALLOW_NETWORK=true があれば既定で呼ばれる（費用は metering に記録される）。mock / local / rules / human は無料。1判定あたりの推定コスト上限は metering の実測後に設定する（現状は記録のみ）。",
+  "$comment": "Cost Gate。paid_providers（高コストな汎用LLM）の Adapter は request.options.allow_paid_adapters=true のときだけ chain に残る。Jev（typesafe-ai）は「高額AIを呼ぶ前の低コストGate」が役割なので paid_providers に含めず、APIキーと EDL_ALLOW_NETWORK=true があれば既定で呼ばれる（費用は metering に記録される）。mock / local / rules / human は無料。1判定あたりの推定コスト上限 per_decision_estimated_cost_usd_micros_max：2026-09-29 から強制できる（FB-14）。正の整数を入れると、estimateCost() を持つ Adapter（Jev・llm）は「既に使った既知の費用＋送信前の見積もり」が上限を超えるとき呼ばれず次へ進む（COST_GATE_ESTIMATE_OVER_LIMIT・送信なし）。null は強制しない（記録だけ）。値は Human が決める。参考：TypeSafe Direct の実測は 1 判定 64〜114 µUSD（decision-log 2026-09-29）、見積もりは request のバイト数÷3 の保守的な値で、実測より多め。",
   "paid_providers": [
     "anthropic",
     "openai",

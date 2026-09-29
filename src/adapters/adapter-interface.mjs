@@ -10,6 +10,8 @@
  *     model: string|null,      // metering用
  *     supports(decisionType) -> boolean,
  *     decide({ decisionType, input, candidates, context }) -> Promise<AdapterResult>
+ *     estimateCost?({ decisionType, input, candidates }) -> Promise<number>  // 任意（2026-09-29）。送信前の保守的な費用見積もり（USD micros）。
+ *                                                                          // policies/cost/limits.json の上限が数値のときだけ fallback が使う
  *   }
  *
  *   AdapterResult = {
