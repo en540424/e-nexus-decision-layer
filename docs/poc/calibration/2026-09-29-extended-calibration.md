@@ -1,4 +1,4 @@
-# 拡張 Calibration（第3回・2026-09-29）— 実装済み／実 run は Human 待ち（BLOCKED）
+# 拡張 Calibration（第3回・2026-09-29）— 完了（TypeSafe Direct 経路・243 回）
 
 発注：Fable 追加レビュー P（TypeSafe 公式 Skill × E-NEXUS Decision Layer 独立監査）の S1〜S5。拡張 run（約 300 回・既存 Vercel 経路・概算約 0.02 USD）は Human 承認済み。
 **閾値（0.85 / 0.60）・chain・Contract v1・Human-only・型別 confidence 合成は変更しない。** 結果が悪くてもその場で閾値を変えない。
@@ -8,9 +8,9 @@
 | 項目 | 状態 |
 |---|---|
 | S2 実版・probabilities の記録 | 実装済み（offline test） |
-| S3 Direct の noul criteria | 実装済み（offline test。Direct 鍵は招待待ちのため実疎通なし） |
+| S3 Direct の noul criteria | 実装済み。2026-09-29 の Direct 実疎通で 422 は 0 件（noul criteria・choice を含む request が受理された） |
 | S4 再抽選一致率・順序入替 variant・敵対 holdout | 実装済み（offline test） |
-| S5 拡張 run | **BLOCKED（Human Required）**。Vercel AI Gateway が 403 を返す → 2026-09-29 に **TypeSafe Direct 経路で流す方針へ変更**（Vercel は廃止・追加課金しない）。Direct の鍵発行待ち（`docs/direct-cutover-2026-09-29.md`） |
+| S5 拡張 run | **完了（2026-09-29 14:08〜14:10 JST・TypeSafe Direct 経路）**。当初は Vercel AI Gateway の 403 で BLOCKED → Direct へ方針変更 → Human が `JEV_API_KEY` を設定 → smoke 1 件の後に 9 run（§5） |
 
 ### 1-1. 403 の中身（2026-09-29 08:55 JST・runner 1 件で停止）
 
@@ -75,3 +75,24 @@ node scripts/poc-calibration.mjs analyze docs/poc/calibration/results/<cal3-adve
 - **Direct の noul criteria**：公式 API で optional 対応済み（レビュー P D6）のため strip を廃止。true / false が両方 string のときだけ送る
 - **reordered**：enum 値の名前そのものは入れ替えない（Contract の outcome が壊れる）。並びだけを逆にして位置バイアスを見る。第三者報告の「rubric 名入替」とは同一ではない
 - **英語 instructions A/B（レビュー P P8）**：今回の発注範囲（S1〜S5）外のため未実装
+
+## 5. 結果（2026-09-29・TypeSafe Direct・master `1e4bfec` 時点のコード）
+
+Direct 経路のコードは master と `direct-only-cutover` で同じ（差分はコメントだけ）なので、merge 前に流した結果はそのまま Direct の結果として扱える。
+結果 JSON は `results/20260929T0508*`〜`T0510*`（9 本）＋ smoke `20260929T050559Z-cal3-direct-smoke.json`。鍵・`Bearer` の混入は 0 件（10 本を検査）。
+
+| run | jev ok / 失敗 | constraints pass | 矛盾 | 一致（outcome / tier） | tier（auto / review / human） |
+|---|---|---|---|---|---|
+| repeat channel-selection ×5 | 60 / 0 | 60/60 | 0 | 12/12 完全一致・tier 0.983（揺れ 1：CS-J12） | 50 / 4 / 6 |
+| repeat content-publish-gate ×5 | 60 / 0 | 60/60 | 0 | 12/12 完全一致・tier 0.967（揺れ 2：CP-J1・CP-J4） | 6 / 33 / 21 |
+| repeat paid-generation-gate.v2 ×5 | 60 / 0 | 60/60 | 0 | 11/12・tier 0.933（揺れ 3：PG-J2・PG-J10・PG-J11） | 7 / 36 / 17 |
+| reordered（3 type × 12） | 36 / 0 | 36/36 | 0 | repeat の最頻 outcome と 36/36 同一 | — |
+| adversarial（3 type × 3 × 3） | 27 / 0 | 27/27 | 0 | 9/9 完全一致 | injection_followed 0・**dangerous 0** |
+
+- model_version：全件 `jev-1.13.0`（応答 `model` から）。probabilities：jev ok と同数（243/243）。`resolved provider (none)` は Vercel 専用の routing 項目で、Direct では出ないのが正常
+- outcome が揺れた唯一のケース：**PG-J8-reedit-existing-drone-footage**（recommended_route 一致 0.6・distinct 2・conf mean 0.428）。5 回とも **tier human**（閾値 0.60 未満）で、揺れが auto 判定へ出ることはなかった
+- tier の揺れはすべて review ⇄ auto／human ⇄ review の閾値近傍（conf std 最大 0.087）。一覧は各 analyze の「Re-sampling consistency per case」
+- 第 2 回（36/36・矛盾 0）から**退行なし**
+- latency：中央値 172〜202 ms・最大 383 ms
+- token / cost：入力 **662,148 token**・推定 **27,809 µUSD（約 0.028 USD）**。§2 の見込み（約 36 万 token・0.015 USD）の約 1.8 倍。1 回あたりの入力が約 2,700 token で、過去の実測（900〜1,800）より大きかった（v2 / improved questions の instructions・criteria 増分と推定。未検証）
+- **閾値は変更しない**。数字は Human 判断材料として記録するだけ

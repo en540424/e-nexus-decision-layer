@@ -1,4 +1,4 @@
-# TypeSafe Direct 正式化・Vercel 経路廃止（2026-09-29）— 準備完了／Human 操作待ち
+# TypeSafe Direct 正式化・Vercel 経路廃止（2026-09-29）— Direct 実疎通・S5 完了／Vercel 削除の merge は Human 待ち
 
 発注：「TypeSafe Direct 正式化・Vercel 経路廃止」（2026-09-29 Human）。
 正式経路は **E-NEXUS → Common Decision Gateway → TypeSafe Direct API → Jev**。Vercel AI Gateway は Direct が使えるまでの暫定経路だった。
@@ -12,9 +12,9 @@ Contract v1・chain・閾値 0.85 / 0.60・Human-only・MA-17・failure policy�
 | endpoint の到達性 | 鍵なし・本文なしの GET で `405`（POST 専用の endpoint が生きている）。データは送っていない |
 | Direct provider | 実装済み。今回 403→`JEV_FORBIDDEN`・402→`JEV_PAYMENT_REQUIRED`・400→`JEV_REQUEST_REJECTED`（いずれも再試行しない）を追加（master `b4dd548`） |
 | Calibration runner | provider 非依存化（vercel provider を import しない）。403 / 402 / 422 / provider 不明で 1 件目停止（master `b4dd548`） |
-| Vercel 経路の削除 | **branch `direct-only-cutover` に準備済み・未 merge**。tests 271/271・OpenMontage Python 97/97 |
-| Direct 実疎通 | **未実施**。このPCのどの scope にも `JEV_API_KEY` が無い（Process / User / Machine を名前だけ確認。値は見ていない）。鍵の発行は認証が要る管理画面（console.typesafe.ai）で、AI は開かない |
-| 現在の実 JEV | 到達不能のまま（User env は `JEV_PROVIDER=vercel`・Vercel は 403）。全 consumer は fail-closed で human tier へ倒れる |
+| Vercel 経路の削除 | **branch `direct-only-cutover` に準備済み・未 merge**。tests 271/271・OpenMontage Python 97/97。2026-09-29 14:06 JST、Claude Code の `git merge --no-ff direct-only-cutover` は auto mode の分類器に「共有リソースの変更」として拒否された → **merge は Human が実行する**（§3-4。回避はしていない） |
+| Direct 実疎通 | **成功（2026-09-29 14:05 JST）**。Human が User env に `JEV_API_KEY`・`JEV_PROVIDER=direct` を設定（有無と provider 名だけ確認。値は見ていない）→ `gateway health` で `provider: direct`・`usable: true` → smoke 1 件（PG-J1）：`status ok`・`route direct`・`jev-1.13.0`・input 1,518 token・64 µUSD・probabilities あり（master `1e4bfec`）。422 は出なかった（noul criteria・choice の送信形式は受理された） |
+| 現在の実 JEV | **Direct で到達可能**。S5 拡張 Calibration 243 回も全件 ok（`docs/poc/calibration/2026-09-29-extended-calibration.md` §5）。master には Vercel provider のコードがまだ残るが、`JEV_PROVIDER=direct` なので使われない |
 
 ## 2. Human Required（1 回で済む形）
 
