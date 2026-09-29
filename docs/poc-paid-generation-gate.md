@@ -37,6 +37,8 @@ outcome: local_sufficient, remotion_suitable, paid_generation_required, human_re
 
 ## 実接続確認（Vercel経路、2026-09-19）
 
+> **【廃止・2026-09-29】** Vercel 経路（`JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・AI SDK `experimental_evaluate`）は削除済み。以下の Vercel 前提の手順はそのまま実行できない（`JEV_PROVIDER=vercel` は `JEV_PROVIDER_UNKNOWN` で human へ倒れる）。現在は `JEV_PROVIDER=direct`（または未設定）＋`JEV_API_KEY`＋`EDL_ALLOW_NETWORK=true` で同じコマンドを使う（`docs/direct-cutover-2026-09-29.md`）。本節は履歴として残す。
+
 `request-vercel-test.json`（repo直下）が実疎通用の入力例。photoreal シーン + `paid-generation-gate`。
 
 ```
@@ -74,6 +76,8 @@ OpenMontage 本体・en-generate-hub 本体は変更しない（wrapper / integr
 - `human_review_required` の意味を「route 判定そのものに人の確認が要るか」と明文化（有料生成の承認は常に別途 Human が行うため、有料＝human review 必須の同語反復にしない）
 
 ### 実測の手順（Human Required：キーは Human のシェルにのみ存在する）
+
+> **【廃止・2026-09-29】** Vercel 経路（`JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・AI SDK `experimental_evaluate`）は削除済み。以下の Vercel 前提の手順はそのまま実行できない（`JEV_PROVIDER=vercel` は `JEV_PROVIDER_UNKNOWN` で human へ倒れる）。現在は `JEV_PROVIDER=direct`（または未設定）＋`JEV_API_KEY`＋`EDL_ALLOW_NETWORK=true` で同じコマンドを使う（`docs/direct-cutover-2026-09-29.md`）。本節は履歴として残す。
 
 ```
 node scripts/poc-calibration.mjs dry-run --questions improved      # ネットワーク無し。Rules First 3 件 / Jev 7 件を確認
