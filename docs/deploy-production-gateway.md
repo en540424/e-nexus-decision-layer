@@ -48,6 +48,8 @@ EDL_GATEWAY_RATE_LIMIT_PER_MIN=600
 
 ## 4. rollback（Human-only）
 
+**戻す引き金（2026-09-29 追記・どれか 1 つで戻す）**：deploy 直後の smoke が `SMOKE PASS` にならない／`/ready` が 5 分以上 200 にならない／`usage-digest` の `anomalies` に 5xx・401 の急増や `jev_unavailable` が出て、前の release では出ていなかった／consumer 側で `ENVIRONMENT_MISMATCH`・`GATEWAY_BAD_RESPONSE` が増えた／Human 率が前の release より明らかに上がった（rules・schema の変更を含む版）。**deploy 後の確認**は §3 の 4・5 に加えて `sh deploy/macos/validate.sh --base <親フォルダ> --gateway-url <URL>`（/health・/ready）。
+
 1. `node scripts/gateway-release.mjs previous` → `rollback_to.commit`
 2. その commit を checkout → `stamp` → env file の `EDL_EXPECTED_RELEASE` を更新 → service を再起動（graceful shutdown が効く）
 3. smoke を `--release <戻した commit>` で確認
