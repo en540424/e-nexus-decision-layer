@@ -14,6 +14,9 @@
  *   baseURL を明示して client を作る（Claude Code が動く機械で、別の鍵に黙って課金しない）
  * - **再試行しない**（maxRetries 0）・timeout は Gateway の 30 秒より短い 25 秒・Gateway の abort（FB-01）を signal で渡す
  * - モデルは policies/llm/anthropic.json の allowlist だけ（EDL_LLM_MODEL で選べるが、一覧に無いものは呼ばない＝env から高額モデルを選ばせない）
+ * - **安全分類器の拒否を別モデルで迂回しない**（2026-09-29 独立監査）：server-side fallback（`fallbacks`）は送らない。policy に null 以外が
+ *   書かれていたら LLM_REFUSAL_FALLBACK_FORBIDDEN で呼ばない。要求したモデル以外が答えた応答（response.model の不一致・
+ *   usage.iterations の fallback_message）は採用せず LLM_UNEXPECTED_MODEL（→ 次・human）。拒否は LLM_REFUSED（→ human）
  *
  * 訊き方は Jev と同じ：buildJevRequest（outcome schema の description・x-enum-descriptions・x-jev-brief・x-jev-enum・x-jev-derive）で
  * 質問を作り、structured outputs（output_config.format の json_schema。Opus 5.5／Sonnet 5.5 は forced tool_choice が 400）で答えを受け、
@@ -31,7 +34,13 @@ export const LLM_ENV = Object.freeze({
   allowNetwork: 'EDL_ALLOW_NETWORK',
 });
 
-export const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+/**
+ * server-side fallback（`fallbacks`）を有効にしている model の一覧（空＝適合）。安全分類器が断った request を別のモデルで答え直させる
+ * 機能で、過負荷・429・5xx では発動しない＝provider 障害の回復にならず、拒否の迂回だけになる（2026-09-29 独立監査・decision-log）
+ */
+export function refusalFallbackViolations(policy) {
+  return Object.entries(policy?.models ?? {}).filter(([, m]) => m?.fallbacks !== null && m?.fallbacks !== undefined).map(([id]) => id);
+}
 
 export const SYSTEM_PROMPT = [
   'You answer typed decision questions for E-NEXUS, a small Japanese company that builds AI tools.',
@@ -161,6 +170,7 @@ export function createLlmAdapter({ env = process.env, policy = loadLlmPolicy(), 
       const model = modelId();
       const modelPolicy = policy.models[model];
       if (!modelPolicy) throw unavailable('LLM_MODEL_NOT_ALLOWED', { decisionType });
+      if (modelPolicy.fallbacks !== null && modelPolicy.fallbacks !== undefined) throw unavailable('LLM_REFUSAL_FALLBACK_FORBIDDEN', { decisionType });
       const prepared = prepare({ decisionType, input, candidates });
       const sdk = await sdkLoader();
       const Anthropic = sdk?.default ?? sdk?.Anthropic;
@@ -177,7 +187,6 @@ export function createLlmAdapter({ env = process.env, policy = loadLlmPolicy(), 
           format: { type: 'json_schema', schema: prepared.schema },
           ...(modelPolicy.effort ? { effort: modelPolicy.effort } : {}),
         },
-        ...(modelPolicy.fallbacks === 'default' ? { betas: [FALLBACK_BETA], fallbacks: 'default' } : {}),
       };
       let res;
       try {
@@ -186,13 +195,19 @@ export function createLlmAdapter({ env = process.env, policy = loadLlmPolicy(), 
         throw classifySdkError(err, sdk);
       }
 
-      // 実際に答えたモデル（fallbacks で替わり得る）の単価で費用を出す。一覧に無ければ費用は不明（0 と書かない）
+      // 実際に答えたモデルの単価で費用を出す。一覧に無ければ費用は不明（0 と書かない）。
+      // usage.iterations が 2 件以上なら top-level の usage は最後の試行分だけ（公式）＝合計が分からないので不明として記録する
       const servedBy = typeof res?.model === 'string' ? res.model : model;
+      const iterations = Array.isArray(res?.usage?.iterations) ? res.usage.iterations : [];
       const inputTokens = res?.usage?.input_tokens ?? 0;
       const outputTokens = res?.usage?.output_tokens ?? 0;
-      const cost = costUsdMicros(policy.models[servedBy], inputTokens, outputTokens);
+      const cost = iterations.length > 1 ? null : costUsdMicros(policy.models[servedBy], inputTokens, outputTokens);
       const usage = cost === null ? null : { input_tokens: inputTokens, output_tokens: outputTokens, estimated_cost_usd_micros: cost };
 
+      // fallbacks を送っていないので起きないはずだが、別のモデルが答えた応答は採用しない（拒否の迂回を答えとして通さない）
+      if (servedBy !== model || iterations.some((it) => it?.type === 'fallback_message')) {
+        throw unavailable('LLM_UNEXPECTED_MODEL', { networked: true, usage, requested: model, served_by: servedBy });
+      }
       if (res?.stop_reason === 'refusal') throw unavailable('LLM_REFUSED', { networked: true, usage, category: res?.stop_details?.category ?? null });
       if (res?.stop_reason === 'max_tokens') throw unavailable('LLM_MAX_TOKENS', { networked: true, usage });
       const text = (res?.content ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join('');
@@ -215,12 +230,12 @@ export function createLlmAdapter({ env = process.env, policy = loadLlmPolicy(), 
         field_confidence: parsed.field_confidence,
         ...(parsed.derived_fields ? { derived_fields: parsed.derived_fields } : {}),
         ...(parsed.invariant_violations ? { invariant_violations: parsed.invariant_violations } : {}),
-        rationale: `llm(${servedBy}): ${parsed.rationale}`,
+        rationale: `llm(${model}): ${parsed.rationale}`,
         ...(usage ? { usage } : {}),
         networked: true,
-        model: servedBy,
+        model,
         route: 'anthropic-messages',
-        model_version: servedBy,
+        model_version: model,
       };
     },
   };

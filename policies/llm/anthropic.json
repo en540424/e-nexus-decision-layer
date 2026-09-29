@@ -1,5 +1,5 @@
 {
-  "$comment": "LLM Adapter（src/adapters/llm/llm-adapter.mjs・2026-09-29 FB-21）の設定。呼べるモデルはこの一覧だけ（EDL_LLM_MODEL で選べるが一覧外は LLM_MODEL_NOT_ALLOWED）。単価は Anthropic 公表値（USD micros / 100万 token・2026-09-25 時点の claude-api skill の表）で、実際に答えたモデル（fallbacks で替わり得る）の単価で費用を出す。一覧に無いモデルが答えたら費用は不明として記録する（0 と書かない）。default_model は claude-api skill の既定（claude-opus-5-5）。effort は分類の形の質問なので low（Opus 5.5 は thinking を切れない・既定は medium）。fallbacks=\"default\"（beta server-side-fallback-2026-07-01）は安全分類器が断ったとき別モデルで答えさせる（claude-api skill の既定。止めたいときはここを null にする）。max_tokens は thinking を含む出力の上限で、到達したら LLM_MAX_TOKENS（→ human）。timeout は Gateway の 30 秒より短く、再試行しない（処理済みの再送は課金され得る）。base_url を明示して ANTHROPIC_BASE_URL に送り先を変えさせない。",
+  "$comment": "LLM Adapter（src/adapters/llm/llm-adapter.mjs・2026-09-29 FB-21）の設定。呼べるモデルはこの一覧だけ（EDL_LLM_MODEL で選べるが一覧外は LLM_MODEL_NOT_ALLOWED）。単価は Anthropic 公表値（USD micros / 100万 token・2026-09-25 時点の claude-api skill の表）。答えは要求したモデルからだけ受け取り、別のモデルが答えた応答は採用しない（LLM_UNEXPECTED_MODEL → 次・human。費用はそのモデルの単価、一覧外なら不明として記録し 0 と書かない）。default_model は claude-api skill の既定（claude-opus-5-5）。effort は分類の形の質問なので low（Opus 5.5 は thinking を切れない・既定は medium）。**fallbacks は全モデル null で固定（2026-09-29 独立監査）**：server-side fallback（fallbacks=\"default\"・beta server-side-fallback-2026-07-01）は安全分類器が断った request を別のモデルで答え直させる機能で、過負荷・429・5xx では発動しない（provider 障害の回復にはならない）。E-NEXUS では安全分類器の拒否は Human へ上げる信号なので、別モデルで迂回しない。null 以外を書くと adapter が LLM_REFUSAL_FALLBACK_FORBIDDEN で呼ばない（tests/llm-adapter.test.mjs が同梱 policy も検査する）。claude-api skill の「fallbacks を既定で付ける」は E-NEXUS の方針で上書き（decision-log 2026-09-29）。max_tokens は thinking を含む出力の上限で、到達したら LLM_MAX_TOKENS（→ human）。timeout は Gateway の 30 秒より短く、再試行しない（処理済みの再送は課金され得る）。base_url を明示して ANTHROPIC_BASE_URL に送り先を変えさせない。",
   "default_model": "claude-opus-5-5",
   "base_url": "https://api.anthropic.com",
   "max_tokens": 4096,
@@ -9,13 +9,13 @@
       "input_usd_micros_per_million_tokens": 4000000,
       "output_usd_micros_per_million_tokens": 20000000,
       "effort": "low",
-      "fallbacks": "default"
+      "fallbacks": null
     },
     "claude-sonnet-5-5": {
       "input_usd_micros_per_million_tokens": 2000000,
       "output_usd_micros_per_million_tokens": 10000000,
       "effort": "low",
-      "fallbacks": "default"
+      "fallbacks": null
     },
     "claude-haiku-4-5": {
       "input_usd_micros_per_million_tokens": 1000000,
@@ -27,7 +27,7 @@
       "input_usd_micros_per_million_tokens": 5000000,
       "output_usd_micros_per_million_tokens": 25000000,
       "effort": "low",
-      "fallbacks": "default"
+      "fallbacks": null
     },
     "claude-opus-4-8": {
       "input_usd_micros_per_million_tokens": 5000000,

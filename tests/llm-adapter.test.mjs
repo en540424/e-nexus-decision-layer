@@ -1,11 +1,12 @@
 /**
  * LLM Adapter（Claude・2026-09-29 FB-21）。実ネットワーク・実鍵は使わない（偽 SDK module。実 SDK が入っていれば送信形だけを fetch の stub で確かめる）。
  * 固定すること：既定で呼ばれない（allow_paid_adapters・EDL_ALLOW_NETWORK・専用の鍵）／環境の ANTHROPIC_* を使わない／tier は review が上限／
- * 再試行しない・abort を渡す／拒否・max_tokens・不正な応答・HTTP の失敗は unavailable（→ 次・human）／実際に答えたモデルの単価で費用／cost gate。
+ * 再試行しない・abort を渡す／拒否・max_tokens・不正な応答・HTTP の失敗は unavailable（→ 次・human）／実際に答えたモデルの単価で費用／cost gate／
+ * 安全分類器の拒否を別モデルで迂回しない（server-side fallback を送らない・同梱 policy に書けない・別モデルの答えを採用しない。2026-09-29 独立監査）。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLlmAdapter, classifySdkError, outputSchemaFor, costUsdMicros, loadLlmPolicy, SYSTEM_PROMPT, FALLBACK_BETA } from '../src/adapters/llm/llm-adapter.mjs';
+import { createLlmAdapter, classifySdkError, outputSchemaFor, costUsdMicros, loadLlmPolicy, SYSTEM_PROMPT, refusalFallbackViolations } from '../src/adapters/llm/llm-adapter.mjs';
 import { createDecisionEngine, capTier } from '../src/core/decision-engine.mjs';
 import { createRulesAdapter } from '../src/adapters/rules/rules-adapter.mjs';
 import { createHumanAdapter } from '../src/adapters/human/human-adapter.mjs';
@@ -66,7 +67,7 @@ test('鍵：専用の ENEXUS_LLM_ANTHROPIC_API_KEY だけ。ANTHROPIC_API_KEY／
   await assert.rejects(createLlmAdapter({ env: ENV, sdkLoader: async () => null }).decide({ decisionType: 'paid-generation-gate', input: INPUT, candidates: [] }), (e) => e.details.reason === 'LLM_SDK_NOT_INSTALLED');
 });
 
-test('送信：client は鍵・authToken=null・baseURL・maxRetries 0・timeout を明示。body は structured outputs・effort low・fallbacks default、abort を渡す', async () => {
+test('送信：client は鍵・authToken=null・baseURL・maxRetries 0・timeout を明示。body は structured outputs・effort low、fallbacks・betas は無し、abort を渡す', async () => {
   const f = fakeSdk(reply(GOOD));
   const controller = new AbortController();
   const r = await createLlmAdapter({ env: ENV, sdkLoader: f.loader }).decide({ decisionType: 'paid-generation-gate', input: INPUT, candidates: [], signal: controller.signal });
@@ -78,8 +79,8 @@ test('送信：client は鍵・authToken=null・baseURL・maxRetries 0・timeout
   assert.equal(body.system, SYSTEM_PROMPT);
   assert.equal(body.output_config.format.type, 'json_schema');
   assert.equal(body.output_config.effort, 'low');
-  assert.deepEqual(body.betas, [FALLBACK_BETA]);
-  assert.equal(body.fallbacks, 'default');
+  assert.equal(body.betas, undefined, 'server-side fallback の beta を送らない');
+  assert.equal(body.fallbacks, undefined, '安全分類器の拒否を別モデルで迂回しない');
   assert.equal(body.tool_choice, undefined, 'forced tool_choice は Opus 5.5 で 400');
   assert.deepEqual(reqOpts, { signal: controller.signal, timeout: policy.timeout_ms, maxRetries: 0 });
   const sent = JSON.parse(body.messages[0].content);
@@ -118,17 +119,45 @@ test('tier の上限は review：confidence 0.94 でも auto にならない（e
   assert.deepEqual([capTier('auto', 'review'), capTier('review', 'review'), capTier('human', 'review'), capTier('auto', undefined), capTier('auto', 'human')], ['review', 'review', 'human', 'auto', 'human']);
 });
 
-test('実際に答えたモデル（fallbacks で替わる）の単価で費用。一覧に無いモデルなら費用は不明（0 と書かない）', async () => {
+test('別のモデルが答えた応答は採用しない（LLM_UNEXPECTED_MODEL → human）。費用はそのモデルの単価、一覧外なら不明（0 と書かない）', async () => {
   const f = fakeSdk(reply(GOOD, { model: 'claude-opus-4-8' }));
-  const r = await createLlmAdapter({ env: ENV, sdkLoader: f.loader }).decide({ decisionType: 'paid-generation-gate', input: INPUT, candidates: [] });
-  assert.equal(r.model, 'claude-opus-4-8');
-  assert.equal(r.usage.estimated_cost_usd_micros, costUsdMicros(loadLlmPolicy().models['claude-opus-4-8'], 1000, 200));
+  const r = await engineWith(createLlmAdapter({ env: ENV, sdkLoader: f.loader })).decide({ ...REQ, options: { allow_paid_adapters: true } });
+  assert.equal(r.tier, 'human');
+  assert.notEqual(r.resolved_by, 'llm');
+  const att = r.fallback.trace.find((t) => t.adapter === 'llm');
+  assert.equal(att.reason, 'LLM_UNEXPECTED_MODEL');
+  assert.equal(att.usage_known, true, '送信済み・課金済みの usage は残す');
+  assert.equal(att.estimated_cost_usd_micros, costUsdMicros(loadLlmPolicy().models['claude-opus-4-8'], 1000, 200));
   const u = fakeSdk(reply(GOOD, { model: 'claude-unknown-9' }));
-  const eng = engineWith(createLlmAdapter({ env: ENV, sdkLoader: u.loader }));
-  const r2 = await eng.decide({ ...REQ, options: { allow_paid_adapters: true } });
-  const att = r2.fallback.trace.find((t) => t.adapter === 'llm');
-  assert.equal(att.usage_known, false);
-  assert.equal(att.estimated_cost_usd_micros, null);
+  const r2 = await engineWith(createLlmAdapter({ env: ENV, sdkLoader: u.loader })).decide({ ...REQ, options: { allow_paid_adapters: true } });
+  const att2 = r2.fallback.trace.find((t) => t.adapter === 'llm');
+  assert.equal(att2.reason, 'LLM_UNEXPECTED_MODEL');
+  assert.equal(att2.usage_known, false);
+  assert.equal(att2.estimated_cost_usd_micros, null);
+});
+
+test('usage.iterations に fallback_message（要求モデル名のままでも）→ 採用しない。試行が複数なら top-level の usage は最後の分だけなので費用は不明', async () => {
+  const iterations = [{ type: 'message', input_tokens: 1000, output_tokens: 0 }, { type: 'fallback_message', input_tokens: 1000, output_tokens: 200 }];
+  const f = fakeSdk(reply(GOOD, { extra: { usage: { input_tokens: 1000, output_tokens: 200, iterations } } }));
+  const r = await engineWith(createLlmAdapter({ env: ENV, sdkLoader: f.loader })).decide({ ...REQ, options: { allow_paid_adapters: true } });
+  assert.equal(r.tier, 'human');
+  const att = r.fallback.trace.find((t) => t.adapter === 'llm');
+  assert.equal(att.reason, 'LLM_UNEXPECTED_MODEL');
+  assert.equal(att.usage_known, false, '合計が分からないので 0 や最後の試行分で書かない');
+});
+
+test('安全分類器の拒否を迂回しない：同梱 policy は全モデル fallbacks=null。null 以外なら SDK に触れず LLM_REFUSAL_FALLBACK_FORBIDDEN（→ human）', async () => {
+  const shipped = loadLlmPolicy();
+  assert.deepEqual(refusalFallbackViolations(shipped), [], 'policies/llm/anthropic.json に fallbacks を書かない（2026-09-29 独立監査・decision-log）');
+  for (const v of ['default', [{ model: 'claude-opus-4-8' }]]) {
+    const policy = { ...shipped, models: { ...shipped.models, 'claude-opus-5-5': { ...shipped.models['claude-opus-5-5'], fallbacks: v } } };
+    assert.deepEqual(refusalFallbackViolations(policy), ['claude-opus-5-5']);
+    const f = fakeSdk(reply(GOOD));
+    const r = await engineWith(createLlmAdapter({ env: ENV, policy, sdkLoader: f.loader })).decide({ ...REQ, options: { allow_paid_adapters: true } });
+    assert.equal(r.tier, 'human');
+    assert.equal(r.fallback.trace.find((t) => t.adapter === 'llm').reason, 'LLM_REFUSAL_FALLBACK_FORBIDDEN');
+    assert.equal(f.seen.ctor.length, 0, '送らない＝課金しない');
+  }
 });
 
 test('拒否・max_tokens・不正な応答は unavailable（→ human）。送信済みの usage は失敗 attempt にも残る', async () => {
@@ -179,7 +208,7 @@ test('cost gate（FB-14）：見積もりは入力＋max_tokens 全部の出力�
 // 実 SDK（optionalDependencies）が入っていれば、送信形を fetch の stub で確かめる（network 無し）
 let realSdk = null;
 try { realSdk = await import('@anthropic-ai/sdk'); } catch { realSdk = null; }
-test('実 SDK の送信形：POST /v1/messages・x-api-key・anthropic-version・beta header・body。環境の ANTHROPIC_AUTH_TOKEN／BASE_URL は使われない', { skip: realSdk ? false : '@anthropic-ai/sdk が入っていない（optionalDependencies）' }, async () => {
+test('実 SDK の送信形：POST /v1/messages・x-api-key・anthropic-version・body（server-side fallback の header・field 無し）。環境の ANTHROPIC_AUTH_TOKEN／BASE_URL は使われない', { skip: realSdk ? false : '@anthropic-ai/sdk が入っていない（optionalDependencies）' }, async () => {
   const saved = { t: process.env.ANTHROPIC_AUTH_TOKEN, b: process.env.ANTHROPIC_BASE_URL };
   process.env.ANTHROPIC_AUTH_TOKEN = 'ambient-token-must-not-be-sent';
   process.env.ANTHROPIC_BASE_URL = 'https://ambient.example.invalid';
@@ -197,12 +226,12 @@ test('実 SDK の送信形：POST /v1/messages・x-api-key・anthropic-version�
     assert.match(s.url, /^https:\/\/api\.anthropic\.com\/v1\/messages/);
     assert.equal(s.headers.get('x-api-key'), KEY);
     assert.ok(s.headers.get('anthropic-version'));
-    assert.ok((s.headers.get('anthropic-beta') ?? '').includes(FALLBACK_BETA));
+    assert.ok(!(s.headers.get('anthropic-beta') ?? '').includes('server-side-fallback'), 'server-side fallback の beta を送らない');
     assert.equal(s.headers.get('authorization'), null, 'ambient ANTHROPIC_AUTH_TOKEN is not sent');
     assert.equal(s.body.model, 'claude-opus-5-5');
     assert.equal(s.body.output_config.format.type, 'json_schema');
-    assert.equal(s.body.fallbacks, 'default');
-    assert.equal(s.body.betas, undefined, 'betas travel as a header, not in the body');
+    assert.equal(s.body.fallbacks, undefined, '安全分類器の拒否を別モデルで迂回しない');
+    assert.equal(s.body.betas, undefined, 'betas は body に入らない');
   } finally {
     if (saved.t === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN; else process.env.ANTHROPIC_AUTH_TOKEN = saved.t;
     if (saved.b === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.b;
