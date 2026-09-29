@@ -59,6 +59,7 @@ EDL_GATEWAY_RATE_LIMIT_PER_MIN=600
 - 詳細：`GET /v1/health`（要認証）＝ stats（requests・failed・errors_by_code・aborted・abandoned・latency）・rate limit・release
 - ログ：stderr の JSON 行（`event: listening|refused_to_start|draining|stopped` と access log）。service manager のログ（journalctl／launchd の `StandardErrorPath`／Task Scheduler）で見る
 - usage：`node src/cli.mjs usage --by application_id`（`EDL_ENVIRONMENT` を合わせて実行すると、その環境の usage を読む）
+- 異常 digest（2026-09-29）：`node scripts/usage-digest.mjs --environment <staging|production> --hours 24 --access-log <保存した stderr> --fail-on-anomaly [--webhook credential:E-NEXUS/edl/digest-webhook --webhook-format slack]`。定期実行（systemd timer・launchd `StartCalendarInterval`・Task Scheduler の日次）と webhook URL の資格情報ストアへの保存は Human。exit 1＝異常あり（scheduler 側で失敗として見える）
 
 ## 6. やらないこと（設計判断・変えない）
 

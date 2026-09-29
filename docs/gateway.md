@@ -154,6 +154,7 @@ core の runtime-neutral 分離は今回行わない（2026-09-25 decision-log�
 - health：`gateway health`（CLI）／`GET /v1/health`／MCP `enexus_gateway_health` = version・engine mode・adapters・Jev 経路状態（キーの有無のみ）・
   process 内 counters（requests / ok / failed / fallbacks / human_tier / errors_by_code / by_decision_type / by_via / latency last・max・avg）。
   CLI は 1 process 1 判定なので、横断の件数は usage.jsonl が正
+- 異常 digest（2026-09-29 FB-18）：`node scripts/usage-digest.mjs [--hours 24] [--environment <env>] [--access-log <stderr を保存した JSONL>] [--fail-on-anomaly]` が usage.jsonl（と任意で access log）を窓で要約する：consumer ごとの件数・tier・Human 率・Jev の成否と unavailable の理由・中断（aborted）と理由・既知の費用、HTTP の status と error code（ENVIRONMENT_MISMATCH・GATEWAY_BUSY 等 usage に残らない失敗）。基準（Human 率 0.9 以上かつ 5 件以上・Jev 失敗 5 割以上かつ 3 回以上・中断 1 件以上・5xx・401/403 が 5 回以上・429）を超えたものを `anomalies` に出す。input・outcome・correlation_id・request_id は持ち出さない。通知は任意・既定 OFF：`--webhook credential:E-NEXUS/edl/<name>`（URL は OS 資格情報ストアからだけ・https 必須・既定は異常がある時だけ・`--webhook-format json|slack|discord`）。webhook 先の登録と定期実行の登録は Human。共通通知 package は作らない（consumer ごと）
 
 ## 9. consumer の追加手順（Consumer Integration 標準・2026-09-26 改訂）
 
