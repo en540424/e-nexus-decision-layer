@@ -34,9 +34,12 @@ export const GATEWAY_VIAS = Object.freeze(['sdk', 'cli', 'http', 'mcp']);
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 // 30s は 2026-09-19 の Vercel 経路実測（429 retry 込み 6.8〜7.5s）で決めた値。2026-09-29 に Direct へ移行後も据え置く：Direct の通常の再送
 // （1 試行 10s・backoff 0.5s→1s）より長く、全試行が timeout する最悪（約 31.5s）や長い Retry-After は GATEWAY_TIMEOUT（failure policy＝fail-closed）へ倒れる。
-// Direct の実 latency 分布（S5 Calibration）を見てから見直す
+// 2026-09-29 見直し済み＝据え置き：S5（Direct・逐次 243 回）は latency 中央値 172〜202 ms・最大 383 ms・429 なし。30s は通常応答に対して
+// 十分長く、上限としては Direct の再送が尽きた最悪ケースを GATEWAY_TIMEOUT（fail-closed）へ倒す役割だけを持つ（docs/decision-log.md 2026-09-29）
 const DEFAULT_TIMEOUT_MS = 30000;
-const DEFAULT_MAX_CONCURRENT = 4; // burst 5 連続で 429 を実測（2026-09-19）。それ未満に抑える
+// 当初の根拠（Vercel 経路で burst 5 連続 429・2026-09-19）は経路廃止で失効。Direct の burst は未実測で、consumer の最大並列は
+// OpenMontage Launcher の 2。4 で足りない実例が無いので据え置く（上げる時は burst 実測＝実課金を伴うため Human の go を取る）
+const DEFAULT_MAX_CONCURRENT = 4;
 
 /** error.code → 分類。HTTP status は http-server が envelope から決める（Decision 結果と HTTP status を混同しない） */
 const ERROR_KINDS = Object.freeze({

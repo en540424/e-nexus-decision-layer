@@ -24,5 +24,5 @@ node C:/Users/envie/e-nexus-decision-layer/src/cli.mjs decide --json '{
 - `tier=review` → 上位LLM再判定（llm adapter 実装まで）は Claude Code 本体が Advisor 相談または Human 確認へ倒す
 - `tier=human` / `recommended_route=en-generate-hub` → `/en-generate` Skill（見積・承認提示）へ。承認文は Human が入力する
 
-Model / Skill Router（`model-route` / `skill-route`）は schema と rules を用意済み。Claude Code 本体の Model 選定は
+Model / Skill Router：`model-route` は schema と rules（参考値・status `rules-reference`）を用意済み、`skill-route` は schema のみ（rules 無し）。Claude Code 本体の Model 選定は
 引き続き Advisor 正本と settings.json が正本であり、Decision Layer の結果は**参考値**（設定を変えない）。

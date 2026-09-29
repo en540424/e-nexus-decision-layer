@@ -1,5 +1,5 @@
 {
-  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）・content-publish-gate（MA-31 G3・2026-09-23）・channel-selection（MA-31 G3後半・2026-09-23）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）・content-publish-gate（MA-31 G3・2026-09-23）・channel-selection（MA-31 G3後半・2026-09-23）・model-route（rules-reference：Advisor正本§2-2の条件をrules化した参考値。Claude Code本体のModel選定の正は settings.json／Advisor正本で、この判定は採否を決めない。2026-09-29 status を schema-only から訂正）。status 語彙：poc／gate／rules-reference／schema-only（schema だけで rules 無し＝probabilistic Adapter → human）。engine は status を読まない（gateway types の表示用）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
   "decision_types": {
     "paid-generation-gate": {
       "domain": "openmontage",
@@ -32,7 +32,7 @@
     "model-route": {
       "domain": "claude-code",
       "schema": "schemas/claude-code/model-route.schema.json",
-      "status": "schema-only",
+      "status": "rules-reference",
       "candidates": {
         "kind": "models"
       },
