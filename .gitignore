@@ -6,3 +6,7 @@ data/usage/*.jsonl
 *.log
 __pycache__/
 data/openmontage-launcher/
+# 2026-09-29 FB-05：staging / production の usage（data/usage/<environment>/usage.jsonl）と、deploy先で作る release 情報
+data/usage/**/*.jsonl
+release.json
+releases.jsonl

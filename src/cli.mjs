@@ -18,7 +18,8 @@
  *                               Gateway envelope（Common Decision Contract v1）を stdout へ。decision が返せなくても envelope＋failure policy を返す
  *   node src/cli.mjs gateway health [--verification]      version・engine mode・Jev 経路状態（Secret なし）
  *   node src/cli.mjs gateway types                        decision_type 一覧（failure policy 付き）
- *   node src/cli.mjs gateway serve [--host 127.0.0.1] [--port 8787]   HTTP 入口（loopback 以外は EDL_GATEWAY_TOKEN 必須）
+ *   node src/cli.mjs gateway serve [--host 127.0.0.1] [--port 8787]   HTTP 入口（loopback 以外は EDL_GATEWAY_TOKEN 必須。staging / production は
+ *                                                         token 32 文字以上＋release.json と EDL_EXPECTED_RELEASE の一致が必須・SIGTERM で graceful shutdown）
  *   node src/cli.mjs gateway mcp                          MCP stdio 入口（接続設定は Human-only）
  *   --verification（または EDL_GATEWAY_MODE=verification）：実 Jev が使えないとき mock-jev を入れる配管検証モード。既定は production（mock 無し）
  *
@@ -31,6 +32,7 @@ import { HumanGateViolationError, SchemaValidationError, DecisionLayerError } fr
 import { createGateway } from './gateway/gateway.mjs';
 import { createDecisionLayerEngine } from './gateway/engine.mjs';
 import { startGatewayServer } from './gateway/http-server.mjs';
+import { resolveServeConfig } from './gateway/serve-config.mjs';
 import { runMcpStdio } from './gateway/mcp-server.mjs';
 
 function readStdin() {
@@ -65,10 +67,33 @@ async function gatewayCommand(sub, opts) {
       out({ decision_types: gateway.decisionTypes() });
       return;
     case 'serve': {
-      const token = process.env.EDL_GATEWAY_TOKEN ? process.env.EDL_GATEWAY_TOKEN : null;
-      const server = await startGatewayServer({ gateway, host: opts.host ?? '127.0.0.1', port: Number(opts.port ?? 8787), token });
+      // 2026-09-29 FB-05：環境ごとの起動条件（staging / production は token 32 文字以上・pinned release 必須）を満たさなければ起動しない
+      const resolved = resolveServeConfig({ env: process.env, host: opts.host ?? '127.0.0.1', port: opts.port ?? 8787 });
+      if (!resolved.ok) {
+        process.stderr.write(`${JSON.stringify({ component: 'edl-gateway-http', event: 'refused_to_start', errors: resolved.errors })}\n`);
+        process.exitCode = 2;
+        return;
+      }
+      const c = resolved.config;
+      const server = await startGatewayServer({
+        gateway, host: c.host, port: c.port, token: c.token, rateLimitPerMin: c.rateLimitPerMin, release: c.release,
+        accessLog: (line) => process.stderr.write(`${JSON.stringify(line)}\n`),
+      });
       const a = server.address();
-      process.stderr.write(`${JSON.stringify({ listening: `${a.address}:${a.port}`, auth: token ? 'bearer' : 'none(loopback only)', mode })}\n`);
+      process.stderr.write(`${JSON.stringify({ component: 'edl-gateway-http', event: 'listening', listening: `${a.address}:${a.port}`, environment: c.environment, auth: c.token ? 'bearer' : 'none(loopback only)', mode, release: c.release?.commit ?? null, rate_limit_per_min: c.rateLimitPerMin })}\n`);
+      // service manager（systemd / launchd / Task Scheduler）の停止要求で graceful shutdown
+      let stopping = false;
+      const stop = (sig) => {
+        if (stopping) return;
+        stopping = true;
+        process.stderr.write(`${JSON.stringify({ component: 'edl-gateway-http', event: 'draining', signal: sig, drain_timeout_ms: c.drainTimeoutMs })}\n`);
+        server.shutdown({ timeoutMs: c.drainTimeoutMs }).then(({ forced }) => {
+          process.stderr.write(`${JSON.stringify({ component: 'edl-gateway-http', event: 'stopped', forced })}\n`);
+          process.exit(0);
+        });
+      };
+      process.once('SIGTERM', () => stop('SIGTERM'));
+      process.once('SIGINT', () => stop('SIGINT'));
       return;
     }
     case 'mcp':

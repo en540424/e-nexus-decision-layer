@@ -4,6 +4,8 @@
 Hermes 未導入のため未接続（完成扱いにしない）。導入時は Hermes 側に consumer adapter（request を組み envelope を読む層）を置くだけで、core・Gateway は変えない。
 Mac mini 常駐で HTTP を使う場合は `EDL_GATEWAY_TOKEN`（Human 発行）必須。
 
+**2026-09-29 接続口は用意済み**：Python の HTTP transport `consumer-kit/python/enexus_http_transport.py`（標準ライブラリだけ・https 必須〈dev の loopback は http 可〉・環境照合・fail-closed）。Hermes 側の adapter はこれをコピーし、request を組んで envelope の `decision.tier`・`human_gate.required`・`failure` を読むだけ。Mac mini で Gateway を常駐させる定義は `scripts/gateway-service.mjs --target launchd`（生成のみ）、手順は `docs/deploy-production-gateway.md`（すべて Human-only）。Hermes 本体の導入・OS ユーザー・Secret は引き続き MA-24 の Human 判断（Q6〜Q8）の後。
+
 正本：Vault `AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_Hermes常駐Agent導入設計_2026-08-30.md`。
 
 - Hermes は Vault に対して read-only（同正本 §6–7）。Decision Layer も Hermes から **CLI / SDK を読み取り用途で呼ぶだけ**

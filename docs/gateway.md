@@ -123,10 +123,10 @@ loader がそれ以外の値を拒否する。現在の実装済み decision_typ
 |---|---|---|---|
 | SDK | `import { createGateway } from 'e-nexus-decision-layer'` → `gateway.decide(req, { via:'sdk' })` | 同一マシンの Node（E-NEXUS Apps のサーバ側） | 実装済み |
 | CLI | `node src/cli.mjs gateway decide --stdin`（`--json` / `--file` も可） | Claude Code（Skill）・shell・別 repo の Node（en-generate-hub は子 process で使用） | 実装済み・**en-generate-hub が第1実consumer** |
-| HTTP | `node src/cli.mjs gateway serve [--host] [--port 8787]` | Python・Hermes・Worker・他 LLM Agent・VPS | 実装済み（local）。常駐・deploy は Human-only |
+| HTTP | `node src/cli.mjs gateway serve [--host] [--port 8787]`（常駐は `scripts/run-gateway.mjs --env-file`） | Python・Hermes・Worker・他 LLM Agent・VPS | 実装済み。**2026-09-29 Production-capable**（環境別の起動条件・pinned release・rate limit・access log・`/ready`・graceful shutdown・service 定義生成・smoke・HTTP transport）。常駐・deploy・token は Human-only（`docs/deploy-production-gateway.md`） |
 | MCP | `node src/cli.mjs gateway mcp`（stdio） | Claude Code・Cursor・MCP 対応 Agent | 実装済み。**接続（MCP 設定への登録）は Human-only**（Vault MCP接続台帳 §4-7・§5・§8-2） |
 
-HTTP endpoints：`POST /v1/decisions`（要認証）／`GET /v1/decision-types`（要認証）／`GET /v1/health`（要認証・詳細）／`GET /health`・`GET /version`（認証不要・最小情報）。
+HTTP endpoints：`POST /v1/decisions`（要認証）／`GET /v1/decision-types`（要認証）／`GET /v1/health`（要認証・詳細）／`GET /health`・`GET /version`（認証不要・最小情報。`/version` は pinned release も返す）／`GET /ready`（認証不要・draining 中 503）。`/v1/*` には rate limit（超過 429＋Retry-After・`{error:'RATE_LIMITED'}`）。
 
 MCP tools：`enexus_decide`・`enexus_decision_types`・`enexus_gateway_health`（Jev 名を tool 名に入れない）。legacy era（initialize）で
 `2025-11-25` / `2025-06-18` / `2025-03-26` / `2024-11-05` を交渉。modern era の `server/discover` には -32601 を返す（仕様上 legacy と判定され fallback される）。
@@ -136,6 +136,8 @@ MCP tools：`enexus_decide`・`enexus_decision_types`・`enexus_gateway_health`�
 - 既定 bind は `127.0.0.1`。loopback 以外は `EDL_GATEWAY_TOKEN` 無しでは**起動しない**（fail-closed）
 - token 設定時は `Authorization: Bearer` を sha256 digest の `timingSafeEqual` で照合。token 値は応答・ログに出さない
 - `Origin` ヘッダ付き request は 403、POST の Content-Type が JSON 以外は 415（ブラウザの任意ページから localhost の有料 Jev 呼び出しを起こさせない）。body 上限 64KiB
+- **staging / production は token 32 文字以上・`release.json`・`EDL_EXPECTED_RELEASE` 一致が無いと起動しない**（2026-09-29・`src/gateway/serve-config.mjs`）
+- access log は body・token・IP・outcome を書かない（method・既知 path・status・latency・request_id・error code・environment だけ）
 - token の発行・投入・VPS/Mac mini/Cloud への deploy・Cloudflare Access 等の前段設定は **Human-only**
 
 ## 7. Worker（Cloudflare）と `node:fs`
@@ -225,7 +227,7 @@ local CLI transport（`gateway decide --stdin` を子 process で呼ぶ）の契
 | `integrations/openmontage/enexus_openmontage_decision.py` | Python の実装例（同じ cases を通す）。2 つ目の Python consumer が出たら transport 部分を kit へ移す |
 
 repo をまたぐ runtime import はしない（consumer の Secret を Gateway repo のコードへ見せないため・version 結合を作らないため）。
-HTTP / Production 用 transport は Production Gateway の構築（Human-only）と同時に作る。Kit に Decision Engine 固有の名前は入れない（`tests/consumer-kit.test.mjs` が検査）。
+HTTP transport（2026-09-29・FB-05）：`consumer-kit/node/http-transport.mjs`・`consumer-kit/python/enexus_http_transport.py`（Hermes 等）。POST `/v1/decisions`・Bearer・**https 必須（dev の loopback http だけ例外）**・`expected_environment` を transport の環境で上書きし envelope を照合・timeout 35s・自動再試行なし・401／403／入口の 429／非 JSON／非 v1 は fail-closed。deploy された staging / production Gateway へつなぐ consumer はこれを使う（Gateway の deploy と token は Human-only）。旧記述「HTTP / Production 用 transport は Production Gateway の構築と同時に作る」は 2026-09-29 Human 発注（Full Autonomous Build）で上書き（Vault MA-30 正本§18-17）。Kit に Decision Engine 固有の名前は入れない（`tests/consumer-kit.test.mjs` が検査）。
 
 ### 9-5. consumer 一覧
 
@@ -319,7 +321,7 @@ CLI / SDK では「環境を決めているのは実質 consumer の process env
 deploy された HTTP Gateway の runtime 設定だけ**とする（consumer は HTTP の endpoint・service token を環境ごとに別に持つ）。
 local CLI transport の consumer adapter は `dev` 以外を指定されたら接続せず fail-closed にする（en-sns-hub `src/growth-decision.mjs` が最初の実装例）。
 
-**現在の実体（2026-09-26）**：実行環境は **dev だけ**。STAGING / PRODUCTION の Gateway・Backend は存在しない（未 deploy）。
+**現在の実体（2026-09-26）**：実行環境は **dev だけ**。STAGING / PRODUCTION の Gateway・Backend は存在しない（未 deploy）。→ **2026-09-29**：STAGING / PRODUCTION で動かすための実装（起動条件・pinned release・運用機能・service 定義・smoke・HTTP transport）は完成。deploy・token・Secret・常駐登録は Human-only のまま（`docs/deploy-production-gateway.md`）。
 Production を作るとき（Human-only）の要件：環境ごとに別の Secret（Jev key・`EDL_GATEWAY_TOKEN`）・endpoint・usage/log 置き場・rate limit・provider config、
 PRODUCTION は pinned version（`master` / latest を無条件に追従しない）と安定版への rollback、DEV → STAGING → PRODUCTION の昇格、
 一般販売 SaaS の client（iOS / Android / browser）は Gateway を直接呼ばず E-NEXUS Backend 経由（client に Secret を置かない）、
