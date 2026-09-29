@@ -8,7 +8,7 @@ App / Agent / IDE（Claude Code・Cursor・Hermes・OpenAI系Agent・他LLM・�
   ↓  DecisionEngine 契約（差し替え可能）
 E-NEXUS Decision Layer（core: engine / router / fallback / confidence）
   ↓  Adapter Interface（src/adapters/adapter-interface.mjs）
-Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路は2026-09-29廃止）／ Mock Jev ／ Local（stub・Mac mini のローカルモデル待ち）／ LLM（Claude・2026-09-29〜。`options.allow_paid_adapters` と HTTP runtime の鍵がある時だけ・tier は review が上限）／ Human
+Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路は2026-09-29廃止）／ Mock Jev ／ Local（stub。Mac mini にローカルモデルは既定で載せない＝MA-22 Q3。載せると決まったら実装）／ LLM（Claude・2026-09-29〜。`options.allow_paid_adapters` と HTTP runtime の鍵がある時だけ・tier は review が上限）／ Human
 ```
 
 - **consumer の正式入口は Common Decision Gateway**（2026-09-25・`docs/gateway.md`）。契約は Common Decision Contract v1（既存 DecisionResult を `decision` に包む envelope＋`request_id`／`correlation_id`／fail-closed の failure policy）。第1実consumer＝en-generate-hub `decision-gate`（`paid-generation-gate`）、Claude Code は Vault Skill `enexus-decision` から。MCP の接続は Human-only

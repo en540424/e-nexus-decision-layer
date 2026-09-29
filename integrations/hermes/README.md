@@ -11,7 +11,7 @@ Mac mini 常駐で HTTP を使う場合は `EDL_GATEWAY_TOKEN`（Human 発行）
 - Hermes は Vault に対して read-only（同正本 §6–7）。Decision Layer も Hermes から **CLI / SDK を読み取り用途で呼ぶだけ**
 - 想定 decision_type：どの Agent / AI社員へ渡すか（agent-route・未定義）／Local で処理できるか（local adapter）／Cloud LLM が要るか／Human へ上げるか
 - AI-Company V1 §13 Trigger Matrix の「Hermes 判定 → 本体が下書き」「送信は必ず Human」は tier=human の扱いと一致する
-- Hermes 導入時に `src/adapters/local/` を実装し、Mac mini のローカルモデルを probabilistic Adapter として登録する（core は変更しない）
+- ~~Hermes 導入時に `src/adapters/local/` を実装し、Mac mini のローカルモデルを probabilistic Adapter として登録する（core は変更しない）~~ → 2026-09-29：MA-22 Q3 の既定は「ローカルモデルを載せない」。載せると Human が決めたときだけ `src/adapters/local/` を実装する（core は変更しない）
 
 ## Browser automation / Computer Use（将来・未実装）
 

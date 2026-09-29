@@ -18,7 +18,7 @@ Contract v1・chain・閾値 0.85 / 0.60・Human-only・MA-17・failure policy�
 
 ## 2. Human Required（1 回で済む形）
 
-> **→ 2026-09-29 すべて完了**（1〜5 は §5 の再開結果、任意の `.env.example` 整理は repo `7264cc1`・branch 削除も完了）。残る Human 作業は User env の `AI_GATEWAY_API_KEY` 削除と Vercel 側でのキー失効だけ（任意・§6）。以下は当時の手順として残す。
+> **→ 2026-09-29 すべて完了**（1〜5 は §5 の再開結果、任意の `.env.example` 整理は repo `7264cc1`・branch 削除も完了）。残る Human 作業は User env の `AI_GATEWAY_API_KEY` 削除と Vercel 側でのキー失効だけ（任意・§6）→ **2026-09-29 Human が両方完了**（User／Machine scope で absent を確認・Vercel 側は Human 申告）。以下は当時の手順として残す。
 
 1. `console.typesafe.ai` にログインし、API を使えるか（early access の有効化）を確認して、API キーを 1 本発行する
 2. そのキーを **Windows の User 環境変数 `JEV_API_KEY`** に設定する（公式 SDK の名前 `TYPESAFE_API_KEY` ではなく `JEV_API_KEY`。engine-env manifest と OpenMontage Launcher の除去対象がこの名前で動いている）。チャット・ファイルに貼らない
@@ -49,7 +49,7 @@ Contract v1・chain・閾値 0.85 / 0.60・Human-only・MA-17・failure policy�
 - `JEV_PROVIDER=vercel` が残っていても direct へ読み替えない（`JEV_PROVIDER_UNKNOWN` → human）。**merge の前に User env の `JEV_PROVIDER` を `direct` にしておくこと**
 - vercel を route の代役にしていた検査は Direct（`fetchImpl` 注入・api.md 形の応答）へ移し、assertion を維持した
 - tests：master 291 → branch 271（-20 vercel 専用、jev-model-evidence 7→5、gateway-real-jev-path 9→10（403 を追加）、gateway-engine-env +1（withhold））。OpenMontage Python 96 → 97（withhold）
-- 残すもの：OpenMontage Launcher・en-generate-hub `secret-boundary-probe.ps1` の `AI_GATEWAY_API_KEY` 除去／検査（§18-13 の多層防御。User env に鍵が残る間は意味がある）、runner の Secret 混入検査対象、過去の calibration 結果・usage.jsonl の `route: vercel` 行（履歴）
+- 残すもの：OpenMontage Launcher・en-generate-hub `secret-boundary-probe.ps1` の `AI_GATEWAY_API_KEY` 除去／検査（§18-13 の多層防御。User env に鍵が残る間は意味がある。**2026-09-29 鍵の削除・失効後も残す**：削除前から動いている process〈常駐 watcher 等〉は再起動まで古い値を持ち得るため。外すと test も壊れる）、runner の Secret 混入検査対象、過去の calibration 結果・usage.jsonl の `route: vercel` 行（履歴）
 
 ## 5. 実鍵がある状態で tests が実送信しないことの確認（2026-09-29）
 
@@ -75,7 +75,7 @@ Human が「`direct-only-cutover` を `master` へ merge する」ことを明�
 
 **Human Required（残り・任意）**：
 1. ~~branch `direct-only-cutover`（local・origin）の削除（branch 削除は Human-only。merge 済みなので残しても害はない）~~ → 完了（2026-09-29、local・origin とも `git branch -d`／`push --delete` で削除）
-2. User env の `AI_GATEWAY_API_KEY` 削除・Vercel 側でのキー失効
+2. ~~User env の `AI_GATEWAY_API_KEY` 削除・Vercel 側でのキー失効~~ → 完了（2026-09-29・Human）
 3. ~~repo `.env.example` の Vercel 節の削除（`.env*` は機械ガードで Claude Code は編集しない）~~ → 完了（2026-09-29、`.env.example` の編集は許可された。Vercel 節（`AI_GATEWAY_API_KEY`・`AI_GATEWAY_BASE_URL`・`JEV_VERCEL_MODEL`・`JEV_ZDR`）を削除し、`JEV_PROVIDER` の説明を direct のみ＋vercel 廃止注記へ）
 
 **補足**：Skill `enexus-decision` は Vault `.claude/skills` だけで使う Skill（skill-sync のどの配布グループにも入っていない・配布先なし）。Vault 側の更新でそのまま最新
