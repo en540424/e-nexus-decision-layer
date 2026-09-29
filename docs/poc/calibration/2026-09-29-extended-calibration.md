@@ -10,7 +10,7 @@
 | S2 実版・probabilities の記録 | 実装済み（offline test） |
 | S3 Direct の noul criteria | 実装済み（offline test。Direct 鍵は招待待ちのため実疎通なし） |
 | S4 再抽選一致率・順序入替 variant・敵対 holdout | 実装済み（offline test） |
-| S5 拡張 run | **BLOCKED（Human Required）**。Vercel AI Gateway が 403 を返す |
+| S5 拡張 run | **BLOCKED（Human Required）**。Vercel AI Gateway が 403 を返す → 2026-09-29 に **TypeSafe Direct 経路で流す方針へ変更**（Vercel は廃止・追加課金しない）。Direct の鍵発行待ち（`docs/direct-cutover-2026-09-29.md`） |
 
 ### 1-1. 403 の中身（2026-09-29 08:55 JST・runner 1 件で停止）
 
@@ -25,7 +25,7 @@
 
 ## 2. 解除後に流す run（このまま実行してよい・合計 約 243 回）
 
-前提：Human のクレジット確認後。シェルに `AI_GATEWAY_API_KEY`・`JEV_PROVIDER=vercel`・`EDL_ALLOW_NETWORK=true`（User scope に設定済み）。1 件目で 403 が続くなら runner が即停止する。
+前提（2026-09-29 改訂）：**TypeSafe Direct 経路**。シェル（User scope）に `JEV_API_KEY`・`JEV_PROVIDER=direct`・`EDL_ALLOW_NETWORK=true`。先に `docs/direct-cutover-2026-09-29.md` §3 の smoke 1 件を通す。1 件目で 401 / 402 / 403 / 422 / 429 なら runner が即停止する。Vercel 経路（旧前提：`AI_GATEWAY_API_KEY`・`JEV_PROVIDER=vercel`）では流さない。
 
 | run | 内容 | 回数 |
 |---|---|---|
