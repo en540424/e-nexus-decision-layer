@@ -36,7 +36,7 @@ Contract v1・chain・閾値 0.85 / 0.60・Human-only・MA-17・failure policy�
    `node scripts/poc-calibration.mjs run --questions improved --cases docs/poc/calibration/paid-generation-gate.v2.cases.json --only PG-J1-local-crop-existing-photos --label cal3-direct-smoke`
    合格＝record の `jev.status ok`・`route direct`・`input_tokens > 0`・`model_version`（例 `jev-1.13.0`）・`probabilities` あり。403 / 402 / 401 / 422 なら runner は 1 件で止まる → 理由を Human へ返す
 4. **Vercel 廃止を確定**：`git merge --no-ff direct-only-cutover` → `npm test`（270 + master 側の追加分）→ push。worktree は `git worktree remove` で片付ける
-5. **S5 拡張 Calibration**（Direct 経路）：`2026-09-29-extended-calibration.md` §2 の 9 コマンド（約 243 回・概算入力 20 万 token 前後＝約 0.01 USD 以下の公表値ベース）→ §3 の analyze。閾値は変えず、結果を Human 判断材料として記録する
+5. **S5 拡張 Calibration**（Direct 経路）：`2026-09-29-extended-calibration.md` §2 の 9 コマンド（約 243 回。過去実測は 1 回あたり入力 約 900〜1,800 token なので合計 約 36 万 token 前後＝公表値 $0.042/Mtok で 約 0.015 USD。出力は無料）→ §3 の analyze。閾値は変えず、結果を Human 判断材料として記録する
 6. Vault：MA-30 §18-15・台帳・技術スタック台帳 §2-12・Skill `enexus-decision` §3・開発ログを更新
 
 ## 4. branch `direct-only-cutover` の中身
