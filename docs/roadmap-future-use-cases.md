@@ -1,4 +1,4 @@
-# Roadmap: 将来ユースケース（2026-09-19 追記・いずれも未実装）
+# Roadmap: 将来ユースケース（2026-09-19 追記・いずれも未実装 → 2026-09-29 現在の状態は下表の「実装状態」列）
 
 MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Layer の正式な将来ユースケースとして記録する。
 本 docs は「名前と責務境界の予約」であり、schema・rules・Adapter・接続は作っていない。
@@ -8,14 +8,14 @@ MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Lay
 |---|---|---|---|---|
 | 1 | Browser / Computer Use 向け micro decision | `agent-action-micro` | Hermes・ブラウザ自動化・Computer Use・将来Agent | 予約のみ |
 | 2 | Context Relevance Filter | `context-relevance` | Claude Code・Cursor・Hermes（上位LLM投入前） | 予約のみ |
-| 3 | Input / Output Guard 補助 | `io-guard-assist` | 全呼び出し元 | 予約のみ（禁止キー先置き） |
-| 4 | Post-Execution Verification | `post-execution-verify` | 全呼び出し元 | 予約のみ |
+| 3 | Input / Output Guard 補助 | `io-guard-assist` | 全呼び出し元 | 予約のみ（禁止キー先置き）。2026-09-29：PII らしい文面を Jev へ送ることになり en-sns-hub・crm-core の PII 境界と矛盾するため、作らない（設計判断） |
+| 4 | Post-Execution Verification | `post-execution-verify` | 全呼び出し元 | 予約のみ。2026-09-29：呼ぶ consumer が無い（crm-core は結果不明を自動で直さない設計）ため予約のまま |
 | 5 | Growth：公開候補ゲート | `content-publish-gate` | Claude Code 本体（note-check 後）・将来 Hermes | **実装済み（2026-09-23 MA-31 G3）**。`docs/growth-content-publish-gate.md` |
 | 6 | Growth：チャネル選定 | `channel-selection` | Claude Code 本体・将来 Hermes | **実装済み（2026-09-23 MA-31 G3後半）**。`docs/growth-channel-selection.md` |
-| 7 | Growth：Lead トリアージ | `lead-triage` | 電話AI・公式サイト Contact・ココナラ問い合わせ | 予約のみ（2026-09-23） |
-| 8 | Growth：次アクション | `next-best-action` | AI Company V1 §8 Growth 手順 | 予約のみ（2026-09-23） |
-| 9 | Growth：返信ゲート | `customer-reply-gate` | AI Company V1 §9 Customer 手順 | 予約のみ（2026-09-23） |
-| 10 | Growth：自動化安全ゲート | `automation-safety-gate` | 将来の n8n / Hermes 連携 | 予約のみ（2026-09-23） |
+| 7 | Growth：Lead トリアージ | `lead-triage` | 電話AI・公式サイト Contact・ココナラ問い合わせ | **実装済み（2026-09-29・FB-04）**。入力写像は crm-core `src/decision/decision-inputs.mjs` |
+| 8 | Growth：次アクション | `next-best-action` | AI Company V1 §8 Growth 手順 | 予約のみ（2026-09-23）。2026-09-29：呼ぶ consumer と入力の実データが無いため予約のまま（schema だけ作っても使われない） |
+| 9 | Growth：返信ゲート | `customer-reply-gate` | AI Company V1 §9 Customer 手順・crm-core G5 executor の preflight | **実装済み（2026-09-29・FB-04）** |
+| 10 | Growth：自動化安全ゲート | `automation-safety-gate` | crm-core G5 executor の preflight・将来の n8n / Hermes 連携 | **実装済み（2026-09-29・FB-04）** |
 
 予約は `schemas/common/decision-types.json` の `reserved_decision_types`。schema が無いため `decide()` は `UNKNOWN_DECISION_TYPE` を返す（誤って動かない）。
 
