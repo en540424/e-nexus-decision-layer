@@ -131,4 +131,4 @@ node src/cli.mjs decide --file docs/growth/channel-selection.sample-request.json
 
 ## 8. やっていないこと
 
-外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`lead-triage` 以降の Growth decision_type（予約のまま）・複数媒体を1回answerで返す配列 outcome（Jev Adapter の制約。§1参照）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry・content-publish-gate の再設計。
+外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`lead-triage` 以降の Growth decision_type（予約のまま→2026-09-29 `automation-safety-gate`・`customer-reply-gate`・`lead-triage` は実働化。`next-best-action` は予約のまま）・複数媒体を1回answerで返す配列 outcome（Jev Adapter の制約。§1参照）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry・content-publish-gate の再設計。

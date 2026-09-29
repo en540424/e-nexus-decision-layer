@@ -8,7 +8,7 @@ App / Agent / IDE（Claude Code・Cursor・Hermes・OpenAI系Agent・他LLM・�
   ↓  DecisionEngine 契約（差し替え可能）
 E-NEXUS Decision Layer（core: engine / router / fallback / confidence）
   ↓  Adapter Interface（src/adapters/adapter-interface.mjs）
-Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路は2026-09-29廃止）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
+Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路は2026-09-29廃止）／ Mock Jev ／ Local（stub・Mac mini のローカルモデル待ち）／ LLM（Claude・2026-09-29〜。`options.allow_paid_adapters` と HTTP runtime の鍵がある時だけ・tier は review が上限）／ Human
 ```
 
 - **consumer の正式入口は Common Decision Gateway**（2026-09-25・`docs/gateway.md`）。契約は Common Decision Contract v1（既存 DecisionResult を `decision` に包む envelope＋`request_id`／`correlation_id`／fail-closed の failure policy）。第1実consumer＝en-generate-hub `decision-gate`（`paid-generation-gate`）、Claude Code は Vault Skill `enexus-decision` から。MCP の接続は Human-only
@@ -22,7 +22,7 @@ Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路
 ## 使い方
 
 ```bash
-npm test                                     # 271 tests（2026-09-29 Vercel 削除 merge 後）, 依存ゼロ（node --test）
+npm test                                     # 339 tests（2026-09-29 Full Build 後）。必須の依存はゼロ（node --test）。@anthropic-ai/sdk は LLM Adapter 用の optionalDependencies
 python -m unittest discover -s integrations/openmontage -p "test_*.py"   # OpenMontage adapter（Python stdlib・npm test とは別）
 echo '<request json>' | node src/cli.mjs gateway decide --stdin   # Common Decision Gateway（consumer 向け正式入口・envelope を返す）
 node src/cli.mjs gateway health              # version・engine mode・Jev 経路状態（Secret なし）・counters
@@ -57,7 +57,7 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要）、openmontage の thin consumer adapter（Python・2026-09-26） |
 | `consumer-kit/` | Consumer Integration Kit：transport の言語非依存 conformance cases・fake Gateway・Node reference transport（標準は `docs/gateway.md` §9） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
-| `scripts/` | poc-calibration（Jev confidence の実測 runner。run はキー export 済みの Human シェルでのみ動く） |
+| `scripts/` | poc-calibration（Jev confidence の実測 runner。run はキー export 済みの Human シェルでのみ動く）／recalibration-report（実運用 usage からの再 Calibration 材料）／usage-digest（異常 digest・任意の webhook）／run-gateway・gateway-release・gateway-service・gateway-smoke（Production-capable HTTP Gateway の起動・版の固定・service 定義の生成・smoke。deploy・常駐登録は Human。`docs/deploy-production-gateway.md`） |
 | `docs/` | architecture / PoC / decision-log / poc/calibration（ケース定義・結果） / growth-content-publish-gate（MA-31 G3）・growth-channel-selection（MA-31 G3後半）＋ growth/（Human smoke 用サンプル） / roadmap-future-use-cases（Browser・Computer Use micro decision／Context Relevance Filter／I/O Guard補助／Post-Execution Verification） |
 
 ## 正本

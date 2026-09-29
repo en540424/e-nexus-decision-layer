@@ -1,7 +1,7 @@
 # Roadmap: 将来ユースケース（2026-09-19 追記・いずれも未実装 → 2026-09-29 現在の状態は下表の「実装状態」列）
 
 MA-30 土台構築後に追加確認した Jev の有力用途を、Decision Layer の正式な将来ユースケースとして記録する。
-本 docs は「名前と責務境界の予約」であり、schema・rules・Adapter・接続は作っていない。
+本 docs は「名前と責務境界の予約」であり、schema・rules・Adapter・接続は作っていない（2026-09-29 更新：`automation-safety-gate`・`customer-reply-gate`・`lead-triage` は実働化した＝下の表。`next-best-action` 等の残りは予約のまま）。
 共通原則：**Jev は判定補助であり、Safety 解除・承認・Human-only 置換はどの用途でも行わない。**
 
 | # | 用途 | 予約した decision_type | 呼び出し元 | 実装状態 |

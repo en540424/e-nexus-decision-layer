@@ -126,4 +126,4 @@ Human が判定ごとに「本来の tier」（auto／review／human）を `{"re
 
 ## 8. やっていないこと
 
-外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`channel-selection` 以降の Growth decision_type（予約のまま）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry。
+外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`channel-selection` 以降の Growth decision_type（予約のまま→2026-09-26 `channel-selection`、2026-09-29 `automation-safety-gate`・`customer-reply-gate`・`lead-triage` を実働化。`next-best-action` は予約のまま）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry。

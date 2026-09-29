@@ -2,7 +2,7 @@
  * E-NEXUS Decision Layer — SDK 入口。
  *
  *   import { createDecisionLayer } from 'e-nexus-decision-layer';
- *   const edl = createDecisionLayer();          // 既定: rules → jev → [mock-jev] → local(stub) → llm(stub) → human
+ *   const edl = createDecisionLayer();          // 既定: rules → jev → [mock-jev] → local(stub) → llm（Claude・allow_paid_adapters の時だけ） → human
  *   const result = await edl.decide({ decision_type: 'paid-generation-gate', application_id: 'openmontage', project_id: 'openmontage', input: {...} });
  *
  * App / IDE / Agent 側はこの関数か CLI（src/cli.mjs）だけを使う。Jev を直接呼ばない。

@@ -154,7 +154,7 @@ core の runtime-neutral 分離は今回行わない（2026-09-25 decision-log�
 - health：`gateway health`（CLI）／`GET /v1/health`／MCP `enexus_gateway_health` = version・engine mode・adapters・Jev 経路状態（キーの有無のみ）・
   process 内 counters（requests / ok / failed / fallbacks / human_tier / errors_by_code / by_decision_type / by_via / latency last・max・avg）。
   CLI は 1 process 1 判定なので、横断の件数は usage.jsonl が正
-- 異常 digest（2026-09-29 FB-18）：`node scripts/usage-digest.mjs [--hours 24] [--environment <env>] [--access-log <stderr を保存した JSONL>] [--fail-on-anomaly]` が usage.jsonl（と任意で access log）を窓で要約する：consumer ごとの件数・tier・Human 率・Jev の成否と unavailable の理由・中断（aborted）と理由・既知の費用、HTTP の status と error code（ENVIRONMENT_MISMATCH・GATEWAY_BUSY 等 usage に残らない失敗）。基準（Human 率 0.9 以上かつ 5 件以上・Jev 失敗 5 割以上かつ 3 回以上・中断 1 件以上・5xx・401/403 が 5 回以上・429）を超えたものを `anomalies` に出す。input・outcome・correlation_id・request_id は持ち出さない。通知は任意・既定 OFF：`--webhook credential:E-NEXUS/edl/<name>`（URL は OS 資格情報ストアからだけ・https 必須・既定は異常がある時だけ・`--webhook-format json|slack|discord`）。webhook 先の登録と定期実行の登録は Human。共通通知 package は作らない（consumer ごと）
+- 異常 digest（2026-09-29 FB-18）：`node scripts/usage-digest.mjs [--hours 24] [--environment <env>] [--access-log <stderr を保存した JSONL>] [--fail-on-anomaly]` が usage.jsonl（と任意で access log）を窓で要約する：consumer ごとの件数・tier・Human 率・Jev の成否と unavailable の理由・中断（aborted）と理由・既知の費用、HTTP の status と error code（ENVIRONMENT_MISMATCH・GATEWAY_BUSY 等 usage に残らない失敗）。基準（Human 率 0.9 以上かつ 5 件以上・Jev 失敗 5 割以上かつ 3 回以上・中断 1 件以上・5xx・401/403 が 5 回以上・429）を超えたものを `anomalies` に出す。input・outcome・correlation_id・request_id は持ち出さない。MA-30 §17-6 の「Jev low-confidence 通知」はこの digest が窓単位で兼ねる（`high_human_rate`・`jev_unavailable`。1判定ごとの通知は作らない：低確信度の判定は tier=human として各 consumer の画面で Human に届いている）。通知は任意・既定 OFF：`--webhook credential:E-NEXUS/edl/<name>`（URL は OS 資格情報ストアからだけ・https 必須・既定は異常がある時だけ・`--webhook-format json|slack|discord`）。webhook 先の登録と定期実行の登録は Human。共通通知 package は作らない（consumer ごと）
 
 ## 9. consumer の追加手順（Consumer Integration 標準・2026-09-26 改訂）
 
@@ -192,7 +192,7 @@ en-generate-hub と en-sns-hub の transport 部分（`resolveEdlHome`・`loadEn
 
 1. **identity**：`application_id` を決める（例 `hermes` / `openai-agent` / `line-crm` / `openmontage`）。`project_id` は `registries/projects.json` の id
 2. **environment**：どの実行環境の Gateway につなぐかを先に決める（§12）。本人用・内部用＝`dev`。一般販売・外部ユーザー向けは `production` 前提で
-   **今の DEV Gateway へつながない**（Production Gateway は未構築＝接続先・Secret・deploy は Human Required）。不明なら Production へ推測接続しない
+   **今の DEV Gateway へつながない**（Production Gateway は**コードは Production-capable（§6-1・`docs/deploy-production-gateway.md`）だが、まだ deploy されていない**＝常駐先・Secret・deploy は Human Required）。不明なら Production へ推測接続しない
 3. **Decision Point**：どの時点で呼ぶかを 1〜2 箇所に絞る（全操作に通さない）
 4. **decision_type**：`gateway types` の既存 type を使う。無ければ architecture §7（schema + index + rules + tests）。consumer が未知の type を作らない
 5. **structured context**：`input` は decision_type schema の構造情報だけ。参照用 ID は `context`（engine へ送られない）。`correlation_id` に PII の無い業務 ID
@@ -241,8 +241,8 @@ HTTP transport（2026-09-29・FB-05）：`consumer-kit/node/http-transport.mjs`�
 | Cursor | rule 雛形あり・未設置（2026-09-29 FB-23：`integrations/cursor/enexus-decision.mdc`＝Claude Code の Skill と同じ契約・`application_id: cursor`） | `.cursor/rules/` への設置・MCP 設定（Human） |
 | Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter。**2026-09-29：Python の HTTP transport（`consumer-kit/python/enexus_http_transport.py`）を用意済み**＝Hermes 側はこれをコピーするだけ |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |
-| LINE / CRM | 2026-09-29：`lead-triage`・`customer-reply-gate`・`automation-safety-gate` を実働化し、crm-core に入力写像（`src/decision/decision-inputs.mjs`）。送信 executor の preflight（2026-09-29 FB-16・crm-core `src/execution/decision-preflight.mjs`・`application_id: crm-executor`）から HTTP で automation-safety-gate（dry-run・execute）と customer-reply-gate（caller が `reply_facts` を渡した dry-run だけ）を呼ぶ。止めることしかしない・既定 OFF（staging / production の Gateway と token が要る＝Human）。production の G5 は rule で human-review になり、execute では署名付き Human 承認で満たされたとみなす。受信口（canary）の経路には入れない。評価セット（synthetic・holdout・敵対）は `docs/poc/calibration/` に凍結済み（FB-15・offline で検証） | Gateway の deploy と token（Human）・実 JEV Calibration run の go（課金・Human） |
-| 一般販売 App / SaaS（AI Cost Manager・旅レートカメラ・足場 SaaS 等） | 未接続 | **Production Backend → Production Gateway**（未構築・Human Required）。client に Secret を置かない。DEV Gateway へつながない（§12） |
+| LINE / CRM | 2026-09-29：`lead-triage`・`customer-reply-gate`・`automation-safety-gate` を実働化し、crm-core に入力写像（`src/decision/decision-inputs.mjs`）。送信 executor の preflight（2026-09-29 FB-16・crm-core `src/execution/decision-preflight.mjs`・`application_id: crm-executor`）から HTTP で automation-safety-gate（dry-run・execute）と customer-reply-gate（caller が `reply_facts` を渡した dry-run だけ）を呼ぶ。止めることしかしない・既定 OFF（staging / production の Gateway と token が要る＝Human）。production の G5 は rule で human-review になり、execute では署名付き Human 承認で満たされたとみなす。lead-triage は executor Worker の `POST /v1/triage`（read-only・送らない・既定OFF・2026-09-29 FB-24）。受信口（canary）の経路には入れない。評価セット（synthetic・holdout・敵対）は `docs/poc/calibration/` に凍結済み（FB-15・offline で検証） | Gateway の deploy と token（Human）・実 JEV Calibration run の go（課金・Human） |
+| 一般販売 App / SaaS（AI Cost Manager・旅レートカメラ・足場 SaaS 等） | 未接続 | **Production Backend → Production Gateway**（コードは用意済み・deploy は Human Required）。client に Secret を置かない。DEV Gateway へつながない（§12） |
 
 ## 10. Engine の差し替え
 

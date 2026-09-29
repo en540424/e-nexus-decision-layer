@@ -17,7 +17,7 @@
 │   7 outcome validation  → 8 usage metering                      │
 └──────────────────────────────────────────────────────────────┘
                 ▼   Adapter Interface（supports / decide）
-   rules   jev(direct＝正式経路)   [mock-jev]   local(stub)   llm(stub)   human
+   rules   jev(direct＝正式経路)   [mock-jev]   local(stub)   llm(Claude・2026-09-29)   human
 ```
 
 ## 2. 判断の流れ
@@ -29,7 +29,8 @@
    Adapter が**正常応答したが human 相当**の場合は trace に `status:'ok'` として残し（unavailable とは区別）、chain の次（local → llm の再判定差し込み口 → human escalation）へ進む。正常応答は provider 失敗ではない。
    chain が継続した場合も、実 Jev の confidence / usage / latency / model は attempt record として `fallback.trace` と
    metering（`usage.jsonl` の `attempts[]` / `usage_total`）の両方に残る（2026-09-19 Intermediate Adapter Metering で解消。§11）
-4. **Human gate**：`policies/safety/human-only.json` の `force_human_when_outcome_keys`（`human_review_required` / `needs_human_review` / `human_required`）のいずれかが true なら confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない
+4. **Human gate**：`policies/safety/human-only.json` の `force_human_when_outcome_keys`（`human_review_required` / `needs_human_review` / `human_required`）のいずれかが true、または `force_human_when_outcome_values`（2026-09-29：`safety_class=escalate`・`reply_readiness=hold` 等の「止める・上げる」値）に当たれば confidence に関わらず `human`。Human-only な decision_type は Adapter を呼ばない。Adapter ごとの tier の上限は routing policy の `max_tier_by_adapter`（2026-09-29：llm＝review）
+4-1. **費用上限**（2026-09-29）：`policies/cost/limits.json` の `per_decision_estimated_cost_usd_micros_max` が数値なら、`estimateCost()` を持つ Adapter（Jev・llm）は送る前の見積もりが上限を超えると呼ばれない（既定 null＝強制しない）。有料の汎用 LLM（`paid_providers`）は `options.allow_paid_adapters: true` の request だけ
 5. chain を使い切れば **Human Adapter** が escalation を返す（承認ではない）
 
 ## 3. なぜ Jev を中心にしないか
