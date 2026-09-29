@@ -116,17 +116,19 @@ reason code 専用 field は置かない。決定的な理由は `rationale` の
 - 実 Jev が使えるときの mock 除外（`realJevUsable`）は無変更
 - metering は既存の `attempts[]` / `usage_total`（provider / model / route / confidence / latency_ms / tokens / cost / networked / retry_count / fallback trace）をそのまま使う
 
-## 7. Human smoke（実 Jev。Human Required）
+## 7. Human smoke（実 Jev）
 
-実 Jev キーは Human のシェルにしか無いため、本実装の Jev 経路は注入した fake provider でのみ検証済み（実通信は未実施）。Human が実疎通を確認する場合：
+> **2026-09-29 現在**：実 Jev 到達済み（2026-09-26 実 JEV Calibration 第2回・en-sns-hub smoke、2026-09-29 S5 拡張 Calibration を TypeSafe Direct で実施。`docs/poc/calibration/`）。Direct が唯一の経路。以下は手元で再確認したい時の手順として残す（実課金は入力 token 分のみ）。
+
+初版（2026-09-23）時点では、本実装の Jev 経路は注入した fake provider でのみ検証済みだった。実疎通を確認する場合：
 
 ```powershell
 $env:JEV_PROVIDER="direct"; $env:EDL_ALLOW_NETWORK="true"   # JEV_API_KEY（TypeSafe Direct）は既に設定済みのシェルで（2026-09-29 Vercel 経路廃止）
 node src/cli.mjs decide --file docs/growth/channel-selection.sample-request.json
 ```
 
-1 リクエスト＝4 question。burst しない（MA-30 で 429 を観測済み）。結果の `resolved_by` / `tier` / `fallback.trace[jev].confidence` を確認するだけで、投稿・Hub 反映は何も起きない。
+1 リクエスト＝4 question。burst しない（Vercel 経路では 429 を観測。Direct の burst は未実測）。結果の `resolved_by` / `tier` / `fallback.trace[jev].confidence` を確認するだけで、投稿・Hub 反映は何も起きない。
 
 ## 8. やっていないこと
 
-外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`lead-triage` 以降の Growth decision_type（予約のまま）・複数媒体を1回answerで返す配列 outcome（Jev Adapter の制約。§1参照）・TypeSafe Direct 対応・閾値／合成方式の変更・Common Event Layer・新 Channel Registry・content-publish-gate の再設計。
+外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`lead-triage` 以降の Growth decision_type（予約のまま）・複数媒体を1回answerで返す配列 outcome（Jev Adapter の制約。§1参照）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry・content-publish-gate の再設計。

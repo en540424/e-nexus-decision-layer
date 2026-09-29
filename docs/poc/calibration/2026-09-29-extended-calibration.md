@@ -21,7 +21,7 @@
 - 直前の成功：2026-09-26 17:28 JST（openmontage）。それ以降の networked Jev 呼び出しはこの 1 件だけ
 - 別に、原因切り分けのため Claude Code が scratchpad から AI SDK を直接 1 回呼んだ（Gateway を通さない診断。同じ 403・キー値は非表示）。以後の実通信は runner に限定した
 
-**Human Required**：Vercel AI Gateway のクレジット／プラン確認（有料クレジット追加は課金操作＝Human-only）。09-26 までは同じキー・同じ経路で通っていた。変わった点は「無料枠ユーザーはモデル制限」の応答と、`typesafe-ai/jev` が `digitalocean` へ解決されること。
+**Human Required**（→ **2026-09-29 不要**：Vercel 経路を廃止し、本 run は TypeSafe Direct で完了＝§5）：Vercel AI Gateway のクレジット／プラン確認（有料クレジット追加は課金操作＝Human-only）。09-26 までは同じキー・同じ経路で通っていた。変わった点は「無料枠ユーザーはモデル制限」の応答と、`typesafe-ai/jev` が `digitalocean` へ解決されること。
 
 ## 2. 解除後に流す run（このまま実行してよい・合計 約 243 回）
 

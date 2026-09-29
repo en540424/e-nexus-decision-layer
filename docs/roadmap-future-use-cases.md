@@ -64,7 +64,7 @@ Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタ�
 - Final Human Requirement は Jev 単独で決めない（Calibration の `human_review_required` = D の結論をそのまま適用。policy + consent + confidence + risk + frequency rules から Decision Layer が決定的に導く）
 - deterministic policy（unsubscribe / consent / frequency cap / duplicate block / budget / permission / cooldown / external-send prohibition）は Jev に判断させず、Growth Core 側の policy JSON に置く（本 repo の `policies/` にも置かない）
 - 予約しないもの：`sales-readiness` / `cross-sell-routing` / `churn-response`（sale・retention の実データが継続して出るまで）
-- schema 化の順序：Vault 正本 §16 の G3（`content-publish-gate` → `channel-selection`、Rules First）。MA-30 follow-up ①②の後。本追記は MA-30 の状態（基盤完成 / Calibration 完了 / 次統合待ち）を変えない
+- schema 化の順序：Vault 正本 §16 の G3（`content-publish-gate` → `channel-selection`、Rules First）。MA-30 follow-up ①②の後。本追記は MA-30 の状態（基盤完成 / Calibration 完了 / 次統合待ち）を変えない（→ 2026-09-29 の MA-30 の現在地は Vault 正本 §18-16。下の「実装へ進める条件」は 1〜3 が完了し、残りは 4＝各 use case を1件ずつ schema 化する時の順序だけ）
 - 2026-09-23：`content-publish-gate`・`channel-selection` を実装（Human の明示発注により follow-up ①② 未着手のまま先行。decision-log 参照）。`lead-triage` 以降の 4 件は予約のまま
 
 ## 仕様に固定しない情報
@@ -73,7 +73,7 @@ Vault 正本 `AI-Workflow-System/07_project-kits/AI開発環境改善マスタ�
 
 ## 実装へ進める条件（この順を崩さない）
 
-1. GitHub repo 作成＋push、skill-sync（Human-only）
-2. Jev 実API仕様・キー取得 → `direct` Provider 実装（`src/adapters/jev/jev-provider-interface.mjs` の契約内）
-3. `paid-generation-gate` の本接続（OpenMontage wrapper）と usage.jsonl 実測
+1. GitHub repo 作成＋push、skill-sync（Human-only） → **完了**（2026-09-19）
+2. Jev 実API仕様・キー取得 → `direct` Provider 実装（`src/adapters/jev/jev-provider-interface.mjs` の契約内） → **完了**（2026-09-29 Direct 実疎通）
+3. `paid-generation-gate` の本接続（OpenMontage wrapper）と usage.jsonl 実測 → **完了**（2026-09-26 OpenMontage 接続・usage 実測）
 4. その後に本 docs の 1〜4 を1件ずつ schema 化（`reserved_decision_types` → `decision_types` へ移す）

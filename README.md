@@ -22,7 +22,7 @@ Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路
 ## 使い方
 
 ```bash
-npm test                                     # 284 tests, 依存ゼロ（node --test）
+npm test                                     # 271 tests（2026-09-29 Vercel 削除 merge 後）, 依存ゼロ（node --test）
 python -m unittest discover -s integrations/openmontage -p "test_*.py"   # OpenMontage adapter（Python stdlib・npm test とは別）
 echo '<request json>' | node src/cli.mjs gateway decide --stdin   # Common Decision Gateway（consumer 向け正式入口・envelope を返す）
 node src/cli.mjs gateway health              # version・engine mode・Jev 経路状態（Secret なし）・counters

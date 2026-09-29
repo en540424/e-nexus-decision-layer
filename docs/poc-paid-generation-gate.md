@@ -47,7 +47,7 @@ node src/cli.mjs decide --file request-vercel-test.json
 
 `JEV_PROVIDER=vercel`・`AI_GATEWAY_API_KEY`・`EDL_ALLOW_NETWORK=true` をシェルへ export した状態で実行し、Human が成功を確認した（`.env` はCLI から読まれないため、実行前にシェルへ export する。§`.env.example`）。結果：`rules:unavailable(NO_RULE_MATCHED) → jev:ok(confidence≈0.08, tier=human, latency 881ms) → local:unavailable(LOCAL_MODEL_NOT_CONFIGURED) → human:ok`。`resolved_by: human`。`mock-jev` は `NOT_REGISTERED`（`src/index.mjs` の `realJevUsable()` により実 Jev 経路使用時は chain に登録されないことを実測確認。詳細は `docs/decision-log.md`）。
 
-## 接続（未実装・Human 判断待ち）
+## 接続（初版時点：未実装・Human 判断待ち → 2026-09-26 OpenMontage を第4 consumer として接続済み。`integrations/openmontage/`・Vault MA-30 正本 §18-9〜§18-12）
 
 OpenMontage の `video_generation` カテゴリ（27ツール）が「支払い前にツール名・Provider・モデル・理由を宣言してターンを終える」設計なので、
 その宣言を `decide` へ渡し、`recommended_route=en-generate-hub` のときだけ `/en-generate` Skill（見積・承認提示）へ進む、が自然な接続点。
@@ -191,8 +191,8 @@ node scripts/poc-calibration.mjs analyze
 
 > 2026-09-26 追記：Hybrid（`human_review_required` escalation-only）・自己矛盾検知（`x-outcome-invariants` 7 件）・`local_sufficient` / `remotion_suitable` の「能力」定義化を実装し、第2回実測（評価 12・holdout 3）で矛盾 0・制約合格 15/15・auto 2 / review 8（評価）。auto は `en-generate-hub` route でも承認ではなく MA-17 の Human-only 承認が必ず残る。詳細は `docs/poc/calibration/2026-09-26-real-jev-calibration.md`。本表（2026-09-19）は履歴として残す
 
-**remaining uncertainty**：サンプル 7 件／同一入力のノイズ ±0.06／C1 の期待定義／TypeSafe Direct 実疎通（招待待ち、本 Calibration を block しない）／本番入力分布での confidence（今回は設計ケース）
+**remaining uncertainty**：サンプル 7 件／同一入力のノイズ ±0.06／C1 の期待定義／TypeSafe Direct 実疎通（招待待ち、本 Calibration を block しない → 2026-09-29 実疎通済み・S5 拡張 Calibration も Direct で完了）／本番入力分布での confidence（今回は設計ケース）
 
-**follow-up（MA-30 の完了を block しない。番号は Human 発番、台帳慣例なら `MA-30-1` / `MA-30-2`）**
+**follow-up（MA-30 の完了を block しない。番号は Human 発番、台帳慣例なら `MA-30-1` / `MA-30-2`）** → **2026-09-26 ①②とも完了**（①＝`integrations/openmontage/`、②＝上の 2026-09-26 追記の Hybrid）
 1. OpenMontage Decision Layer Wrapper：「支払い前宣言」→ `decide` → `recommended_route=en-generate-hub` のときだけ `/en-generate` へ。review / human 経路のみ。1 判定 ≈52 USD micros、burst しない
 2. `human_review_required` Hybrid 化（上表）

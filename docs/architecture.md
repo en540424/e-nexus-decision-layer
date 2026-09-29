@@ -106,7 +106,7 @@ outcome schema → Jev questions（noul/choice/score）の写像と confidence �
 `x-enum-descriptions` = choice criteria の説明、outcome の `description` = `state.brief`。2026-09-19 Confidence Calibration。
 第1回実測（同日）で description を書いた field の confidence は 0.04〜0.28 → 0.76〜1.00 に上がった。（当時の Vercel 経路の失敗分類＝AI SDK `RetryError` の unwrap は、経路廃止とともに削除した。）
 Calibration は同日 **B（question 設計）で確定**、閾値・min 合成は維持、`human_review_required` は次フェーズで Hybrid（policy 側）へ（→ 2026-09-26 実装：escalation-only・`x-outcome-invariants`・`x-jev-enum`・`x-jev-derive`・`input_notes`。`docs/poc/calibration/2026-09-26-real-jev-calibration.md`）。auto は real Jev 0/14 で Production Auto Ready = NO、Wrapper Design Ready = YES（`docs/poc-paid-generation-gate.md` §Calibration 最終確定）。
-`docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。unit tests はすべて fake fetch（実APIは smoke・Calibration runner だけが叩く）。**実疎通は Human が `JEV_API_KEY` を設定した後**（2026-09-29 時点で鍵未発行）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
+`docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。unit tests はすべて fake fetch（実APIは smoke・Calibration runner だけが叩く）。**実疎通済み**（2026-09-29 14:05 JST・応答 `model`＝`jev-1.13.0`。同日 S5 拡張 Calibration 243 回も Direct で全件 ok。`docs/direct-cutover-2026-09-29.md` §5〜§6）。Direct が唯一の Jev 経路（Vercel 経路は 2026-09-29 に削除）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
 
 **【廃止・2026-09-29】以下は履歴。** `vercel`（旧 `src/adapters/jev/jev-vercel-provider.mjs`。git の 88459ad 以前）は Vercel AI Gateway の Evaluation modality
 （AI SDK 7 の `experimental_evaluate`。**REST互換エンドポイントには無い**、と公式に明記されている）を経由する。
@@ -140,7 +140,7 @@ decision（1件）
 - attempt record は `src/core/fallback.mjs` が1か所で作り、`result.fallback.trace`（表示・デバッグ）と `usage.jsonl` の `attempts[]`
   （metering。`ms` を落とした射影）が**同じ record**を使う。二重管理しない
 - 実疎通で観測した `rules → jev: ok(0.08) → local: unavailable → human` は、final が human（provider null・usage 0）のまま、
-  `attempts[]` に Jev の `provider=typesafe-ai / model（実応答）/ route=vercel / confidence=0.08 / latency_ms / tokens / cost / networked=true`
+  `attempts[]` に Jev の `provider=typesafe-ai / model（実応答）/ route=vercel / confidence=0.08 / latency_ms / tokens / cost / networked=true`（2026-09-26 当時の経路。2026-09-29 以降は `route=direct`）
   が残り、`usage_total` に Jev 分の cost が入る。final の confidence を 0.08 に書き換えたりはしない
 - **`networked`（外部 provider へ実際に送ったか）は throw / return する側が決める。core は Jev を知らない**：
   - ok → `AdapterResult.networked`（rules / human / mock / local は `false` を明示、Jev は `true`）。無ければ `null`（不明）

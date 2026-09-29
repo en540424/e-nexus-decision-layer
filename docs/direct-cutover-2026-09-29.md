@@ -18,6 +18,8 @@ Contract v1・chain・閾値 0.85 / 0.60・Human-only・MA-17・failure policy�
 
 ## 2. Human Required（1 回で済む形）
 
+> **→ 2026-09-29 すべて完了**（1〜5 は §5 の再開結果、任意の `.env.example` 整理は repo `7264cc1`・branch 削除も完了）。残る Human 作業は User env の `AI_GATEWAY_API_KEY` 削除と Vercel 側でのキー失効だけ（任意・§6）。以下は当時の手順として残す。
+
 1. `console.typesafe.ai` にログインし、API を使えるか（early access の有効化）を確認して、API キーを 1 本発行する
 2. そのキーを **Windows の User 環境変数 `JEV_API_KEY`** に設定する（公式 SDK の名前 `TYPESAFE_API_KEY` ではなく `JEV_API_KEY`。engine-env manifest と OpenMontage Launcher の除去対象がこの名前で動いている）。チャット・ファイルに貼らない
 3. 同じ画面で User 環境変数 **`JEV_PROVIDER` を `direct`** に変える（削除でもよい。未設定は `direct`）
