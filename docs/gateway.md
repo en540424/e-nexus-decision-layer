@@ -240,7 +240,7 @@ HTTP transport（2026-09-29・FB-05）：`consumer-kit/node/http-transport.mjs`�
 | Cursor | 未接続 | MCP 設定（Human）か `.cursor/rules` で CLI |
 | Hermes | 未導入（設計のみ・MA-24） | 導入時に HTTP か MCP の adapter。**2026-09-29：Python の HTTP transport（`consumer-kit/python/enexus_http_transport.py`）を用意済み**＝Hermes 側はこれをコピーするだけ |
 | OpenAI 系 Agent / 他 LLM | consumer 未存在 | MCP（Agents SDK）か HTTP の adapter |
-| LINE / CRM | 2026-09-29：`lead-triage`・`customer-reply-gate`・`automation-safety-gate` を実働化し、crm-core に入力写像（`src/decision/decision-inputs.mjs`）。送信 executor の preflight から HTTP で呼ぶ経路は既定 OFF（staging / production の Gateway と token が要る＝Human）。受信口（canary）の経路には入れない。評価セット（synthetic・holdout・敵対）は `docs/poc/calibration/` に凍結済み（FB-15・offline で検証） | Gateway の deploy と token（Human）・実 JEV Calibration run の go（課金・Human） |
+| LINE / CRM | 2026-09-29：`lead-triage`・`customer-reply-gate`・`automation-safety-gate` を実働化し、crm-core に入力写像（`src/decision/decision-inputs.mjs`）。送信 executor の preflight（2026-09-29 FB-16・crm-core `src/execution/decision-preflight.mjs`・`application_id: crm-executor`）から HTTP で automation-safety-gate（dry-run・execute）と customer-reply-gate（caller が `reply_facts` を渡した dry-run だけ）を呼ぶ。止めることしかしない・既定 OFF（staging / production の Gateway と token が要る＝Human）。production の G5 は rule で human-review になり、execute では署名付き Human 承認で満たされたとみなす。受信口（canary）の経路には入れない。評価セット（synthetic・holdout・敵対）は `docs/poc/calibration/` に凍結済み（FB-15・offline で検証） | Gateway の deploy と token（Human）・実 JEV Calibration run の go（課金・Human） |
 | 一般販売 App / SaaS（AI Cost Manager・旅レートカメラ・足場 SaaS 等） | 未接続 | **Production Backend → Production Gateway**（未構築・Human Required）。client に Secret を置かない。DEV Gateway へつながない（§12） |
 
 ## 10. Engine の差し替え
