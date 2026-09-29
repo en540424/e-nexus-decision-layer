@@ -9,8 +9,8 @@
  *   node scripts/poc-calibration.mjs dry-run [--questions improved|baseline] [--dump <case_id>]
  *       ネットワーク無し。Rules First で確定するケースと、Jev へ送られる questions（送信はしない）を確認する
  *   node scripts/poc-calibration.mjs run --questions improved|baseline [--only A3,B1] [--out <file>]
- *       real Jev。シェルに AI_GATEWAY_API_KEY / JEV_PROVIDER=vercel / EDL_ALLOW_NETWORK=true が export
- *       されているときだけ動く（無ければ exit 4 で止まり、キーの入力は求めない）。各ケース1回・逐次
+ *       real Jev。シェルに JEV_API_KEY / JEV_PROVIDER=direct / EDL_ALLOW_NETWORK=true（TypeSafe Direct。2026-09-29〜正式経路）が
+ *       設定されているときだけ動く（無ければ exit 4 で止まり、キーの入力は求めない）。各ケース1回・逐次
  *   node scripts/poc-calibration.mjs run --questions improved --only D1-... --offline
  *       ネットワークゼロ。chain は rules → human だけで、Rules に当たらないケースは**実行せずスキップ**する
  *       （Jev を呼ばない・Human escalation も書かない）。Rules First 想定ケースの record をキー無しで揃えるため
@@ -54,14 +54,16 @@ import { createFileMeter, createMemoryMeter } from '../src/usage/metering.mjs';
 import { loadDecisionType } from '../src/schemas/loader.mjs';
 import { realJevUsable } from '../src/index.mjs';
 import { resolveJevProvider } from '../src/adapters/jev/jev-provider-interface.mjs';
-import { toGatewayModelId } from '../src/adapters/jev/jev-vercel-provider.mjs';
 import { checkOutcomeInvariants } from '../src/schemas/invariants.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_CASES_PATH = join(ROOT, 'docs', 'poc', 'calibration', 'paid-generation-gate.cases.json');
 export const RESULTS_DIR = join(ROOT, 'docs', 'poc', 'calibration', 'results');
 const SECRET_ENV_NAMES = ['AI_GATEWAY_API_KEY', 'JEV_API_KEY'];
-const STOP_REASONS = new Set(['JEV_RATE_LIMITED', 'JEV_AUTH_FAILED', 'JEV_FORBIDDEN', 'JEV_VERCEL_API_KEY_MISSING', 'JEV_API_KEY_MISSING', 'NETWORK_DISABLED']);
+// 1 件目で止める理由：同じ鍵・同じ経路なら全ケースが同じ理由で落ちる（鍵無効・アカウント未有効・課金・request 形式・rate limit）。
+// JEV_PAYMENT_REQUIRED / JEV_REQUEST_REJECTED / JEV_PROVIDER_UNKNOWN は 2026-09-29（Direct 正式化の準備）に追加
+const STOP_REASONS = new Set(['JEV_RATE_LIMITED', 'JEV_AUTH_FAILED', 'JEV_FORBIDDEN', 'JEV_PAYMENT_REQUIRED', 'JEV_REQUEST_REJECTED',
+  'JEV_VERCEL_API_KEY_MISSING', 'JEV_API_KEY_MISSING', 'JEV_PROVIDER_UNKNOWN', 'NETWORK_DISABLED']);
 
 // ---------------------------------------------------------------- cases / question variants
 
@@ -271,7 +273,13 @@ export async function runCases({ doc, variant, only = null, env = process.env, m
 function providerSummary(env) {
   try {
     const p = resolveJevProvider(env);
-    return { route: p.id, model_id: p.id === 'vercel' ? toGatewayModelId(env) : (env.JEV_MODEL || 'jev-latest'), zdr: env.JEV_ZDR === 'true' };
+    // model_id は要求した ID（alias）。実際に答えた版は record.jev.model_version（応答由来）で見る。
+    // provider が自分のモデルIDの決め方を持つ場合（modelId(env)）はそれを使い、runner は経路固有の名前を知らない
+    return {
+      route: p.id,
+      model_id: typeof p.modelId === 'function' ? p.modelId(env) : (env.JEV_MODEL || 'jev-latest'),
+      ...(p.id === 'vercel' ? { zdr: env.JEV_ZDR === 'true' } : {}),
+    };
   } catch (err) {
     return { route: env.JEV_PROVIDER ?? null, error: err?.details?.reason ?? err?.message ?? 'unknown' };
   }
@@ -285,8 +293,8 @@ async function cmdRun(opts, env) {
   if (!offline && !realJevUsable(env)) {
     process.stderr.write([
       'real Jev route is not usable in this shell (key / JEV_PROVIDER / EDL_ALLOW_NETWORK not exported).',
-      'Human Required: run this command in your own shell where AI_GATEWAY_API_KEY, JEV_PROVIDER=vercel and',
-      'EDL_ALLOW_NETWORK=true are exported. Do not paste the key anywhere. Nothing was sent.',
+      'Human Required: run this command in a shell where JEV_API_KEY (TypeSafe Direct), JEV_PROVIDER=direct and',
+      'EDL_ALLOW_NETWORK=true are set. Do not paste the key anywhere. Nothing was sent.',
       '',
     ].join('\n'));
     process.exitCode = 4;

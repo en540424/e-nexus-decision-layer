@@ -10,6 +10,16 @@
  *   Content-Type: application/json
  * エラー: 401（キー無効・再試行しない）／422（body検証失敗・再試行しない）／429（rate limit）／
  *         408・5xx・529（overloaded）は指数バックオフで再試行、Retry-After（秒）/retry-after-ms を尊重。
+ *
+ * 2026-09-29 再確認（docs.typesafe.ai/api.md・/models.md。TypeSafe Direct 正式化・Vercel 経路廃止の準備）:
+ *   endpoint・Bearer 認証・request {model, state, questions}・noul criteria {true,false} optional は上記と同じ。
+ *   応答の `model` は「実際に答えた版付きID」（例 jev-1.13.0。jev-latest / jev-preview は alias）→ jev-adapter が model_version に写す。
+ *   choice / score は probabilities と confidence、score は legend も返す（legend は使わない）。
+ *   課金は入力 token のみ（公表値。registries/models.json）・rate limit 1,200 req/min（公表値・予告なく変わる）。
+ *   鍵は console.typesafe.ai/keys（Jev は early access 表記）。公式 SDK の変数名は TYPESAFE_API_KEY だが、ここでは
+ *   engine-env manifest と consumer 側の除去対象に揃えるため JEV_API_KEY だけを読む。
+ *   公式に記載の無い 400 / 402 / 403 は推測で再試行せず止める：400 は 422 と同じ JEV_REQUEST_REJECTED、
+ *   402 は JEV_PAYMENT_REQUIRED、403 は JEV_FORBIDDEN（鍵は通ったがアカウント・early access・モデル権限で拒否）。
  * 依存ゼロ方針を維持するため @typesafe-ai/sdk は使わず、Node 20+ 組み込みの fetch / AbortController だけで実装する。
  * SDK既定値と同等の挙動（timeout 10s/attempt・maxRetries 2・backoff 500ms→最大5000ms・jitter・Retry-After上限60s）を
  * 自前で再現する（値は SDK ドキュメントの既定値であり、コードでは調整可能な定数として置く。ベンダー数値を仕様として固定しない）。
@@ -62,11 +72,17 @@ async function classifyResponse(res) {
   if (res.status === 401) {
     throw new AdapterUnavailableError('jev', 'JEV_AUTH_FAILED', { route: 'direct', networked: true, status: 401, retryable: false });
   }
-  if (res.status === 422) {
+  if (res.status === 402) {
+    throw new AdapterUnavailableError('jev', 'JEV_PAYMENT_REQUIRED', { route: 'direct', networked: true, status: 402, retryable: false });
+  }
+  if (res.status === 403) {
+    throw new AdapterUnavailableError('jev', 'JEV_FORBIDDEN', { route: 'direct', networked: true, status: 403, retryable: false });
+  }
+  if (res.status === 422 || res.status === 400) {
     const body = await safeJson(res);
     throw new AdapterUnavailableError('jev', 'JEV_REQUEST_REJECTED', {
       route: 'direct', networked: true,
-      status: 422,
+      status: res.status,
       problem: body?.error?.field ?? body?.field ?? null,
       retryable: false,
     });

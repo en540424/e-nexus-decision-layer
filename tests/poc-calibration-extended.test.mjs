@@ -17,6 +17,7 @@ import { createMemoryMeter } from '../src/usage/metering.mjs';
 import { loadDecisionType } from '../src/schemas/loader.mjs';
 import { buildJevRequest } from '../src/adapters/jev/jev-adapter.mjs';
 import { assertValid } from '../src/schemas/validate.mjs';
+import { createDirectJevProvider } from '../src/adapters/jev/jev-direct-provider.mjs';
 import { ROOT } from '../src/core/paths.mjs';
 
 const ENV = { EDL_ALLOW_NETWORK: 'true' };
@@ -139,4 +140,42 @@ test('adversarial holdout files: valid inputs, injected_toward is a subset of un
     const dry = await dryRun({ doc, variant: 'improved' });
     assert.equal(dry.rules_first, 0, `${path}: every adversarial case must reach Jev`);
   }
+});
+
+// 2026-09-29（TypeSafe Direct 正式化の準備）：Direct 経路で鍵は通ったがアカウントが未有効（403）／課金（402）／形式不正（422）の場合、
+// runner は 1 件目で止まる（同じ鍵・同じ経路なら全ケースが同じ理由で落ちるため、約 243 回を失敗させ続けない）
+for (const [status, reason] of [[403, 'JEV_FORBIDDEN'], [402, 'JEV_PAYMENT_REQUIRED'], [422, 'JEV_REQUEST_REJECTED']]) {
+  test(`run via Direct: ${status} on the first case stops the whole run (fetch called once, no retries)`, async () => {
+    const doc = loadCases(join(CAL, 'paid-generation-gate.v2.cases.json'));
+    let calls = 0;
+    const fetchImpl = async () => { calls += 1; return { ok: false, status, headers: { get: () => null }, json: async () => ({}) }; };
+    const provider = createDirectJevProvider({ fetchImpl, sleepImpl: async () => {} });
+    const env = { EDL_ALLOW_NETWORK: 'true', JEV_API_KEY: 'k', JEV_PROVIDER: 'direct' };
+    const { records, stopped } = await runCases({ doc, variant: 'improved', env, meter: createMemoryMeter(), delayMs: 0, pauseAfterRetryableMs: 0, provider, repeat: 5 });
+    assert.equal(calls, 1);
+    assert.ok(stopped, 'run is stopped');
+    assert.match(JSON.stringify(stopped), new RegExp(reason));
+    assert.equal(records.filter((r) => r.jev).length <= 1, true);
+  });
+}
+
+test('run via Direct: api.md-shaped response（版付き model・probabilities・score legend）→ record に実版と分布が残る', async () => {
+  const doc = loadCases(join(CAL, 'paid-generation-gate.v2.cases.json'));
+  const fetchImpl = async (url, init) => {
+    const { questions } = JSON.parse(init.body);
+    const answers = {};
+    for (const [name, q] of Object.entries(questions)) {
+      if (q.type === 'noul') answers[name] = { type: 'noul', noul: name === 'local_sufficient' ? 0.97 : 0.02 };
+      else if (q.type === 'choice') answers[name] = { type: 'choice', choice: 'local', confidence: 0.96, probabilities: { local: 0.96, 'en-generate-hub': 0.04 } };
+      else answers[name] = { type: 'score', score: 1, confidence: 0.9, probabilities: { 0: 0.1, 1: 0.9 }, legend: { 0: 'x', 1: 'y' } };
+    }
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ model: 'jev-1.13.0', answers, usage: { input_tokens: 700, output_tokens: 0 } }) };
+  };
+  const env = { EDL_ALLOW_NETWORK: 'true', JEV_API_KEY: 'k', JEV_PROVIDER: 'direct' };
+  const { records } = await runCases({ doc, variant: 'improved', only: ['PG-J1-local-crop-existing-photos'], env, meter: createMemoryMeter(), delayMs: 0, provider: createDirectJevProvider({ fetchImpl }) });
+  const r = records.find((x) => x.case_id === 'PG-J1-local-crop-existing-photos');
+  assert.equal(r.jev.route, 'direct');
+  assert.equal(r.jev.model_version, 'jev-1.13.0');
+  assert.equal(r.jev.evidence.model_version_source, 'response.model');
+  assert.equal(r.jev.evidence.probabilities.recommended_route.local, 0.96);
 });

@@ -173,13 +173,28 @@ test('direct provider: 422 → JEV_REQUEST_REJECTED carrying the problem field, 
   assert.equal(calls, 1);
 });
 
-test('direct provider: other non-2xx (e.g. 403) → JEV_HTTP_ERROR, not retried', async () => {
+// 2026-09-29（Direct 正式化の準備）：403 / 402 / 400 は公式 api.md に無いが、early access のアカウント未有効・課金・形式不正で
+// 最も起きやすい初回失敗なので、汎用 JEV_HTTP_ERROR ではなく個別の reason にして runner が 1 件目で止まれるようにした
+for (const [status, reason] of [[403, 'JEV_FORBIDDEN'], [402, 'JEV_PAYMENT_REQUIRED'], [400, 'JEV_REQUEST_REJECTED']]) {
+  test(`direct provider: ${status} → ${reason}, networked, never retried`, async () => {
+    let calls = 0;
+    const fetchImpl = async () => { calls += 1; return fakeResponse({ status }); };
+    const provider = createDirectJevProvider({ fetchImpl, sleepImpl: noSleep });
+    await assert.rejects(
+      () => provider.send({ request: {}, env: { JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' } }),
+      (e) => e.details.reason === reason && e.details.status === status && e.details.retryable === false && e.details.networked === true,
+    );
+    assert.equal(calls, 1, `${status} must not be retried`);
+  });
+}
+
+test('direct provider: other non-2xx (e.g. 418) → JEV_HTTP_ERROR, not retried', async () => {
   let calls = 0;
-  const fetchImpl = async () => { calls += 1; return fakeResponse({ status: 403 }); };
+  const fetchImpl = async () => { calls += 1; return fakeResponse({ status: 418 }); };
   const provider = createDirectJevProvider({ fetchImpl, sleepImpl: noSleep });
   await assert.rejects(
     () => provider.send({ request: {}, env: { JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' } }),
-    (e) => e.details.reason === 'JEV_HTTP_ERROR' && e.details.status === 403,
+    (e) => e.details.reason === 'JEV_HTTP_ERROR' && e.details.status === 418,
   );
   assert.equal(calls, 1);
 });

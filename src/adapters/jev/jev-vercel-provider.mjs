@@ -278,6 +278,10 @@ async function loadSdk() {
 export function createVercelJevProvider({ evaluateImpl, gatewayFactory } = {}) {
   return {
     id: 'vercel',
+    /** 要求するモデルID（runner の記録用。provider 固有の決め方を runner に持たせない） */
+    modelId(env) {
+      return toGatewayModelId(env);
+    },
     available(env) {
       if (!env.AI_GATEWAY_API_KEY) return { ok: false, reason: 'JEV_VERCEL_API_KEY_MISSING' };
       return { ok: true };
