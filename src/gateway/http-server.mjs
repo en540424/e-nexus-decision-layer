@@ -27,6 +27,7 @@ const STATUS_BY_KIND = Object.freeze({
   human_gate_violation: 422,
   environment_mismatch: 409,
   busy: 429,
+  aborted: 499, // client が切断した（通常は応答を受け取る相手がいない。記録・テスト用）
   timeout: 504,
   engine_error: 502,
 });
@@ -91,7 +92,17 @@ export function createGatewayHttpHandler({ gateway, token = null, maxBodyBytes =
         if (err.status === 413) return send(res, 413, { error: 'BODY_TOO_LARGE' });
         raw = null; // 不正 JSON は Gateway に envelope エラーとして返させる（failure policy を必ず付ける）
       }
-      const envelope = await gateway.decide(raw, { via: 'http' });
+      // client が応答前に切断したら decide を止める（2026-09-29 FB-01）。req の 'close' は body を読み終えた時点でも発火するので使わない
+      const controller = new AbortController();
+      const onClose = () => { if (!res.writableEnded) controller.abort('CLIENT_DISCONNECTED'); };
+      res.on('close', onClose);
+      let envelope;
+      try {
+        envelope = await gateway.decide(raw, { via: 'http', signal: controller.signal });
+      } finally {
+        res.off('close', onClose);
+      }
+      if (res.destroyed) return undefined; // 切断済み：送る先が無い
       return send(res, envelope.ok ? 200 : (STATUS_BY_KIND[envelope.error.kind] ?? 500), envelope);
     } catch {
       return send(res, 500, { error: 'INTERNAL_ERROR' });

@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { readJson } from '../schemas/loader.mjs';
 import { createDecisionLayerEngine, assertEngineShape } from './engine.mjs';
 import { resolveRuntimeEnvironment, isRuntimeEnvironment, RUNTIME_ENVIRONMENTS, DEFAULT_RUNTIME_ENVIRONMENT } from '../core/environment.mjs';
-import { HumanGateViolationError, SchemaValidationError, DecisionLayerError } from '../core/errors.mjs';
+import { HumanGateViolationError, SchemaValidationError, DecisionLayerError, DecisionAbortedError } from '../core/errors.mjs';
 
 export const GATEWAY_CONTRACT_VERSION = '1';
 export const GATEWAY_VIAS = Object.freeze(['sdk', 'cli', 'http', 'mcp']);
@@ -40,6 +40,10 @@ const DEFAULT_TIMEOUT_MS = 30000;
 // 当初の根拠（Vercel 経路で burst 5 連続 429・2026-09-19）は経路廃止で失効。Direct の burst は未実測で、consumer の最大並列は
 // OpenMontage Launcher の 2。4 で足りない実例が無いので据え置く（上げる時は burst 実測＝実課金を伴うため Human の go を取る）
 const DEFAULT_MAX_CONCURRENT = 4;
+// timeout／client 切断で engine を abort した後、engine が実際に止まるまで同時実行枠を保持する上限（2026-09-29 FB-01）。
+// 実 Jev の fetch は abort で即座に止まるので通常は数 ms。signal を無視する engine でも枠が永久に塞がらないよう、ここで打ち切る
+// （打ち切った件数は stats.abandoned）。timer は unref する（1回きりの CLI が grace の間 process を生かさない）
+const DEFAULT_ABORT_GRACE_MS = 5000;
 
 /** error.code → 分類。HTTP status は http-server が envelope から決める（Decision 結果と HTTP status を混同しない） */
 const ERROR_KINDS = Object.freeze({
@@ -51,6 +55,8 @@ const ERROR_KINDS = Object.freeze({
   HUMAN_GATE_VIOLATION: { kind: 'human_gate_violation', retryable: false },
   GATEWAY_TIMEOUT: { kind: 'timeout', retryable: true },
   GATEWAY_BUSY: { kind: 'busy', retryable: true },
+  // 呼び出し元（HTTP client の切断・shutdown）が中断した。engine の故障ではない（timeout は GATEWAY_TIMEOUT が先に返る）
+  DECISION_ABORTED: { kind: 'aborted', retryable: true },
   ENGINE_ERROR: { kind: 'engine_error', retryable: true },
 });
 
@@ -82,6 +88,7 @@ function classify(err) {
   let code;
   if (err instanceof HumanGateViolationError) code = 'HUMAN_GATE_VIOLATION';
   else if (err instanceof SchemaValidationError) code = 'SCHEMA_INVALID';
+  else if (err instanceof DecisionAbortedError) code = 'DECISION_ABORTED';
   else if (err instanceof DecisionLayerError && ERROR_KINDS[err.code]) code = err.code;
   else code = 'ENGINE_ERROR';
   const k = ERROR_KINDS[code];
@@ -100,6 +107,8 @@ function newStats() {
   return {
     started_at: new Date().toISOString(),
     requests: 0, ok: 0, failed: 0, fallbacks: 0, human_tier: 0, in_flight: 0,
+    // 2026-09-29 FB-01：aborted＝timeout／切断で engine を abort した回数。abandoned＝abort 後 grace 内に engine が止まらず枠を打ち切った回数
+    aborted: 0, abandoned: 0,
     errors_by_code: {}, by_decision_type: {}, by_via: {},
     latency_ms: { last: null, max: 0, total: 0 },
   };
@@ -111,6 +120,7 @@ export function createGateway({
   failurePolicy = loadFailurePolicy(),
   timeoutMs = Number(env.EDL_GATEWAY_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
   maxConcurrent = Number(env.EDL_GATEWAY_MAX_CONCURRENT) || DEFAULT_MAX_CONCURRENT,
+  abortGraceMs = DEFAULT_ABORT_GRACE_MS,
   now = () => new Date(),
   environment = resolveRuntimeEnvironment(env),
 } = {}) {
@@ -156,7 +166,12 @@ export function createGateway({
     return request;
   }
 
-  async function decide(raw, { via = 'sdk' } = {}) {
+  /**
+   * @param {object} raw  Decision Request（Contract v1）
+   * @param {{ via?: string, signal?: AbortSignal }} [opts]  signal（任意・2026-09-29 FB-01）：呼び出し元の中断（HTTP client の切断・
+   *   shutdown）。abort されると engine へ伝え、envelope は ok=false・DECISION_ABORTED（failure policy は通常どおり）
+   */
+  async function decide(raw, { via = 'sdk', signal } = {}) {
     if (!GATEWAY_VIAS.includes(via)) throw new Error(`via must be one of ${GATEWAY_VIAS.join('|')}`);
     const started = Date.now();
     const decisionType = typeof raw?.decision_type === 'string' ? raw.decision_type : null;
@@ -169,14 +184,32 @@ export function createGateway({
     let request;
     let timer;
     let acquired = false;
+    let engineRun = null;
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort(typeof signal?.reason === 'string' ? signal.reason : 'CLIENT_DISCONNECTED');
     try {
       request = prepare(raw, via);
       if (stats.in_flight >= maxConcurrent) throw envelopeError('GATEWAY_BUSY', `max concurrent decisions (${maxConcurrent}) reached`);
       stats.in_flight += 1;
       acquired = true;
+      if (signal?.aborted) onExternalAbort();
+      else signal?.addEventListener('abort', onExternalAbort, { once: true });
+      engineRun = Promise.resolve().then(() => eng.decide(request, { signal: controller.signal }));
+      const aborted = new Promise((_, reject) => {
+        const rejectAborted = () => reject(new DecisionAbortedError(typeof controller.signal.reason === 'string' ? controller.signal.reason : 'ABORTED'));
+        if (controller.signal.aborted) rejectAborted();
+        else controller.signal.addEventListener('abort', rejectAborted, { once: true });
+      });
       const decision = await Promise.race([
-        eng.decide(request),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(envelopeError('GATEWAY_TIMEOUT', `decision exceeded ${timeoutMs}ms`)), timeoutMs); }),
+        engineRun,
+        aborted,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            // engine（in-flight の Jev fetch を含む）も止める。止めないと timeout 後も走り続け、同時実行上限を実質超える（FB-01）
+            reject(envelopeError('GATEWAY_TIMEOUT', `decision exceeded ${timeoutMs}ms`));
+            controller.abort('GATEWAY_TIMEOUT');
+          }, timeoutMs);
+        }),
       ]);
       stats.ok += 1;
       if (decision.fallback?.occurred) stats.fallbacks += 1;
@@ -209,8 +242,27 @@ export function createGateway({
       };
     } finally {
       clearTimeout(timer);
-      if (acquired) stats.in_flight -= 1;
+      signal?.removeEventListener('abort', onExternalAbort);
+      if (acquired) releaseSlot(engineRun, controller);
     }
+  }
+
+  /**
+   * 同時実行枠の解放（FB-01）。engine が正常に終わっていれば即時。abort した場合は engine が実際に止まるまで（最大 abortGraceMs）保持し、
+   * 実並列が max_concurrent を超えないようにする。.finally() は新しい promise を作り、engine の reject を未処理のまま再送出するので使わない
+   */
+  function releaseSlot(engineRun, controller) {
+    let released = false;
+    const release = () => { if (!released) { released = true; stats.in_flight -= 1; } };
+    if (!engineRun || !controller.signal.aborted) {
+      release();
+      if (engineRun) engineRun.then(() => {}, () => {}); // 念のため：解放後の reject も未処理にしない
+      return;
+    }
+    stats.aborted += 1;
+    const grace = setTimeout(() => { if (!released) { stats.abandoned += 1; release(); } }, abortGraceMs);
+    grace.unref?.();
+    engineRun.then(() => { clearTimeout(grace); release(); }, () => { clearTimeout(grace); release(); });
   }
 
   function recordLatency(ms) {

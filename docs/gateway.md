@@ -77,11 +77,20 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
 | `ENVIRONMENT_MISMATCH`（`expected_environment` ≠ runtime environment。engine を呼ばない・usage に書かない。§12） | environment_mismatch | false | 409 |
 | `GATEWAY_BUSY` | busy | true | 429 |
 | `GATEWAY_TIMEOUT` | timeout | true | 504 |
+| `DECISION_ABORTED`（呼び出し元が中断した：HTTP client の切断・shutdown。engine の故障ではない。2026-09-29） | aborted | true | 499 |
 | `ENGINE_ERROR`（生 message は返さない） | engine_error | true | 502 |
 
 **HTTP status は「Gateway が decision を返せたか」だけ**。`tier=human` でも 200（Decision 結果と status を混同しない）。
 
-**timeout の既知の制約**：`GATEWAY_TIMEOUT` を返した後も engine の `decide()` は中断されず走り続ける（Jev 呼び出しが完了して usage.jsonl に1行書かれることがあり、同時実行カウントはその時点で解放済み）。consumer への結果は fail-closed のままなので安全側だが、長時間ハングが続く環境では同時実行上限を実質超え得る。別 process の consumer（en-generate-hub）は Gateway の 30s より長い 35s で子 process を止め、Gateway 側の構造化 envelope を先に受け取れるようにしている。
+**timeout と中断（2026-09-29 FB-01 で解消。旧「timeout の既知の制約」）**：Gateway は decide ごとに `AbortController` を持ち、`GATEWAY_TIMEOUT` を返すと同時に engine を abort する
+（engine 契約：`decide(request, { signal }?)`・第2引数は任意）。既定 engine は以後の Adapter を呼ばず（human への escalation も作らない）、
+Direct Jev provider は in-flight の fetch と backoff 待機を止める（再試行しない・`JEV_ABORTED`）。途中までに呼んだ attempt があれば
+**`aborted: true` の usage 行を1行**書く（`tier`・`resolved_by` は null＝判定に見せない。送信済みの Jev は `networked: true`・usage unknown として残り、
+課金の証跡を失わない。attempt 0 件なら書かない）。同時実行枠は engine が実際に止まるまで保持する（実 Jev は abort で即座に止まる）。
+signal を無視する engine は `abortGraceMs`（既定 5s・timer は unref）で枠を打ち切り、`stats.abandoned` に数える。HTTP 入口は
+応答前に client が切断したら（`res` の `close`）同じ経路で abort する＝`DECISION_ABORTED`。`gateway.decide(raw, { via, signal })` の
+`signal` は shutdown 等の呼び出し元の中断にも使える。別 process の consumer（en-generate-hub）が Gateway の 30s より長い 35s で子 process を
+止める設計はそのまま（Gateway 側の構造化 envelope を先に受け取る）。
 
 ### Failure policy（`policies/gateway/failure-policy.json`）
 
@@ -191,7 +200,7 @@ en-generate-hub と en-sns-hub の transport 部分（`resolveEdlHome`・`loadEn
 10. **failure / mismatch**：`ok:false` は `failure.policy`（human-required / deny）に従う。環境不一致・欠落・Gateway 不在・timeout・不正応答は fail-closed。**自動続行しない**。
     自動 retry は既定でしない。例外は常駐して判定を「取り直せる」consumer（2026-09-26〜 OpenMontage Launcher）だけで、範囲を次に限る：
     Engine に届いていない失敗（`GATEWAY_BUSY`・起動失敗）は短い即時 retry（最大 2 回）、Engine が走り続けて usage・課金が発生しうる失敗
-    （`GATEWAY_TIMEOUT`・`ENGINE_ERROR`・不正応答。§2 timeout の既知の制約）は即時に呼び直さず pending にして遅延再試行（上限あり）、
+    （`GATEWAY_TIMEOUT`・`ENGINE_ERROR`・不正応答。§2 timeout と中断：timeout 時点で送信済みの Jev は課金され得る）は即時に呼び直さず pending にして遅延再試行（上限あり）、
     尽きたら human-review。再試行中も結果は human-review 扱いで、承認・実行へは進まない（Performance-First：Vault 技術スタック正本 §3-0-7）
 11. **usage evidence**：`usage --by application_id` と `scripts/real-jev-evidence.mjs --expect <application_id>` で「実際に使われている」ことを確認できる（§11-3）
 12. **tests**：transport は `consumer-kit/conformance/transport-cases.json` を全件通す。consumer 固有部分は builder（送らない情報）・解釈（承認でない・不明 route は human）を test

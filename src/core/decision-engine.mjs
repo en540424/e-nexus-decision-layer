@@ -21,9 +21,9 @@ import { resolveCandidates } from '../registries/registry.mjs';
 import { resolveChain, loadRoutingPolicy } from './router.mjs';
 import { runFallbackChain } from './fallback.mjs';
 import { loadThresholds, tierFor } from './confidence.mjs';
-import { HumanGateViolationError, DecisionLayerError } from './errors.mjs';
+import { HumanGateViolationError, DecisionLayerError, DecisionAbortedError, abortReasonOf } from './errors.mjs';
 import { assertAdapterShape } from '../adapters/adapter-interface.mjs';
-import { buildUsageRecord, createFileMeter } from '../usage/metering.mjs';
+import { buildUsageRecord, buildAbortedUsageRecord, createFileMeter } from '../usage/metering.mjs';
 
 export function loadSafetyPolicy() {
   return readJson('policies/safety/human-only.json');
@@ -64,7 +64,13 @@ export function createDecisionEngine({
   const resultSchema = readJson('schemas/common/decision-result.schema.json');
   const escalationSchema = readJson('schemas/common/escalation-outcome.schema.json');
 
-  async function decide(request) {
+  /**
+   * @param {object} request  DecisionRequest
+   * @param {{ signal?: AbortSignal }} [opts]  signal（任意・2026-09-29 FB-01）：呼び出し元が abort したら以降の Adapter を呼ばず
+   *   DecisionAbortedError を投げる。それまでに呼んだ attempt があれば aborted=true の usage 行を1行書く（送信済み Jev の課金を失わない）
+   */
+  async function decide(request, { signal } = {}) {
+    if (signal?.aborted) throw new DecisionAbortedError(abortReasonOf(signal));
     // 1. 共通 schema
     assertValid(requestSchema, request, 'decision-request');
     const dt = loadDecisionType(request.decision_type);
@@ -102,11 +108,25 @@ export function createDecisionEngine({
     }
 
     // 5. 実行
-    const { chosen, trace, fallback_occurred } = await runFallbackChain({
-      chain, decisionType: request.decision_type, input: request.input, candidates,
-      context: { ...(request.context ?? {}), escalation_reason: humanOnly ? 'human-only decision type' : undefined },
-      thresholds,
-    });
+    let chainResult;
+    try {
+      chainResult = await runFallbackChain({
+        chain, decisionType: request.decision_type, input: request.input, candidates,
+        context: { ...(request.context ?? {}), escalation_reason: humanOnly ? 'human-only decision type' : undefined },
+        thresholds,
+        signal,
+      });
+    } catch (err) {
+      if (err instanceof DecisionAbortedError) {
+        const trace = err.details.trace ?? [];
+        if (trace.length > 0) {
+          meter.record(buildAbortedUsageRecord({ request, decisionId, timestamp, trace, reason: err.details.reason }));
+        }
+        throw new DecisionAbortedError(err.details.reason, { decision_id: decisionId, attempts: trace.length });
+      }
+      throw err;
+    }
+    const { chosen, trace, fallback_occurred } = chainResult;
     if (!chosen) throw new DecisionLayerError('no adapter produced a result', 'NO_RESULT');
 
     const { adapter, result: adapterResult } = chosen;

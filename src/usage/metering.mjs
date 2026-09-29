@@ -33,6 +33,10 @@ export const USAGE_FIELDS = Object.freeze([
   'request_id', 'correlation_id', 'via',
   // 2026-09-26 Environment Isolation：どの runtime environment（dev|staging|production）で判定したか。Gateway が付ける（旧行・直接 decide() は null）
   'environment',
+  // 2026-09-29 FB-01：呼び出し元（Gateway timeout・client 切断・shutdown）が decide() を中断した行。decision は consumer へ届いていない。
+  //   aborted=true の行は tier / resolved_by / provider / model が null（判定に見える値を書かない）。書くのは attempt が1件以上ある時だけ
+  //   （送信済みの Jev 等の課金を失わないため）。旧行には無い＝aborted=false と同じに読む
+  'aborted', 'abort_reason',
 ]);
 
 /** attempts[] の1要素が持つフィールド（fallback.trace の record から `ms`（latency_ms と同値）だけ落とした射影） */
@@ -111,6 +115,42 @@ export function buildUsageRecord({ request, result, adapter, adapterResult, fall
     correlation_id: request.correlation_id ?? null,
     via: request.via ?? null,
     environment: request.environment ?? null,
+    aborted: false,
+    abort_reason: null,
+  };
+}
+
+/**
+ * 中断された decide() の usage 行（2026-09-29 FB-01）。final resolver は無い（top-level usage は 0・tier 等は null）。
+ * 実際に呼んだ attempt（送信済みの Jev 等）の usage は attempts[] / usage_total に残す。
+ */
+export function buildAbortedUsageRecord({ request, decisionId, timestamp, trace, reason }) {
+  const attempts = attemptsFromTrace(trace ?? []);
+  return {
+    timestamp,
+    decision_id: decisionId,
+    application_id: request.application_id,
+    project_id: request.project_id,
+    tenant: request.tenant ?? null,
+    provider: null,
+    model: null,
+    decision_type: request.decision_type,
+    resolved_by: null,
+    request_count: 1,
+    input_tokens: 0,
+    output_tokens: 0,
+    estimated_cost_usd_micros: 0,
+    fallback_occurred: attempts.length > 1,
+    human_escalation: false,
+    tier: null,
+    attempts,
+    usage_total: totalUsage(attempts),
+    request_id: request.request_id ?? null,
+    correlation_id: request.correlation_id ?? null,
+    via: request.via ?? null,
+    environment: request.environment ?? null,
+    aborted: true,
+    abort_reason: typeof reason === 'string' ? reason : 'ABORTED',
   };
 }
 
@@ -163,6 +203,8 @@ export function attemptsOf(row) {
 function emptyGroup() {
   return {
     requests: 0, input_tokens: 0, output_tokens: 0, estimated_cost_usd_micros: 0, fallbacks: 0, human_escalations: 0, by_provider: {},
+    // 2026-09-29 FB-01：中断された行（requests に含む。tier を持たないので human_escalations には数えない）
+    aborted: 0,
     // ---- attempt-level（2026-09-19 追加。上の final-resolver 集計とは別物。足さない） ----
     total_input_tokens: 0, total_output_tokens: 0, total_estimated_cost_usd_micros: 0,
     attempts: 0, networked_attempts: 0, unknown_usage_attempts: 0,
@@ -203,6 +245,7 @@ export function summarize(rows, groupBy = 'application_id') {
     g.estimated_cost_usd_micros += r.estimated_cost_usd_micros ?? 0;
     if (r.fallback_occurred) g.fallbacks += 1;
     if (r.human_escalation) g.human_escalations += 1;
+    if (r.aborted === true) g.aborted += 1;
     const p = r.provider ?? '(none)';
     g.by_provider[p] = (g.by_provider[p] ?? 0) + 1;
     for (const a of attemptsOf(r)) {

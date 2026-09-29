@@ -24,7 +24,7 @@
  * SDK既定値と同等の挙動（timeout 10s/attempt・maxRetries 2・backoff 500ms→最大5000ms・jitter・Retry-After上限60s）を
  * 自前で再現する（値は SDK ドキュメントの既定値であり、コードでは調整可能な定数として置く。ベンダー数値を仕様として固定しない）。
  */
-import { AdapterUnavailableError } from '../../core/errors.mjs';
+import { AdapterUnavailableError, abortReasonOf } from '../../core/errors.mjs';
 
 const DEFAULT_BASE_URL = 'https://api.typesafe.ai';
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -34,8 +34,19 @@ const BACKOFF_MAX_MS = 5000;
 const BACKOFF_JITTER = 0.25;
 const MAX_RETRY_AFTER_MS = 60000;
 
-function defaultSleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** backoff 待機。外部 signal が abort したら待たずに戻る（2026-09-29 FB-01。戻った後に呼び出し側が signal を見て止まる） */
+function defaultSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** 外部 signal（Gateway timeout・client 切断）による中断。再試行しない。networked＝この send() の中で1回でも送信したか */
+function abortedError(networked, signal) {
+  return new AdapterUnavailableError('jev', 'JEV_ABORTED', { route: 'direct', retryable: false, networked, abort_reason: abortReasonOf(signal) });
 }
 
 function backoffDelayMs(attempt, random = Math.random) {
@@ -123,9 +134,12 @@ export function toDirectRequest(request) {
   return { ...request, questions };
 }
 
-async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs }) {
+async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs, signal }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 外部 signal（2026-09-29 FB-01）：Gateway が timeout したら in-flight の fetch も止める（止めないと同時実行上限を実質超える）
+  const onExternalAbort = () => controller.abort();
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
   try {
     const res = await fetchImpl(url, {
       method: 'POST',
@@ -138,18 +152,24 @@ async function attemptOnce({ fetchImpl, url, apiKey, request, timeoutMs }) {
     });
     return await classifyResponse(res);
   } catch (err) {
+    // 外部 signal による中断は per-attempt timeout（JEV_TIMEOUT・再試行する）と分ける。fetch は発行済み＝networked
+    if (signal?.aborted) throw abortedError(true, signal);
     if (err instanceof AdapterUnavailableError) throw err;
     const isAbort = err?.name === 'AbortError';
     throw new AdapterUnavailableError('jev', isAbort ? 'JEV_TIMEOUT' : 'JEV_NETWORK_ERROR', { route: 'direct', retryable: true, networked: true });
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
 /**
  * @param {object} [opts]
  * @param {typeof fetch} [opts.fetchImpl]  テスト用に注入する fetch 実装（既定: globalThis.fetch）
- * @param {(ms:number)=>Promise<void>} [opts.sleepImpl]  テスト用に注入するバックオフ待機（既定: 実時間 setTimeout）
+ * @param {(ms:number, signal?:AbortSignal)=>Promise<void>} [opts.sleepImpl]  テスト用に注入するバックオフ待機（既定: 実時間 setTimeout・abort で早期復帰）
+ *
+ * send({ request, env, meta, signal }) の signal（任意・2026-09-29 FB-01）：abort されたら in-flight の fetch とバックオフ待機を止め、
+ * 再試行せず JEV_ABORTED を投げる（networked＝この send() の中で1回でも送信したか。送信前の中断は false＝課金なしが確定）。
  */
 export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImpl = defaultSleep } = {}) {
   return {
@@ -158,7 +178,7 @@ export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImp
       if (!env.JEV_API_KEY) return { ok: false, reason: 'JEV_API_KEY_MISSING' };
       return { ok: true };
     },
-    async send({ request, env, meta }) {
+    async send({ request, env, meta, signal }) {
       // Adapter 側で EDL_ALLOW_NETWORK / JEV_API_KEY を既にチェックしているが、
       // Provider が単独で呼ばれても迂回できないよう、ここでも同じゲートを再確認する（二重チェック）。
       if (env.EDL_ALLOW_NETWORK !== 'true') {
@@ -178,10 +198,11 @@ export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImp
       let lastError = null;
       for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt += 1) {
         // attempt metering：ここで実際に送信する。retry_count は「再送した回数」（初回は 0）。meta を渡さない呼び出しでも動く
+        if (signal?.aborted) throw abortedError(attempt > 0, signal);
         if (meta && typeof meta === 'object') meta.retry_count = attempt;
         try {
           // eslint-disable-next-line no-await-in-loop
-          return await attemptOnce({ fetchImpl, url, apiKey: env.JEV_API_KEY, request, timeoutMs });
+          return await attemptOnce({ fetchImpl, url, apiKey: env.JEV_API_KEY, request, timeoutMs, signal });
         } catch (err) {
           lastError = err;
           const retryable = err instanceof AdapterUnavailableError && err.details.retryable === true;
@@ -189,7 +210,7 @@ export function createDirectJevProvider({ fetchImpl = globalThis.fetch, sleepImp
           const retryAfterMs = err.details.retryAfterMs;
           const delay = typeof retryAfterMs === 'number' ? Math.min(retryAfterMs, MAX_RETRY_AFTER_MS) : backoffDelayMs(attempt);
           // eslint-disable-next-line no-await-in-loop
-          await sleepImpl(delay);
+          await sleepImpl(delay, signal);
         }
       }
       throw lastError ?? new AdapterUnavailableError('jev', 'JEV_UNKNOWN_ERROR', { route: 'direct' });

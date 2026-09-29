@@ -32,7 +32,7 @@
  *     generic error → null（送信したか判断できない）
  *   「送っていない」と確定できるときだけ cost 0 を known として書く。送った可能性があるのに usage が無ければ unknown。
  */
-import { AdapterUnavailableError } from './errors.mjs';
+import { AdapterUnavailableError, DecisionAbortedError, abortReasonOf } from './errors.mjs';
 import { assertAdapterResult } from '../adapters/adapter-interface.mjs';
 import { tierFor } from './confidence.mjs';
 
@@ -103,9 +103,17 @@ export function buildFailedAttempt({ adapter, err, ms }) {
   };
 }
 
-export async function runFallbackChain({ chain, decisionType, input, candidates, context, thresholds }) {
+/**
+ * signal（任意・2026-09-29 FB-01）：呼び出し元（Gateway の timeout・client 切断）が abort したら、以降の Adapter を呼ばずに
+ * DecisionAbortedError を投げる（details.trace＝それまでの attempt。送信済みの Jev 等の usage を metering で失わないため）。
+ * in-flight の Adapter には decide({ ..., signal }) で渡す（signal を使わない Adapter はそのまま完了してよい）。
+ */
+export async function runFallbackChain({ chain, decisionType, input, candidates, context, thresholds, signal }) {
   const trace = [];
   let best = null;
+  const abortIfNeeded = () => {
+    if (signal?.aborted) throw new DecisionAbortedError(abortReasonOf(signal), { trace });
+  };
 
   const finish = (entry) => {
     entry.attempt.final = true;
@@ -114,9 +122,11 @@ export async function runFallbackChain({ chain, decisionType, input, candidates,
   };
 
   for (const adapter of chain) {
+    abortIfNeeded();
     const started = Date.now();
+    let done = null;
     try {
-      const raw = await adapter.decide({ decisionType, input, candidates, context });
+      const raw = await adapter.decide({ decisionType, input, candidates, context, ...(signal ? { signal } : {}) });
       let result;
       try {
         result = assertAdapterResult(adapter.id, raw);
@@ -131,10 +141,13 @@ export async function runFallbackChain({ chain, decisionType, input, candidates,
       const entry = { adapter, result, tier, attempt };
       // 最良の結果は保持しつつ、auto/review に達したら確定。human 相当なら次の Adapter へ
       if (!best || result.confidence > best.result.confidence) best = entry;
-      if (tier !== 'human' || adapter.kind === 'human') return finish(entry);
+      if (tier !== 'human' || adapter.kind === 'human') done = entry;
     } catch (err) {
       trace.push(buildFailedAttempt({ adapter, err, ms: Date.now() - started }));
     }
+    // abort 後に届いた結果（signal を無視する Adapter）で decision を確定しない。human への escalation も作らない
+    abortIfNeeded();
+    if (done) return finish(done);
   }
   // ここに来るのは human adapter が未登録のときだけ（router が終端に human を足すので通常は到達しない）
   if (best) return finish(best);

@@ -12,7 +12,10 @@
  *     id: string,                  // 例 'e-nexus-decision-layer'
  *     version: string,             // engine の版（package.json version）
  *     mode: 'production' | 'verification',
- *     decide(request) -> Promise<DecisionResult>   // schemas/common/decision-result.schema.json
+ *     decide(request, { signal }?) -> Promise<DecisionResult>   // schemas/common/decision-result.schema.json
+ *                                  // signal は任意（2026-09-29 FB-01）。Gateway の timeout／client 切断／shutdown で abort される。
+ *                                  // 対応する engine は in-flight の外部呼び出しを止めて DecisionAbortedError を投げる。
+ *                                  // signal を無視する engine も許す（Gateway は同時実行枠を engine が実際に終わるまで保持する）
  *     health() -> object           // Secret を含まない状態（キーの値は読まない・返さない）
  *   }
  *
@@ -93,7 +96,7 @@ export function createDecisionLayerEngine({ env = process.env, mode = 'productio
     id: DECISION_LAYER_ENGINE_ID,
     version: readJson('package.json').version,
     mode,
-    decide: (request) => core.decide(request),
+    decide: (request, opts) => core.decide(request, opts),
     health: () => ({
       adapters: core.adapters.map((a) => a.id),
       jev: jevRouteStatus(env),

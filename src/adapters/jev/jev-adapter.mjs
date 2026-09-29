@@ -358,7 +358,7 @@ export function createJevAdapter({ env = process.env, provider = null, decisionT
     supports() {
       return true; // 対応可否は decide 時に環境で判断する（型付き判定は全 decision_type が対象）
     },
-    async decide({ decisionType, input, candidates }) {
+    async decide({ decisionType, input, candidates, signal }) {
       const p = resolveProvider();
       const avail = p.available(env);
       if (!avail.ok) throw new AdapterUnavailableError('jev', avail.reason ?? 'JEV_PROVIDER_UNAVAILABLE', { decisionType, route: p.id });
@@ -372,7 +372,8 @@ export function createJevAdapter({ env = process.env, provider = null, decisionT
       const meta = {};
       let raw;
       try {
-        raw = await p.send({ request, env, meta });
+        // signal（任意・2026-09-29 FB-01）：Gateway の timeout／client 切断で Provider の fetch・再試行待機を止める
+        raw = await p.send({ request, env, meta, ...(signal ? { signal } : {}) });
       } catch (err) {
         if (err instanceof AdapterUnavailableError) {
           err.details.route ??= p.id;

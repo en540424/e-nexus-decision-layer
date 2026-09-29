@@ -44,6 +44,8 @@ export function collectEvidence(rows, { since = null } = {}) {
       tier: r.tier,
       human_escalation: r.human_escalation,
       fallback_occurred: r.fallback_occurred,
+      // 2026-09-29 FB-01：中断された行（consumer へ判定は届いていない。tier は null）。旧行は false 扱い
+      aborted: r.aborted === true,
     });
   }
   return Object.values(groups);
