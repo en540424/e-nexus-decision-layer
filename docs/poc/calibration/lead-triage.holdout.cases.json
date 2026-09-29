@@ -1,0 +1,192 @@
+{
+  "$comment": "lead-triage の holdout（2026-09-29・FB-15。Calibration 修正の前に作成して凍結）。修正の設計・検討には使わず、修正後に 1 回だけ流して過学習していないか見る。synthetic・PII なし（氏名・電話・メール・住所・LINE userId・Secret を含めない。ID は cal- で始まる架空の参照ID）。expected.acceptable / unacceptable は Jev が満たすべき制約（許容値の集合）で、唯一の正解ではない。自己矛盾は outcome schema の x-outcome-invariants で数える。resolver=rules は Rules First 確認用（--offline）で Jev 母数に含めない。",
+  "decision_type": "lead-triage",
+  "application_id": "calibration-growth",
+  "project_id": "e-nexus-crm-core",
+  "cases": [
+    {
+      "case_id": "LT-H1-consulting-inquiry",
+      "category": "holdout：法人からAI導入の相談",
+      "input": {
+        "channel": "form",
+        "consent_context": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "subject_ref": "cal-lt-h1",
+        "lifecycle_stage": "lead",
+        "interaction_count": 1,
+        "recency": "today",
+        "has_explicit_request": true,
+        "product_interest": "consulting",
+        "business_signal": "business",
+        "message_summary": "従業員30名の工務店が、見積業務にAIを使えないか相談したいとして面談を希望。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "lead_intent": [
+            "purchase",
+            "information"
+          ],
+          "lead_priority": [
+            "high",
+            "medium"
+          ],
+          "service_fit": [
+            "strong",
+            "partial"
+          ],
+          "b2b_b2c": [
+            "b2b"
+          ],
+          "reply_classification": [
+            "needs-human-reply"
+          ]
+        },
+        "unacceptable": {
+          "lead_intent": [
+            "not-a-lead"
+          ],
+          "reply_classification": [
+            "do-not-contact",
+            "no-reply-needed"
+          ],
+          "lead_priority": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "LT-H2-content-fan",
+      "category": "holdout：note 記事の感想（依頼なし）",
+      "input": {
+        "channel": "line",
+        "consent_context": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "other",
+        "subject_ref": "cal-lt-h2",
+        "lifecycle_stage": "unknown",
+        "interaction_count": 1,
+        "recency": "this-week",
+        "has_explicit_request": false,
+        "product_interest": "content",
+        "business_signal": "individual",
+        "message_summary": "note の記事を読んだという感想。質問や依頼はない。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "lead_priority": [
+            "low",
+            "medium"
+          ],
+          "reply_classification": [
+            "no-reply-needed",
+            "template-reply-candidate",
+            "needs-human-reply"
+          ]
+        },
+        "unacceptable": {
+          "lead_priority": [
+            "high"
+          ],
+          "reply_classification": [
+            "do-not-contact"
+          ]
+        },
+        "ambiguity": "medium"
+      }
+    },
+    {
+      "case_id": "LT-H3-stale-vague-lead",
+      "category": "holdout：数か月前の曖昧な問い合わせ",
+      "input": {
+        "channel": "line",
+        "consent_context": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "subject_ref": "cal-lt-h3",
+        "lifecycle_stage": "lead",
+        "interaction_count": 1,
+        "recency": "older",
+        "has_explicit_request": false,
+        "product_interest": "unknown",
+        "business_signal": "unknown",
+        "message_summary": "「詳しく知りたい」とだけ送られてきた。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "lead_intent": [
+            "unclear",
+            "information"
+          ],
+          "lead_priority": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "lead_priority": [
+            "high"
+          ],
+          "reply_classification": [
+            "do-not-contact"
+          ]
+        },
+        "ambiguity": "medium"
+      }
+    },
+    {
+      "case_id": "LT-H4-bulk-order-request",
+      "category": "holdout：複数拠点での導入の見積依頼",
+      "input": {
+        "channel": "email",
+        "consent_context": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "pricing",
+        "subject_ref": "cal-lt-h4",
+        "lifecycle_stage": "prospect",
+        "interaction_count": 4,
+        "recency": "today",
+        "has_explicit_request": true,
+        "product_interest": "ai-phone",
+        "business_signal": "business",
+        "message_summary": "5店舗を持つ会社が、全店舗で電話受付AIを使う場合の見積と契約条件を依頼。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "lead_intent": [
+            "purchase"
+          ],
+          "lead_priority": [
+            "high"
+          ],
+          "service_fit": [
+            "strong"
+          ],
+          "b2b_b2c": [
+            "b2b"
+          ],
+          "reply_classification": [
+            "needs-human-reply"
+          ]
+        },
+        "unacceptable": {
+          "lead_priority": [
+            "low"
+          ],
+          "reply_classification": [
+            "do-not-contact",
+            "no-reply-needed",
+            "template-reply-candidate"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    }
+  ]
+}

@@ -1,0 +1,159 @@
+{
+  "$comment": "customer-reply-gate の holdout（2026-09-29・FB-15。Calibration 修正の前に作成して凍結）。修正の設計・検討には使わず、修正後に 1 回だけ流して過学習していないか見る。synthetic・PII なし（氏名・電話・メール・住所・LINE userId・Secret を含めない。ID は cal- で始まる架空の参照ID）。expected.acceptable / unacceptable は Jev が満たすべき制約（許容値の集合）で、唯一の正解ではない。自己矛盾は outcome schema の x-outcome-invariants で数える。resolver=rules は Rules First 確認用（--offline）で Jev 母数に含めない。",
+  "decision_type": "customer-reply-gate",
+  "application_id": "calibration-growth",
+  "project_id": "e-nexus-crm-core",
+  "cases": [
+    {
+      "case_id": "CR-H1-business-hours",
+      "category": "holdout：営業時間の案内（事実のみ）",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-h1",
+        "draft_author": "human",
+        "draft_excerpt": "お問い合わせありがとうございます。平日10時から18時まで対応しております。明日あらためてご連絡いたします。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "tone_fit": [
+            "appropriate"
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "do-not-send"
+          ],
+          "risk_level": [
+            "high"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "CR-H2-unflagged-legal-claim",
+      "category": "holdout：caller が見落とした法的断定",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "support",
+        "language": "ja",
+        "reply_ref": "cal-cr-h2",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "この件は法律上まったく問題ありませんし、当社に責任は一切ありません。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "hold",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "high",
+            "medium"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "CR-H3-too-casual",
+      "category": "holdout：取引先に対して砕けすぎた口調",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "partnership",
+        "language": "ja",
+        "reply_ref": "cal-cr-h3",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "了解っす！また今度ゆるっと話しましょ〜"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "needs-revision",
+            "hold"
+          ],
+          "tone_fit": [
+            "inappropriate"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "tone_fit": [
+            "appropriate"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "CR-H4-unflagged-deadline",
+      "category": "holdout：caller が見落とした納期の約束",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-h4",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "承知しました。来週月曜日までに必ず導入を完了させます。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "hold",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "high",
+            "medium"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    }
+  ]
+}

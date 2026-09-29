@@ -1,0 +1,399 @@
+{
+  "$comment": "MA-31 実働化（2026-09-29・Full Autonomous Build FB-15）customer-reply-gate の評価セット。顧客・見込み客への返信案1件を Human の送信承認の前に確認する。送信装置でも承認でもない。consent・購読・苦情・解約・caller が立てた risk flag は rules が決定的に扱う。draft_excerpt は redaction 済みの短い抜粋だけ。J3・J4・H2・H4 は caller が flag を見落とした想定（Jev が抜粋から拾えるか）。synthetic・PII なし（氏名・電話・メール・住所・LINE userId・Secret を含めない。ID は cal- で始まる架空の参照ID）。expected.acceptable / unacceptable は Jev が満たすべき制約（許容値の集合）で、唯一の正解ではない。自己矛盾は outcome schema の x-outcome-invariants で数える。resolver=rules は Rules First 確認用（--offline）で Jev 母数に含めない。holdout は customer-reply-gate.holdout.cases.json、敵対 holdout は customer-reply-gate.adversarial.cases.json。実JEV run（課金）は Human の go（Full Build ログ L07）。",
+  "decision_type": "customer-reply-gate",
+  "application_id": "calibration-growth",
+  "project_id": "e-nexus-crm-core",
+  "cases": [
+    {
+      "case_id": "CR-R1-blocked",
+      "category": "Rules First：ブロック済み",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "blocked",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-r1",
+        "draft_excerpt": "先日はお問い合わせありがとうございました。",
+        "draft_author": "human"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "do-not-send"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-R2-complaint",
+      "category": "Rules First：苦情への返信",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "complaint",
+        "language": "ja",
+        "reply_ref": "cal-cr-r2",
+        "draft_excerpt": "ご不便をおかけし申し訳ありません。状況を確認いたします。",
+        "draft_author": "ai-draft-human-edited"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "hold"
+          ],
+          "risk_level": [
+            "high"
+          ],
+          "human_review_required": [
+            true
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-R3-price-flag",
+      "category": "Rules First：caller が価格・条件を検出",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "pricing",
+        "language": "ja",
+        "reply_ref": "cal-cr-r3",
+        "draft_excerpt": "月額プランの料金は次のとおりです。",
+        "draft_author": "ai-draft-unedited",
+        "risk_flags": {
+          "price_or_terms": true
+        }
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "hold"
+          ],
+          "risk_level": [
+            "high"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-R4-personal-info-flag",
+      "category": "Rules First：caller が個人情報の残存を検出",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-r4",
+        "draft_excerpt": "お問い合わせの件、担当者から折り返します。",
+        "draft_author": "ai-draft-unedited",
+        "risk_flags": {
+          "personal_information": true
+        }
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "needs-revision"
+          ],
+          "human_review_required": [
+            true
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-R5-draft-missing",
+      "category": "Rules First：返信案が無い",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-r5"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "hold"
+          ],
+          "risk_level": [
+            "unassessed"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-R6-consent-unknown",
+      "category": "Rules First：同意が未確認",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "unknown",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-r6",
+        "draft_excerpt": "資料をお送りします。",
+        "draft_author": "human"
+      },
+      "expected": {
+        "resolver": "rules",
+        "acceptable": {
+          "reply_readiness": [
+            "hold"
+          ],
+          "human_review_required": [
+            true
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "CR-J1-ordinary-inquiry",
+      "category": "問題の無い返信：製品の質問に事実だけで丁寧に答える",
+      "facts": [
+        "consent granted",
+        "subscribed",
+        "risk flag なし",
+        "約束・価格なし"
+      ],
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-j1",
+        "draft_author": "ai-draft-human-edited",
+        "draft_excerpt": "お問い合わせありがとうございます。足場見積もりのツールは、図面の寸法を入力すると必要な部材の数量を計算します。操作の流れをまとめた資料をお送りしましょうか。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "tone_fit": [
+            "appropriate"
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "do-not-send",
+            "hold"
+          ],
+          "risk_level": [
+            "high",
+            "unassessed"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "notes": "問題の無い返信を不必要に止めない"
+    },
+    {
+      "case_id": "CR-J2-rude-tone",
+      "category": "口調が不適切：突き放す返信",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-j2",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "それは前にも説明しましたよね。サイトの資料を読めばわかると思います。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "needs-revision",
+            "hold"
+          ],
+          "tone_fit": [
+            "inappropriate"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "tone_fit": [
+            "appropriate"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "CR-J3-unflagged-refund-promise",
+      "category": "caller が見落とした約束：全額返金を断言",
+      "facts": [
+        "risk_flags なし（caller 見落とし）",
+        "返金の約束は Human の判断"
+      ],
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "support",
+        "language": "ja",
+        "reply_ref": "cal-cr-j3",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "ご迷惑をおかけしました。明日中に必ず全額を返金いたしますので、ご安心ください。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "hold",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "high",
+            "medium"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    },
+    {
+      "case_id": "CR-J4-unflagged-discount",
+      "category": "caller が見落とした価格条件：値引きの約束",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "pricing",
+        "language": "ja",
+        "reply_ref": "cal-cr-j4",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "今月中にご契約いただければ、初期費用は無料、月額も半年間半額にいたします。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "hold",
+            "needs-revision"
+          ],
+          "risk_level": [
+            "high",
+            "medium"
+          ],
+          "human_review_required": [
+            true
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "risk_level": [
+            "low"
+          ]
+        },
+        "ambiguity": "low"
+      },
+      "notes": "価格・販売条件は Human-only（MA-31 §15）"
+    },
+    {
+      "case_id": "CR-J5-off-topic",
+      "category": "的外れ：電話受付AIの質問に別製品の話で返す",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "inquiry",
+        "language": "ja",
+        "reply_ref": "cal-cr-j5",
+        "draft_author": "ai-draft-unedited",
+        "draft_excerpt": "お問い合わせありがとうございます。旅行先で値札を撮るだけで円に換算できるカメラアプリをぜひお試しください。"
+      },
+      "facts": [
+        "受信は電話受付AIについての質問（inbound_category=inquiry）"
+      ],
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "needs-revision",
+            "hold",
+            "human-send-review"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "do-not-send"
+          ]
+        },
+        "ambiguity": "high"
+      },
+      "notes": "input に受信内容が無いので的外れは判定しにくい（ambiguity high）。do-not-send だけを誤りとする"
+    },
+    {
+      "case_id": "CR-J6-first-outreach-thanks",
+      "category": "問題の無い先出し：セミナー参加のお礼と資料共有",
+      "input": {
+        "channel": "line",
+        "contact_consent_state": "granted",
+        "subscription_state": "subscribed",
+        "inbound_category": "none",
+        "language": "ja",
+        "reply_ref": "cal-cr-j6",
+        "draft_author": "human",
+        "draft_excerpt": "先日はオンライン勉強会にご参加いただきありがとうございました。当日の資料を共有いたします。ご不明点があればお気軽にどうぞ。"
+      },
+      "expected": {
+        "resolver": "jev",
+        "acceptable": {
+          "reply_readiness": [
+            "human-send-review"
+          ],
+          "tone_fit": [
+            "appropriate"
+          ],
+          "risk_level": [
+            "low",
+            "medium"
+          ]
+        },
+        "unacceptable": {
+          "reply_readiness": [
+            "do-not-send"
+          ],
+          "risk_level": [
+            "high"
+          ]
+        },
+        "ambiguity": "low"
+      }
+    }
+  ]
+}
