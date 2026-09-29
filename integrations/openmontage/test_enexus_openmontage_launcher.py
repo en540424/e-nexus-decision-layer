@@ -498,6 +498,20 @@ class InvariantTest(Base):
         self.assertEqual(env[la.CHILD_REPORTS_ENV], str(self.cfg.reports_dir))
         self.assertEqual(len(stripped), 6)
 
+    def test_withheld_engine_names_are_stripped_from_agent_but_never_forwarded_to_gateway(self):
+        # 2026-09-29 Vercel 経路廃止：manifest の withhold（廃止経路の Secret 等）は Gateway へ渡さないが、agent からは外す
+        spec = om.load_engine_env_spec(REPO)
+        self.assertTrue(spec["withhold"], "real manifest has withhold names")
+        base = {"PATH": "p", **{n: "x" for n in spec["withhold"]}}
+        self.cfg.gateway_env = {"EDL_HOME": str(REPO)}
+        env, stripped = la.child_env(base, self.cfg, self.cfg.reports_dir)
+        for n in spec["withhold"]:
+            self.assertNotIn(n, env)
+            self.assertIn(n, stripped)
+        forwarded = om.build_child_env(base, spec)
+        for n in spec["withhold"]:
+            self.assertNotIn(n, forwarded)
+
     def test_non_dev_environment_refuses_to_start(self):
         for v in ("staging", "production"):
             with self.assertRaises(la.ConfigError):
