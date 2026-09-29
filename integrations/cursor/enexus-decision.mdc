@@ -1,0 +1,47 @@
+---
+description: E-NEXUS Common Decision Gateway の使い方。有料API・有料生成を使うか／無料・Local 経路で足りるか、外部公開前のコンテンツ判定、投稿先候補の選定、Model／Effort の目安など、はっきりした Decision Point に来たときだけ使う。判定は承認ではない。
+alwaysApply: false
+---
+
+# E-NEXUS Decision Gateway（Cursor 用 consumer rule・kit v1）
+
+判断ロジックは Gateway 側（Rules → Jev → Human）にある。この rule は「いつ呼ぶか・どう呼ぶか・結果をどう扱うか」だけを決める。
+契約の正本は `e-nexus-decision-layer/docs/gateway.md`（Common Decision Contract v1）。
+
+## いつ呼ぶか
+
+| 場面 | decision_type |
+|---|---|
+| 有料の画像・動画生成を使うか、Local／Remotion／無料経路で足りるか | `paid-generation-gate` |
+| note・X 等の外部公開前に、公開候補として妥当か | `content-publish-gate` |
+| コンテンツ1件をどの媒体へ出す候補にするか（1回＝1コンテンツ×1媒体） | `channel-selection` |
+| Model／Effort の目安（参考値。設定は変えない） | `model-route` |
+
+通常のコード編集・読み取り・git・質問への回答・Human が既に決めたことには使わない。一覧は `gateway types`。
+
+## どう呼ぶか
+
+1. request JSON を一時ファイルに書く：`contract_version: "1"`・`application_id: "cursor"`・`expected_environment: "dev"`・`project_id`（`node <repo>/src/cli.mjs registry projects` の id）・`decision_type`・`input`（その type の schema の構造情報だけ）
+2. stdin で渡す（argv に本文を載せない）：
+
+```bash
+node <repo>/src/cli.mjs gateway decide --stdin < request.json
+```
+
+MCP を使う場合は `node <repo>/src/cli.mjs gateway mcp` を stdio server として登録した上で `enexus_decide`（登録は Human が行う）。
+
+`input` に入れない：API キー・token・パスワード・個人情報・顧客情報・本文の全文・ローカルの絶対パス（`input` は判断エンジンへ送られる）。参照用の ID は `context` へ。
+環境変数（`EDL_ALLOW_NETWORK`・`JEV_*` 等）を設定・表示しない。
+
+## 結果の扱い
+
+- `ok: false` → `failure.policy` に従う。`human-required`＝Human へ返す、`deny`＝その処理を進めない。自動で進めない
+- `ok: true` でも `gateway.environment` が `dev` 以外なら結果を使わず Human へ返す
+- `decision.tier`：`human`（または `human_gate.required: true`）＝Human へ確認を上げる／`review`＝Human 確認へ倒す／`auto`＝outcome を次の段階の**候補**として使ってよい（許可ではない）
+- `decision.resolved_by: human` は「自動で判定できなかった」。エンジンが判断したように書かない
+- 有料実行・外部公開・送信・deploy・Secret・課金は、判定の結果に関わらずそれぞれの Human の操作を通る。判定を理由に確認を省略しない
+- 報告は `resolved_by`・`tier`・outcome の要点・`request_id` を1〜2行で
+
+## 実行環境
+
+ローカルの CLI Gateway は本人の開発用（`dev`）。一般の利用者向けのアプリ・API をここへつながない（production は別に deploy された HTTP Gateway・環境一致が必要）。

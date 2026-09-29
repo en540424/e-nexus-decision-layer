@@ -11,3 +11,8 @@ Cursor の Agent / Rules から同じ CLI を呼ぶ。本体は変更不要。
 - Cursor 側にも Jev API Key は置かない（Jev の鍵は User 環境変数 `JEV_API_KEY` だけで、Gateway の engine-env manifest が子 process へ必要な名前だけを渡す。CLI は `.env` を読まない＝`docs/gateway.md` §11-1。`EDL_ALLOW_NETWORK=true` が無い process ではネットワーク無効）
 
 将来：Cursor 専用の薄い wrapper（`integrations/cursor/decide.mjs`）を置く場合も core は触らない。
+
+## rule の雛形（2026-09-29・FB-23）
+
+`integrations/cursor/enexus-decision.mdc`（Cursor の Project Rule 形式：frontmatter `description`・`alwaysApply: false`＝Agent が description を見て適用を決める。形式は Cursor docs で確認）。使う repo の `.cursor/rules/` へ写し、`<repo>` を `e-nexus-decision-layer` の場所に置き換える。内容は Claude Code の `enexus-decision` Skill と同じ契約（`application_id: "cursor"`・`expected_environment: "dev"`・stdin・fail-closed・判定は承認ではない）。Cursor の User Rules・MCP への登録は Human が行う。
+
