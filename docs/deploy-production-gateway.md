@@ -33,6 +33,7 @@ EDL_GATEWAY_RATE_LIMIT_PER_MIN=600
 - **環境ごとに別の値**：token・Jev key（staging と production で分ける）・endpoint・usage の置き場（`data/usage/<environment>/usage.jsonl`・自動で分かれる）
 - Linux（VPS）には OS 資格情報ストアが無いので、`credential:` は使えない：env file を root 所有・`chmod 600` にして値を直接書く（systemd の `EnvironmentFile` と同じ扱い）
 - `EDL_ALLOW_NETWORK=true` を入れない場合、Jev は呼ばれず rules → human に倒れる（fail-closed・課金なし）
+- **LLM 再判定（任意・2026-09-29 FB-21）**：`ENEXUS_LLM_ANTHROPIC_API_KEY=credential:E-NEXUS/edl/llm-anthropic`（Anthropic の API key・環境ごとに別）を足し、Gateway の host で `npm install`（`@anthropic-ai/sdk` は optionalDependencies・版は package.json で固定）。**これだけでは呼ばれない**：consumer が request の `options.allow_paid_adapters: true` を付けた判定だけで、tier の上限は review（auto にならない）。`EDL_ALLOW_NETWORK=true` も要る。名前に `EDL_` を付けないので CLI consumer の子 process へは渡らない（`policies/gateway/engine-env.json` の `runtime_only`）。モデル・単価・effort・fallbacks は `policies/llm/anthropic.json`（既定 `claude-opus-5-5`・effort low・`fallbacks: "default"`＝安全分類器が断ったとき別モデルで答える。止めるなら null）
 
 ## 3. 昇格の順（DEV → STAGING → PRODUCTION・Human-only）
 

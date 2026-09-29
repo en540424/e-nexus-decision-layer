@@ -1,8 +1,30 @@
 {
-  "$comment": "Adapter chain の既定順。deterministic rules を必ず先頭に置き、Jev（本物 or mock）→ local → llm → human の順。overrides で decision_type ごとに変えられる。ID は登録済み Adapter の id。",
-  "default_chain": ["rules", "jev", "mock-jev", "local", "llm", "human"],
+  "$comment": "Adapter chain の既定順。deterministic rules を必ず先頭に置き、Jev（本物 or mock）→ local → llm → human の順。overrides で decision_type ごとに変えられる。ID は登録済み Adapter の id。 max_tier_by_adapter（2026-09-29 FB-21）：Adapter ごとの tier の上限。engine が confidence から出した tier をこれ以下に下げる（上げることはない）。llm＝review：LLM の自己申告の確信度は較正されていないので auto にしない。",
+  "default_chain": [
+    "rules",
+    "jev",
+    "mock-jev",
+    "local",
+    "llm",
+    "human"
+  ],
   "overrides": {
-    "model-route": { "chain": ["rules", "human"] },
-    "skill-route": { "chain": ["rules", "jev", "mock-jev", "human"] }
+    "model-route": {
+      "chain": [
+        "rules",
+        "human"
+      ]
+    },
+    "skill-route": {
+      "chain": [
+        "rules",
+        "jev",
+        "mock-jev",
+        "human"
+      ]
+    }
+  },
+  "max_tier_by_adapter": {
+    "llm": "review"
   }
 }

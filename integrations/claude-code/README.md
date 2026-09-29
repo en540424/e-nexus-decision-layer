@@ -21,7 +21,7 @@ node C:/Users/envie/e-nexus-decision-layer/src/cli.mjs decide --json '{
 ```
 
 - `tier=auto` → 呼び出し側が通常コード／Remotion／local へ進んでよい候補（既存ゲートは別途通る）
-- `tier=review` → 上位LLM再判定（llm adapter 実装まで）は Claude Code 本体が Advisor 相談または Human 確認へ倒す
+- `tier=review` → Claude Code 本体が Advisor 相談または Human 確認へ倒す。Gateway 側の LLM 再判定（2026-09-29 実装・llm adapter）は HTTP runtime で鍵が設定され、request に `options.allow_paid_adapters: true` を付けたときだけ動き、その結果も tier は review が上限（CLI 経路の `gateway decide` では常に使われない）
 - `tier=human` / `recommended_route=en-generate-hub` → `/en-generate` Skill（見積・承認提示）へ。承認文は Human が入力する
 
 Model / Skill Router：`model-route` は schema と rules（参考値・status `rules-reference`）を用意済み、`skill-route` は schema のみ（rules 無し）。Claude Code 本体の Model 選定は

@@ -108,7 +108,7 @@ loader がそれ以外の値を拒否する。現在の実装済み decision_typ
 
 | mode | chain | 用途 |
 |---|---|---|
-| `production`（既定） | rules → jev → local → llm → human | consumer 向け。**mock-jev は入らない**。Jev が使えない環境（キー無し／`EDL_ALLOW_NETWORK`≠true）では rules で解けなければ human |
+| `production`（既定） | rules → jev → local → llm → human | consumer 向け。**mock-jev は入らない**。Jev が使えない環境（キー無し／`EDL_ALLOW_NETWORK`≠true）では rules で解けなければ human。**llm（2026-09-29 FB-21・Claude）**は `options.allow_paid_adapters: true` の request だけ・HTTP runtime の鍵（`ENEXUS_LLM_ANTHROPIC_API_KEY`＝`credential:`）があるときだけ・tier は review が上限（`max_tier_by_adapter`） |
 | `verification`（`--verification` / `EDL_GATEWAY_MODE=verification`） | 実 Jev が使えないときだけ mock-jev を追加 | 配管検証専用。結果の `provider:"mock"` を Jev の判断として扱わない |
 
 既存 `createDecisionLayer()` / `cli decide` の既定（mock を入れる）は後方互換のため変えていない。consumer は Gateway を使う。

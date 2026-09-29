@@ -18,6 +18,7 @@ import { createRulesAdapter } from './adapters/rules/rules-adapter.mjs';
 import { createJevAdapter } from './adapters/jev/jev-adapter.mjs';
 import { createMockJevAdapter } from './adapters/jev/mock-jev-adapter.mjs';
 import { createLlmAdapterStub } from './adapters/llm/llm-adapter-stub.mjs';
+import { createLlmAdapter } from './adapters/llm/llm-adapter.mjs';
 import { createLocalAdapterStub } from './adapters/local/local-adapter-stub.mjs';
 import { createHumanAdapter } from './adapters/human/human-adapter.mjs';
 import { createFileMeter, createMemoryMeter } from './usage/metering.mjs';
@@ -39,7 +40,7 @@ export function defaultAdapters({ env = process.env } = {}) {
     createJevAdapter({ env }),
     ...(realJevUsable(env) ? [] : [createMockJevAdapter()]),
     createLocalAdapterStub(),
-    createLlmAdapterStub({ env }),
+    createLlmAdapter({ env }),
     createHumanAdapter(),
   ];
 }
@@ -53,7 +54,7 @@ export function createDecisionLayer({ adapters, meter, env = process.env, ...res
 }
 
 export { createDecisionEngine } from './core/decision-engine.mjs';
-export { createRulesAdapter, createJevAdapter, createMockJevAdapter, createLlmAdapterStub, createLocalAdapterStub, createHumanAdapter };
+export { createRulesAdapter, createJevAdapter, createMockJevAdapter, createLlmAdapter, createLlmAdapterStub, createLocalAdapterStub, createHumanAdapter };
 export { JEV_PROVIDER_IDS, assertJevProviderShape, resolveJevProvider, createDirectJevProvider, createCloudflareJevProvider } from './adapters/jev/jev-provider-interface.mjs';
 export { createFileMeter, createMemoryMeter, summarize, summarizeAttempts, attemptsOf, attemptsFromTrace, totalUsage, USAGE_FIELDS, ATTEMPT_FIELDS } from './usage/metering.mjs';
 export { resolveCandidates, resolveProject, loadRegistry, checkRegistries } from './registries/registry.mjs';

@@ -8,10 +8,12 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { readJson } from '../src/schemas/loader.mjs';
 import { JEV_ENV } from '../src/adapters/jev/jev-adapter.mjs';
+import { LLM_ENV } from '../src/adapters/llm/llm-adapter.mjs';
 import { ROOT } from '../src/core/paths.mjs';
 
 const manifest = readJson('policies/gateway/engine-env.json');
 const covered = (name) => manifest.forward.prefixes.some((p) => name.startsWith(p)) || manifest.forward.names.includes(name);
+const runtimeOnly = manifest.runtime_only?.names ?? [];
 
 function srcFiles(dir) {
   return readdirSync(dir).flatMap((f) => {
@@ -29,11 +31,11 @@ test('engine-env manifest: shape is names only (no values), upper-snake names, p
 });
 
 test('engine-env manifest covers every env name the engine source reads (so consumers never need engine-specific names)', () => {
-  const read = new Set(Object.values(JEV_ENV));
+  const read = new Set([...Object.values(JEV_ENV), ...Object.values(LLM_ENV)]);
   for (const f of srcFiles(path.join(ROOT, 'src'))) {
     for (const m of readFileSync(f, 'utf8').matchAll(/env\.([A-Z][A-Z0-9_]+)/g)) read.add(m[1]);
   }
-  const missing = [...read].filter((n) => !covered(n));
+  const missing = [...read].filter((n) => !covered(n) && !runtimeOnly.includes(n));
   assert.deepEqual(missing, [], `add to policies/gateway/engine-env.json: ${missing.join(', ')}`);
 });
 
@@ -46,4 +48,13 @@ test('engine-env manifest withhold (2026-09-29): names only, never forwarded, an
 
 test('engine-env manifest never lists consumer-side generation secrets', () => {
   for (const n of ['FAL_KEY', 'FAL_API_KEY', 'WAVESPEED_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) assert.equal(covered(n), false, n);
+});
+
+test('engine-env manifest runtime_only (2026-09-29 FB-21): paid LLM key is read by the engine but never forwarded by consumers, and is withheld from agents', () => {
+  assert.deepEqual(runtimeOnly, ['ENEXUS_LLM_ANTHROPIC_API_KEY']);
+  for (const n of runtimeOnly) {
+    assert.equal(covered(n), false, `${n} must not be forwarded (CLI consumers never pass the paid key)`);
+    assert.ok(manifest.withhold.names.includes(n), `${n} is stripped from agent child processes`);
+  }
+  assert.equal(LLM_ENV.apiKey, 'ENEXUS_LLM_ANTHROPIC_API_KEY');
 });

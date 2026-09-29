@@ -2,7 +2,9 @@
   "$comment": "Common Decision Gateway を別 process（CLI `gateway decide --stdin`）として起動する consumer が、子 process へ渡してよい環境変数の『名前』。値は持たない・書かない。Decision Engine（現在は Decision Layer core → Jev Adapter → Jev Provider）が読む env 名はこのファイルだけが知り、consumer は Jev 固有の名前（JEV_* 等）をコードに持たない。engine を別の Decision Engine へ差し替えるときは、consumer ではなくこのファイルを変える。consumer はこのファイルが読めなければ EDL_* だけを渡す（engine は外部判断経路を使えず rules → human へ倒れる＝fail-closed）。consumer 自身の Secret（FAL_KEY 等）は consumer 側で常に除外する。tests/gateway-engine-env.test.mjs が src の env 参照をすべて網羅していることを検査する。2026-09-26 新設（MA-30 実JEV第1段）。2026-09-29 Vercel 経路廃止で JEV_VERCEL_MODEL / JEV_ZDR / AI_GATEWAY_API_KEY / AI_GATEWAY_BASE_URL を外した（engine はもう読まない。consumer 側で AI_GATEWAY_API_KEY を除去する多層防御はそのまま）。",
   "contract_version": "1",
   "forward": {
-    "prefixes": ["EDL_"],
+    "prefixes": [
+      "EDL_"
+    ],
     "names": [
       "JEV_PROVIDER",
       "JEV_API_KEY",
@@ -17,7 +19,14 @@
       "AI_GATEWAY_API_KEY",
       "AI_GATEWAY_BASE_URL",
       "JEV_VERCEL_MODEL",
-      "JEV_ZDR"
+      "JEV_ZDR",
+      "ENEXUS_LLM_ANTHROPIC_API_KEY"
+    ]
+  },
+  "runtime_only": {
+    "$comment": "engine が読むが、consumer が Gateway 子 process へ渡してはいけない env 名（2026-09-29 FB-21）。HTTP runtime（scripts/run-gateway.mjs の env file に `credential:E-NEXUS/edl/<name>` と書く）でだけ設定される有料 provider の鍵。EDL_ prefix を付けないので forward に入らず、CLI 経路の engine は常に鍵なし（llm は unavailable → human）。withhold にも置き、agent 系の子 process の env から外す。",
+    "names": [
+      "ENEXUS_LLM_ANTHROPIC_API_KEY"
     ]
   }
 }

@@ -97,7 +97,8 @@ export function buildFailedAttempt({ adapter, err, ms }) {
     ms,
     latency_ms: ms,
     networked,
-    ...usageFields(null, networked),
+    // 送信済みで usage が分かる失敗（LLM の拒否・max_tokens 等・2026-09-29 FB-21）は記録する。無ければ従来どおり
+    ...usageFields(d.usage && typeof d.usage === 'object' ? d.usage : null, networked),
     retry_count: retryCountOf(d.retry_count),
     final: false,
   };

@@ -49,6 +49,14 @@ export function forcedHumanKey(outcome, safety) {
   return null;
 }
 
+const TIER_ORDER = Object.freeze(['human', 'review', 'auto']);
+
+/** Adapter ごとの tier の上限（policies/routing/default.json max_tier_by_adapter・2026-09-29 FB-21）。下げるだけで上げない */
+export function capTier(tier, max) {
+  if (!TIER_ORDER.includes(max)) return tier;
+  return TIER_ORDER.indexOf(tier) > TIER_ORDER.indexOf(max) ? max : tier;
+}
+
 /** policies/cost/limits.json の 1 判定あたり上限（USD micros）。正の整数だけを有効にし、null・0・不正値は「強制しない」 */
 export function costLimitOf(costPolicy) {
   const v = costPolicy?.per_decision_estimated_cost_usd_micros_max;
@@ -149,7 +157,7 @@ export function createDecisionEngine({
 
     // 6. human gate 保護
     assertNoApprovalKeys(outcome, safetyPolicy);
-    let tier = escalated ? 'human' : tierFor(adapterResult.confidence, thresholds);
+    let tier = escalated ? 'human' : capTier(tierFor(adapterResult.confidence, thresholds), routingPolicy.max_tier_by_adapter?.[adapter.id]);
     let gateReason = null;
     if (humanOnly) { tier = 'human'; gateReason = 'decision_type is Human-only by safety policy'; }
     else if (escalated) { gateReason = 'escalated: no automated adapter could decide'; }

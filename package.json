@@ -10,10 +10,15 @@
     "./cli": "./src/cli.mjs",
     "./package.json": "./package.json"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "decide": "node src/cli.mjs decide"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "0.129.0"
+  }
 }

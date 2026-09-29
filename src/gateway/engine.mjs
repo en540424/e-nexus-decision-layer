@@ -28,7 +28,7 @@ import { createDecisionEngine } from '../core/decision-engine.mjs';
 import { createRulesAdapter } from '../adapters/rules/rules-adapter.mjs';
 import { createJevAdapter } from '../adapters/jev/jev-adapter.mjs';
 import { createMockJevAdapter } from '../adapters/jev/mock-jev-adapter.mjs';
-import { createLlmAdapterStub } from '../adapters/llm/llm-adapter-stub.mjs';
+import { createLlmAdapter } from '../adapters/llm/llm-adapter.mjs';
 import { createLocalAdapterStub } from '../adapters/local/local-adapter-stub.mjs';
 import { createHumanAdapter } from '../adapters/human/human-adapter.mjs';
 import { resolveJevProvider } from '../adapters/jev/jev-provider-interface.mjs';
@@ -79,7 +79,7 @@ export function gatewayAdapters({ env = process.env, mode = 'production' } = {})
     createJevAdapter({ env }),
     ...(useMock ? [createMockJevAdapter()] : []),
     createLocalAdapterStub(),
-    createLlmAdapterStub({ env }),
+    createLlmAdapter({ env }),
     createHumanAdapter(),
   ];
 }
