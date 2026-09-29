@@ -116,6 +116,14 @@ node src/cli.mjs decide --file docs/growth/content-publish-gate.sample-request.j
 
 1 リクエスト＝5 question。burst しない（Vercel 経路では 429 を観測。Direct の burst は未実測）。結果の `resolved_by` / `tier` / `fallback.trace[jev].confidence` を確認するだけで、公開・Hub 反映は何も起きない。
 
+## 7-1. 再 Calibration の材料（2026-09-29・FB-09）
+
+`node scripts/recalibration-report.mjs --decision-type content-publish-gate --application en-sns-hub --grid [--since <ISO>] [--labels labels.jsonl]`（read-only・課金なし）。
+MA-30 正本§18-8 のとおり既存の usage.jsonl だけを読み、判定数・Human 率・final tier・Jev 到達率・confidence 分布と、記録された Jev confidence に別の閾値を当てた場合の tier の試算を出す。
+Human が判定ごとに「本来の tier」（auto／review／human）を `{"request_id": "...", "label": "..."}` の JSONL で付ければ、一致率・false auto・false escalation も出る。
+**2026-09-29 の実測**：en-sns-hub の実運用は 4 件（Human 率 0.75・Jev confidence 最大 0.34）で判断材料として少ない＝閾値は据え置き。Calibration run を含む全体は 149 件。
+閾値の変更と実 Jev の Calibration run（課金）は Human の go の後。
+
 ## 8. やっていないこと
 
 外部公開・自動投稿・SNS API 接続・`content_published` 発火・Execution Contract（G5）・`channel-selection` 以降の Growth decision_type（予約のまま）・~~TypeSafe Direct 対応~~（2026-09-29 Direct が唯一の経路）・閾値／合成方式の変更・Common Event Layer・新 Channel Registry。
