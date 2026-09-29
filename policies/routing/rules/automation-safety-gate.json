@@ -1,0 +1,164 @@
+{
+  "$comment": "automation-safety-gate（MA-31 予約→2026-09-29 実働化・FB-04）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定（Rules First）。『止める・上げる』だけを決定的に扱い、解除・承認・実行許可は返さない（forbidden_outcome_keys）。Human-only 境界（Secret・有料API・外部送信・一括送信）は Jev に判断させない。最後の crm-line-push-gated だけが low（G5 executor の形：単一contact・署名付きHuman承認・frequency cap あり）。どれにも一致しなければ Jev へ。",
+  "rules": [
+    {
+      "id": "touches-secrets",
+      "when": {
+        "touches_secrets": true
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "do-not-automate"
+      },
+      "rationale": "APIキー・token・認証情報の作成・読み取り・変更は Human-only（Vault CLAUDE.md・Safety台帳§4）"
+    },
+    {
+      "id": "paid-api-without-signed-approval",
+      "when": {
+        "paid_api": true,
+        "existing_gate": {
+          "in": [
+            "human-manual",
+            "none",
+            "unknown"
+          ]
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "do-not-automate"
+      },
+      "rationale": "有料APIは MA-17 の署名付き承認チェーンだけが通せる"
+    },
+    {
+      "id": "bulk-external-send",
+      "when": {
+        "external_send": true,
+        "target_scope": {
+          "in": [
+            "multiple-contacts",
+            "all-contacts"
+          ]
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "do-not-automate"
+      },
+      "rationale": "複数・全員への外部送信は採用していない（G5 は単一contactへの1通だけ。broadcast は L Harness の機能で E-NEXUS は作らない）"
+    },
+    {
+      "id": "external-send-without-signed-approval",
+      "when": {
+        "external_send": true,
+        "existing_gate": {
+          "in": [
+            "human-manual",
+            "none",
+            "unknown"
+          ]
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "do-not-automate"
+      },
+      "rationale": "外部送信・公開は Human-only（Safety台帳§2・§4）。署名付きHuman承認の無い自動送信はしない"
+    },
+    {
+      "id": "irreversible-without-approval",
+      "when": {
+        "irreversible": true,
+        "existing_gate": {
+          "in": [
+            "none",
+            "unknown"
+          ]
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "取り消せない操作を Human の関与なしに自動で行わない"
+    },
+    {
+      "id": "production-write-without-rollback",
+      "when": {
+        "environment": "production",
+        "writes_external_system": true,
+        "rollback_available": false
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "production の外部書き込みで戻す手段が無い（技術スタック正本§3-8-6）"
+    },
+    {
+      "id": "production-write-rollback-unknown",
+      "when": {
+        "environment": "production",
+        "writes_external_system": true,
+        "rollback_available": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "production の外部書き込みで戻す手段が不明"
+    },
+    {
+      "id": "existing-gate-unknown",
+      "when": {
+        "existing_gate": "unknown"
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "何が守っているか不明な自動化を推測で低リスクにしない"
+    },
+    {
+      "id": "summary-missing",
+      "when": {
+        "summary": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "何を自動化するかの説明が無い（判断材料不足）"
+    },
+    {
+      "id": "crm-line-push-gated",
+      "when": {
+        "automation_kind": "crm-line-push",
+        "target_scope": "single-contact",
+        "existing_gate": "human-approval-chain",
+        "rate_or_cap_limited": true,
+        "paid_api": false,
+        "touches_secrets": false
+      },
+      "outcome": {
+        "safety_class": "low",
+        "human_review_required": false,
+        "automation_route": "existing-gates"
+      },
+      "rationale": "G5 executor の形（単一contact・毎回の署名付きHuman承認・frequency cap・consent／snapshot のgate）。既存ゲートで足りる。これは送信の承認ではない（承認は approval_ref）"
+    }
+  ]
+}

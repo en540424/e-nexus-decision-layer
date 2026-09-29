@@ -1,0 +1,109 @@
+{
+  "$id": "edl/growth/lead-triage",
+  "title": "LeadTriage",
+  "description": "MA-31 予約（2026-09-23）→ 実働化（2026-09-29・Full Autonomous Build FB-04）。CRM の contact 1件（見込み客）について、意図・優先度・サービス適合・B2B/B2C・返信の要否を型付きで返す。**連絡・送信の許可ではない**：返信は常に Human の署名付き承認（crm-core G5 executor）。input は PII を持たない（MA-31 §5-5・§10-2：opaque ID・カテゴリ・件数だけ）。contact_ref は crm-core の不透明ID で、context 命名規約の subject_ref にあたる。日付は渡さず日数の区分だけ（Jev は日付比較が苦手：MA-30 §18-14）。consent・購読・spam・苦情は rules が先に扱う。reply_classification=do-not-contact は force_human_when_outcome_values で tier=human に固定される。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["subject_ref", "channel", "consent_context", "subscription_state", "inbound_category"],
+      "additionalProperties": false,
+      "properties": {
+        "subject_ref": { "type": "string", "minLength": 4, "maxLength": 128, "description": "crm-core の contact_ref（不透明ID）。friend ID・LINE userId ではない" },
+        "channel": { "type": "string", "enum": ["line", "form", "phone", "email", "sns-dm", "other"] },
+        "consent_context": { "type": "string", "enum": ["granted", "unknown", "withdrawn", "none"], "description": "crm-core の consent_state" },
+        "subscription_state": { "type": "string", "enum": ["subscribed", "unsubscribed", "blocked", "unknown"] },
+        "lifecycle_stage": { "type": "string", "enum": ["lead", "prospect", "customer", "churned", "unknown"] },
+        "inbound_category": {
+          "type": "string",
+          "enum": ["inquiry", "pricing", "support", "complaint", "partnership", "recruitment", "spam", "none", "other"],
+          "x-enum-descriptions": {
+            "inquiry": "A question about a product or service.",
+            "pricing": "A question about prices, plans or terms.",
+            "support": "A request for help with something already bought or used.",
+            "complaint": "A complaint or dispute.",
+            "partnership": "A business proposal or partnership request.",
+            "recruitment": "A job application or recruiting message.",
+            "spam": "Spam or an obviously automated message.",
+            "none": "The person has not sent a message (for example they only followed the account).",
+            "other": "Anything else."
+          }
+        },
+        "interaction_count": { "type": "integer", "minimum": 0, "maximum": 1000, "description": "これまでのやり取りの件数" },
+        "recency": { "type": "string", "enum": ["today", "this-week", "this-month", "older", "never"], "description": "最後のやり取りからの経過（日付ではなく区分）" },
+        "has_explicit_request": { "type": "boolean", "description": "見積・資料・デモ・連絡など、具体的な依頼をしているか" },
+        "product_interest": { "type": "string", "enum": ["scaffold-saas", "ai-cost-manager", "travel-rate-camera", "ai-phone", "consulting", "content", "other", "unknown"] },
+        "business_signal": { "type": "string", "enum": ["business", "individual", "unknown"], "description": "法人・個人事業としての問い合わせか（caller 判定）" },
+        "message_summary": { "type": "string", "minLength": 1, "maxLength": 400, "description": "受信の短い要約（redaction 済み・氏名・連絡先を除く）" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Triage of one CRM contact (a prospect) for E-NEXUS. This decision never contacts anyone and is never permission to send: every message is sent only after a separate, signed human approval.",
+      "x-jev-brief": "Triage of one CRM contact (a prospect or customer) for E-NEXUS, a small Japanese company that builds AI tools and SaaS (scaffolding estimate SaaS, AI cost manager, travel rate camera app, AI phone reception) and offers consulting and content. This decision never contacts anyone and is never permission to send: every message is sent only after a separate, signed human approval. Before this question reaches you, deterministic rules have already handled contacts without consent, blocked or unsubscribed contacts, spam and complaints. Input fields: subject_ref (an opaque ID only), channel, consent_context, subscription_state, lifecycle_stage, inbound_category, interaction_count, recency (time since the last interaction), has_explicit_request, product_interest, business_signal, message_summary (a short redacted summary). Missing optional fields mean the information is unknown.",
+      "required": ["lead_intent", "lead_priority", "service_fit", "b2b_b2c", "reply_classification", "human_review_required"],
+      "additionalProperties": false,
+      "x-outcome-invariants": [
+        { "id": "not-a-lead-is-low-priority", "if": { "lead_intent": "not-a-lead" }, "then": { "lead_priority": "low" } },
+        { "id": "high-priority-needs-reply", "if": { "lead_priority": "high" }, "then": { "reply_classification": "needs-human-reply" } }
+      ],
+      "properties": {
+        "lead_intent": {
+          "type": "string",
+          "enum": ["purchase", "information", "support", "partnership", "not-a-lead", "unclear"],
+          "x-enum-descriptions": {
+            "purchase": "Wants to buy, subscribe, order or get a quote.",
+            "information": "Wants to learn more before deciding.",
+            "support": "Needs help with something already bought or used.",
+            "partnership": "Proposes a business collaboration.",
+            "not-a-lead": "Not a potential customer (spam, job seeker, unrelated).",
+            "unclear": "The intent cannot be determined from the input."
+          }
+        },
+        "lead_priority": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "How soon should a human attend to this contact?",
+          "x-enum-descriptions": {
+            "high": "A clear, specific request with buying or partnership intent that should be answered first.",
+            "medium": "A genuine interest that should be answered, without urgency.",
+            "low": "No action needed soon."
+          }
+        },
+        "service_fit": {
+          "type": "string",
+          "enum": ["strong", "partial", "none", "unclear"],
+          "description": "How well does the request match what E-NEXUS offers?",
+          "x-enum-descriptions": {
+            "strong": "Directly matches an E-NEXUS product or service.",
+            "partial": "Related, but only partly matches.",
+            "none": "Outside what E-NEXUS offers.",
+            "unclear": "Cannot be judged from the input."
+          }
+        },
+        "b2b_b2c": {
+          "type": "string",
+          "enum": ["b2b", "b2c", "unclear"],
+          "x-enum-descriptions": { "b2b": "A business or sole proprietor asking on behalf of their business.", "b2c": "An individual consumer.", "unclear": "Cannot be judged from the input." }
+        },
+        "reply_classification": {
+          "type": "string",
+          "enum": ["needs-human-reply", "template-reply-candidate", "no-reply-needed", "do-not-contact"],
+          "description": "What kind of reply, if any, fits. Every reply is still approved and sent by a human.",
+          "x-enum-descriptions": {
+            "needs-human-reply": "A human should write a specific reply.",
+            "template-reply-candidate": "A standard, prepared reply would fit (still approved by a human).",
+            "no-reply-needed": "No reply is needed.",
+            "do-not-contact": "Do not contact this person."
+          }
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Does this contact need a human to look at it before anything else happens, beyond the ordinary human reply approval? True for complaints, legal or payment issues, partnership or large deals, unclear requests, or anything sensitive.",
+          "x-jev-confidence": "escalation-only",
+          "x-boolean-criteria": { "true": "A human needs to look at this contact first (sensitive, unclear, large or unusual).", "false": "Nothing beyond the ordinary human reply approval is needed." }
+        }
+      }
+    }
+  }
+}

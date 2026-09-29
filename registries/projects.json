@@ -1,7 +1,7 @@
 {
   "schema": "edl-registry-v1",
   "kind": "projects",
-  "updated": "2026-09-19",
+  "updated": "2026-09-29",
   "$comment": "上位正本は EN-Knowledge-Vault の AI-Workflow-System/01_harness/managed-repos.json（repo登録簿）と 05_Business/経営方針 の各正本。ここは Decision Layer が project_id を解決するための派生スナップショット。2026-09-19 横断監査で実在を確認できた repo / 構想のみ登録。EN-Volt は Vault・ホームディレクトリのどこにも実体が無かったため登録しない。",
   "entries": [
     { "id": "e-nexus-decision-layer", "name": "E-NEXUS Decision Layer", "aliases": ["decision-layer", "EDL"], "repo": "C:\\Users\\envie\\e-nexus-decision-layer", "kind": "platform", "status": "poc" },
@@ -15,7 +15,8 @@
     { "id": "e-nexus-site", "name": "E-NEXUS公式サイト", "aliases": ["e-nexus-site"], "repo": "C:\\Users\\envie\\e-nexus-site", "kind": "web", "status": "active" },
     { "id": "en-sns-hub", "name": "EN SNS Hub", "aliases": ["en-sns-hub"], "repo": "C:\\Users\\envie\\en-sns-hub", "kind": "automation", "status": "active", "note": "fact_check_status confirmed/needs_review を LLM 自己申告で持つ（PASS/REVIEW の既存例）" },
     { "id": "ai-driving-companion", "name": "AIドライビング・コンパニオン", "aliases": ["ai-driving-companion"], "repo": "C:\\Users\\envie\\ai-driving-companion", "kind": "app", "status": "active" },
-    { "id": "e-nexus-distribution-hub", "name": "E-NEXUS Distribution Hub", "aliases": ["distribution-hub"], "repo": "C:\\Users\\envie\\e-nexus-distribution-hub", "kind": "platform", "status": "design-only", "note": "docs/README のみ。別ターミナルで設計中のため変更禁止" },
+    { "id": "e-nexus-distribution-hub", "name": "E-NEXUS Distribution Hub", "aliases": ["distribution-hub"], "repo": "C:\\Users\\envie\\e-nexus-distribution-hub", "kind": "platform", "status": "design-only", "note": "docs/README のみ（D0/D1）。Distribution は Product Hub 内モジュールで実装済み（D0 案B）で、本 repo は将来の Collector の置き場。2026-09-12 の「変更禁止」は時限条件で 2026-09-19 に解消（managed-repos.json）" },
+    { "id": "e-nexus-crm-core", "name": "E-NEXUS CRM Core (MA-31 G4〜G5)", "aliases": ["crm-core", "CRM Core"], "repo": "C:\\Users\\envie\\e-nexus-crm-core", "kind": "platform", "status": "canary", "gates": ["consent policy (deterministic)", "signed human approval (G5 executor)", "frequency cap", "idempotency"], "note": "lead-triage・customer-reply-gate・automation-safety-gate の consumer（入力写像 src/decision/decision-inputs.mjs）。Workers は外部向け＝DEV Gateway へつながない（技術スタック正本§3-8）。2026-09-29 登録" },
     { "id": "en-knowledge-vault", "name": "EN-Knowledge-Vault (Claude Code Harness)", "aliases": ["vault", "claude-code-harness"], "repo": "C:\\Obsidian\\EN-Knowledge-Vault", "kind": "harness", "status": "active" }
   ]
 }

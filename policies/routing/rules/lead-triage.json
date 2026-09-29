@@ -1,0 +1,108 @@
+{
+  "$comment": "lead-triage（MA-31 予約→2026-09-29 実働化・FB-04）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定。連絡の可否（consent・購読）は crm-core の deterministic policy の結果を写すだけ。どの outcome も連絡・送信の許可ではない。どれにも一致しなければ Jev へ。",
+  "rules": [
+    {
+      "id": "consent-withdrawn",
+      "when": {
+        "consent_context": {
+          "in": [
+            "withdrawn",
+            "none"
+          ]
+        }
+      },
+      "outcome": {
+        "lead_intent": "unclear",
+        "lead_priority": "low",
+        "service_fit": "unclear",
+        "b2b_b2c": "unclear",
+        "reply_classification": "do-not-contact",
+        "human_review_required": false
+      },
+      "rationale": "同意が撤回・無し（連絡しない）"
+    },
+    {
+      "id": "subscription-blocked",
+      "when": {
+        "subscription_state": {
+          "in": [
+            "blocked",
+            "unsubscribed"
+          ]
+        }
+      },
+      "outcome": {
+        "lead_intent": "unclear",
+        "lead_priority": "low",
+        "service_fit": "unclear",
+        "b2b_b2c": "unclear",
+        "reply_classification": "do-not-contact",
+        "human_review_required": false
+      },
+      "rationale": "ブロック・友だち解除（連絡しない）"
+    },
+    {
+      "id": "spam",
+      "when": {
+        "inbound_category": "spam"
+      },
+      "outcome": {
+        "lead_intent": "not-a-lead",
+        "lead_priority": "low",
+        "service_fit": "none",
+        "b2b_b2c": "unclear",
+        "reply_classification": "no-reply-needed",
+        "human_review_required": false
+      },
+      "rationale": "spam"
+    },
+    {
+      "id": "recruitment",
+      "when": {
+        "inbound_category": "recruitment"
+      },
+      "outcome": {
+        "lead_intent": "not-a-lead",
+        "lead_priority": "low",
+        "service_fit": "none",
+        "b2b_b2c": "unclear",
+        "reply_classification": "needs-human-reply",
+        "human_review_required": true
+      },
+      "rationale": "採用関連は見込み客ではない（返信するかは Human）"
+    },
+    {
+      "id": "complaint",
+      "when": {
+        "inbound_category": "complaint"
+      },
+      "outcome": {
+        "lead_intent": "support",
+        "lead_priority": "high",
+        "service_fit": "unclear",
+        "b2b_b2c": "unclear",
+        "reply_classification": "needs-human-reply",
+        "human_review_required": true
+      },
+      "rationale": "苦情は Human が最優先で扱う"
+    },
+    {
+      "id": "no-message",
+      "when": {
+        "inbound_category": "none",
+        "has_explicit_request": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "lead_intent": "unclear",
+        "lead_priority": "low",
+        "service_fit": "unclear",
+        "b2b_b2c": "unclear",
+        "reply_classification": "no-reply-needed",
+        "human_review_required": false
+      },
+      "rationale": "メッセージが無い（友だち追加だけ等）。推測で見込み度を付けない"
+    }
+  ]
+}

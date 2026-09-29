@@ -75,11 +75,12 @@ test('a custom provider can be injected without touching the adapter or the engi
 test('reserved decision types exist by name only and cannot be decided', async () => {
   const idx = readJson('schemas/common/decision-types.json');
   // content-publish-gate / channel-selection は 2026-09-23 MA-31 G3 で実装済みへ移動（tests/content-publish-gate.test.mjs・tests/channel-selection.test.mjs）
-  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify', 'lead-triage', 'next-best-action', 'customer-reply-gate', 'automation-safety-gate']) {
+  for (const id of ['agent-action-micro', 'context-relevance', 'io-guard-assist', 'post-execution-verify', 'next-best-action']) {
     assert.ok(idx.reserved_decision_types[id], `${id} reserved`);
     assert.equal(loadDecisionType(id), null, `${id} has no schema yet`);
   }
-  for (const id of ['content-publish-gate', 'channel-selection']) {
+  // 2026-09-29 FB-04：lead-triage・customer-reply-gate・automation-safety-gate を実働化
+  for (const id of ['content-publish-gate', 'channel-selection', 'lead-triage', 'customer-reply-gate', 'automation-safety-gate']) {
     assert.ok(!idx.reserved_decision_types[id], `${id} is no longer reserved`);
     assert.ok(idx.decision_types[id], `${id} is implemented`);
   }

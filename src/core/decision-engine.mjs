@@ -39,7 +39,14 @@ export function loadCostPolicy() {
  */
 export function forcedHumanKey(outcome, safety) {
   const keys = safety.force_human_when_outcome_keys ?? [];
-  return keys.find((k) => outcome?.[k] === true) ?? null;
+  const k = keys.find((key) => outcome?.[key] === true);
+  if (k) return k;
+  // force_human_when_outcome_values（2026-09-29 FB-04）：boolean でない enum の「止める・上げる」値（例 safety_class=escalate）も
+  // confidence に関わらず tier=human にする。返り値は "field=value"（gate reason にそのまま使う）
+  for (const [field, values] of Object.entries(safety.force_human_when_outcome_values ?? {})) {
+    if (Array.isArray(values) && typeof outcome?.[field] === 'string' && values.includes(outcome[field])) return `${field}=${outcome[field]}`;
+  }
+  return null;
 }
 
 function assertNoApprovalKeys(outcome, safety) {
@@ -139,7 +146,11 @@ export function createDecisionEngine({
     let gateReason = null;
     if (humanOnly) { tier = 'human'; gateReason = 'decision_type is Human-only by safety policy'; }
     else if (escalated) { gateReason = 'escalated: no automated adapter could decide'; }
-    else if (forcedHumanKey(outcome, safetyPolicy)) { tier = 'human'; gateReason = `outcome.${forcedHumanKey(outcome, safetyPolicy)}=true`; }
+    else if (forcedHumanKey(outcome, safetyPolicy)) {
+      const forced = forcedHumanKey(outcome, safetyPolicy);
+      tier = 'human';
+      gateReason = forced.includes('=') ? `outcome.${forced}` : `outcome.${forced}=true`;
+    }
     else if (tier === 'human') { gateReason = `confidence ${adapterResult.confidence} below review_min ${thresholds.review_min}`; }
 
     // 7. outcome 検証

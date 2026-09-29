@@ -1,0 +1,105 @@
+{
+  "$id": "edl/growth/customer-reply-gate",
+  "title": "CustomerReplyGate",
+  "description": "MA-31 予約（2026-09-23）→ 実働化（2026-09-29・Full Autonomous Build FB-04）。顧客・見込み客への返信案1件（LINE 等）を、Human が送信を承認する前に確認する型付きゲート。**送信装置でも承認でもない**：送信は常に Human の署名付き承認（crm-core G5 executor）を通り、tier=auto でも送ってよいという意味にはならない。reply_readiness=hold／do-not-send は force_human_when_outcome_values で tier=human に固定される。input は閉じている：本文全文・氏名・電話・メール・住所・LINE userId を入れず、redaction 済みの短い抜粋・caller 判定済みのフラグ・contact の状態だけを渡す（input 全体が Jev の state に載るため）。consent・購読・苦情・法務・価格は rules が先に止め、Jev に判断させない（deterministic policy は Jev に判断させない＝MA-31 §15）。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["reply_ref", "channel", "contact_consent_state", "subscription_state", "inbound_category"],
+      "additionalProperties": false,
+      "properties": {
+        "reply_ref": { "type": "string", "minLength": 1, "maxLength": 120, "description": "参照ID（Action Request の idempotency_key・下書きID）。PII を含めない" },
+        "channel": { "type": "string", "enum": ["line", "email", "form", "other"] },
+        "contact_consent_state": { "type": "string", "enum": ["granted", "unknown", "withdrawn", "none"], "description": "crm-core の consent_state（deterministic policy の結果）" },
+        "subscription_state": { "type": "string", "enum": ["subscribed", "unsubscribed", "blocked", "unknown"], "description": "crm-core の subscription_state" },
+        "inbound_category": {
+          "type": "string",
+          "enum": ["inquiry", "pricing", "support", "complaint", "cancellation", "consent-withdrawal", "partnership", "spam", "none", "other"],
+          "description": "返信の元になった受信の種類（caller 判定）。none＝E-NEXUS から先に送る",
+          "x-enum-descriptions": {
+            "inquiry": "A question about a product or service.",
+            "pricing": "A question about prices, plans or terms.",
+            "support": "A request for help with something already bought or used.",
+            "complaint": "A complaint or dispute.",
+            "cancellation": "A request to cancel or stop a service.",
+            "consent-withdrawal": "The person asked to stop receiving messages.",
+            "partnership": "A business proposal or partnership request.",
+            "spam": "Spam or an obviously automated message.",
+            "none": "There is no incoming message; E-NEXUS is writing first.",
+            "other": "Anything else."
+          }
+        },
+        "draft_excerpt": { "type": "string", "minLength": 1, "maxLength": 1200, "description": "返信案の抜粋（redaction 済み・氏名・連絡先を除く）" },
+        "draft_author": { "type": "string", "enum": ["human", "ai-draft-human-edited", "ai-draft-unedited"] },
+        "language": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "risk_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "caller が検出したリスク信号。true のものは rules が決定的に扱う",
+          "properties": {
+            "personal_information": { "type": "boolean", "description": "返信案に個人情報が残っている" },
+            "legal_or_financial_claim": { "type": "boolean" },
+            "price_or_terms": { "type": "boolean", "description": "価格・契約・販売条件を約束する" },
+            "company_representative_statement": { "type": "boolean" },
+            "promise_or_commitment": { "type": "boolean", "description": "納期・返金・対応などの約束" },
+            "confidential_or_secret": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Check of one reply draft to a customer or prospect before a human decides whether to approve sending it. This decision never sends anything and is never a sending approval: every message is sent only after a separate, signed human approval.",
+      "x-jev-brief": "Check of one reply draft to a customer or prospect (for example on LINE) before a human decides whether to approve sending it. This decision never sends anything and is never a sending approval: every message is sent only after a separate, signed human approval. Decide whether the draft is ready for that human send review. Before this question reaches you, deterministic rules have already handled missing consent, blocked or unsubscribed contacts, consent withdrawals, cancellations, complaints, spam, missing drafts, and every risk flag the caller set to true. A risk flag that is absent or false only means the caller did not detect that risk; judge the draft excerpt itself. Input fields: reply_ref (a reference ID only), channel, contact_consent_state, subscription_state, inbound_category (what the reply answers), draft_excerpt (a short redacted excerpt), draft_author, language, risk_flags.",
+      "required": ["reply_readiness", "tone_fit", "risk_level", "human_review_required"],
+      "additionalProperties": false,
+      "x-outcome-invariants": [
+        { "id": "high-risk-requires-human-review", "if": { "risk_level": "high" }, "then": { "human_review_required": true } },
+        { "id": "high-risk-excludes-send-review", "if": { "risk_level": "high" }, "then": { "reply_readiness": { "not_in": ["human-send-review"] } } },
+        { "id": "unassessed-excludes-send-review", "if": { "risk_level": "unassessed" }, "then": { "reply_readiness": { "not_in": ["human-send-review"] } } },
+        { "id": "poor-tone-excludes-send-review", "if": { "tone_fit": "inappropriate" }, "then": { "reply_readiness": { "not_in": ["human-send-review"] } } }
+      ],
+      "properties": {
+        "reply_readiness": {
+          "type": "string",
+          "enum": ["human-send-review", "needs-revision", "hold", "do-not-send"],
+          "description": "The single next stage for this draft. None of these sends anything.",
+          "x-enum-descriptions": {
+            "human-send-review": "Hand the draft to the human who decides whether to approve sending it.",
+            "needs-revision": "Edit the draft first: unclear, inaccurate, off-topic, wrong tone, or personal data to remove.",
+            "hold": "Do not proceed yet: a human must first resolve something (legal, pricing, commitments, company statements, or a risk that cannot be judged from the input).",
+            "do-not-send": "Do not send this message to this person."
+          }
+        },
+        "tone_fit": {
+          "type": "string",
+          "enum": ["appropriate", "inappropriate", "unclear"],
+          "description": "Does the tone suit a polite, helpful business reply to this kind of message?",
+          "x-enum-descriptions": {
+            "appropriate": "Polite, clear and suited to the situation.",
+            "inappropriate": "Too casual, too cold, defensive, pushy or otherwise unsuitable.",
+            "unclear": "The tone cannot be judged from the excerpt."
+          }
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "unassessed"],
+          "description": "How much harm (legal, privacy, financial or reputational) could sending this draft cause?",
+          "x-enum-descriptions": {
+            "low": "An ordinary, factual reply with no commitments or sensitive claims.",
+            "medium": "Some sensitivity a human should notice: opinions, business figures, strong claims, or vague commitments.",
+            "high": "Could cause legal, privacy, financial or serious reputational harm: legal or financial claims, binding commitments, personal data, or statements on behalf of the company.",
+            "unassessed": "The draft cannot be assessed from the input."
+          }
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Apart from the human approval to send, which always happens separately, does this draft need focused human scrutiny of a specific concern? True for commitments, legal, financial or pricing statements, personal data, statements on behalf of the company, unverifiable facts, or an unclear next stage.",
+          "x-jev-confidence": "escalation-only",
+          "x-boolean-criteria": { "true": "A specific concern in this draft needs focused human scrutiny before the send review.", "false": "Only the ordinary human send approval is needed." }
+        }
+      }
+    }
+  }
+}

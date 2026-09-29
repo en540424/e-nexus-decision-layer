@@ -1,0 +1,199 @@
+{
+  "$comment": "customer-reply-gate（MA-31 予約→2026-09-29 実働化・FB-04）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定。consent・購読は crm-core の deterministic policy の結果を写すだけ（Jev に判断させない＝MA-31 §15）。どの outcome も送信を意味しない（送信は署名付きHuman承認）。どれにも一致しなければ Jev へ。",
+  "rules": [
+    {
+      "id": "consent-withdrawn",
+      "when": {
+        "contact_consent_state": {
+          "in": [
+            "withdrawn",
+            "none"
+          ]
+        }
+      },
+      "outcome": {
+        "reply_readiness": "do-not-send",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": false
+      },
+      "rationale": "同意が撤回・無し（crm-core consent-policy：outbound blocked）"
+    },
+    {
+      "id": "subscription-blocked",
+      "when": {
+        "subscription_state": {
+          "in": [
+            "blocked",
+            "unsubscribed"
+          ]
+        }
+      },
+      "outcome": {
+        "reply_readiness": "do-not-send",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": false
+      },
+      "rationale": "ブロック・友だち解除（crm-core consent-policy の subscription_block は最優先）"
+    },
+    {
+      "id": "consent-withdrawal-message",
+      "when": {
+        "inbound_category": "consent-withdrawal"
+      },
+      "outcome": {
+        "reply_readiness": "do-not-send",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": false
+      },
+      "rationale": "配信停止の申し出には E-NEXUS から送らない（撤回の処理は L Harness・crm-core の撤回経路）"
+    },
+    {
+      "id": "spam",
+      "when": {
+        "inbound_category": "spam"
+      },
+      "outcome": {
+        "reply_readiness": "do-not-send",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": false
+      },
+      "rationale": "spam には返信しない"
+    },
+    {
+      "id": "consent-unknown",
+      "when": {
+        "contact_consent_state": "unknown"
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": true
+      },
+      "rationale": "同意が未確認（crm-core：outbound hold）。明示同意の後に判断する"
+    },
+    {
+      "id": "complaint",
+      "when": {
+        "inbound_category": "complaint"
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "苦情・紛争への返信は Human が扱う"
+    },
+    {
+      "id": "cancellation",
+      "when": {
+        "inbound_category": "cancellation"
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "解約・停止の申し出への返信は Human が扱う（契約・販売条件は Human-only）"
+    },
+    {
+      "id": "confidential-or-secret",
+      "when": {
+        "risk_flags.confidential_or_secret": true
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "Secret・社外秘の混入（caller 検出）"
+    },
+    {
+      "id": "legal-or-financial",
+      "when": {
+        "risk_flags.legal_or_financial_claim": true
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "法務・金融の断定"
+    },
+    {
+      "id": "price-or-terms",
+      "when": {
+        "risk_flags.price_or_terms": true
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "価格・販売条件・契約条件は Human-only（MA-31 §15）"
+    },
+    {
+      "id": "company-statement",
+      "when": {
+        "risk_flags.company_representative_statement": true
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "会社を代表する表明"
+    },
+    {
+      "id": "promise-or-commitment",
+      "when": {
+        "risk_flags.promise_or_commitment": true
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "納期・返金・対応の約束"
+    },
+    {
+      "id": "personal-information",
+      "when": {
+        "risk_flags.personal_information": true
+      },
+      "outcome": {
+        "reply_readiness": "needs-revision",
+        "tone_fit": "unclear",
+        "risk_level": "high",
+        "human_review_required": true
+      },
+      "rationale": "返信案に個人情報が残っている（除いてから）"
+    },
+    {
+      "id": "draft-missing",
+      "when": {
+        "draft_excerpt": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "reply_readiness": "hold",
+        "tone_fit": "unclear",
+        "risk_level": "unassessed",
+        "human_review_required": true
+      },
+      "rationale": "返信案の抜粋が無い（判断材料不足）"
+    }
+  ]
+}

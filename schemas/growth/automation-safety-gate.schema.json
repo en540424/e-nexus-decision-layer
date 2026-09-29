@@ -1,0 +1,101 @@
+{
+  "$id": "edl/growth/automation-safety-gate",
+  "title": "AutomationSafetyGate",
+  "description": "MA-31 予約（2026-09-23）→ 実働化（2026-09-29・Full Autonomous Build FB-04）。自動化候補（E-NEXUS起点のLINE送信・workflow・定期実行・Agent の行動・連携変更）を実行・有効化する前の安全区分と escalation 推奨を型付きで返す。**承認・解除ではない**：返せるのは「既存のゲートで足りる／Human の確認へ上げる／自動化しない」だけで、outcome に承認・解除・実行許可を意味するキーは置けない（forbidden_outcome_keys）。safety_class=escalate・automation_route=do-not-automate／human-review は policies/safety/human-only.json の force_human_when_outcome_values で tier=human に固定される。input は閉じていて、PII・本文・Secret を入れない（reference ID と caller 判定済みのフラグだけ）。deterministic な禁止（Secret・有料API・外部送信・一括送信・不可逆・rollback 無しの production 書き込み）は rules が先に止め、Jev には判断させない。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["automation_kind", "environment", "target_scope", "external_send", "paid_api", "writes_external_system", "irreversible", "touches_secrets", "personal_data", "existing_gate"],
+      "additionalProperties": false,
+      "properties": {
+        "automation_ref": { "type": "string", "minLength": 1, "maxLength": 120, "description": "参照ID（Action Request の idempotency_key・workflow ID 等）。PII を含めない" },
+        "automation_kind": {
+          "type": "string",
+          "enum": ["crm-line-push", "workflow", "scheduled-job", "agent-action", "integration-change", "other"],
+          "x-enum-descriptions": {
+            "crm-line-push": "A single LINE message to one contact, sent through the E-NEXUS CRM executor after a signed human approval.",
+            "workflow": "An automated multi-step workflow (for example an n8n workflow or a code pipeline).",
+            "scheduled-job": "A job that runs on a schedule without a human starting it each time.",
+            "agent-action": "An action taken by an AI agent on its own (browser, file, API or tool use).",
+            "integration-change": "A change to how two systems are connected (webhooks, API keys, sync settings).",
+            "other": "Any other automation."
+          }
+        },
+        "environment": { "type": "string", "enum": ["dev", "staging", "production"], "description": "実行環境（技術スタック正本§3-8）。production は一般の利用者に影響する" },
+        "target_scope": {
+          "type": "string",
+          "enum": ["none", "internal-only", "single-contact", "multiple-contacts", "all-contacts"],
+          "x-enum-descriptions": {
+            "none": "It affects no people.",
+            "internal-only": "It affects only the operator's own internal systems and people.",
+            "single-contact": "It affects exactly one external person.",
+            "multiple-contacts": "It affects several external people at once.",
+            "all-contacts": "It affects every contact or a whole audience at once."
+          }
+        },
+        "external_send": { "type": "boolean", "description": "外部（顧客・一般の利用者・公開SNS）へ送る／公開するか" },
+        "paid_api": { "type": "boolean", "description": "従量課金のAPIを呼ぶか（有料生成は MA-17 だけが通せる）" },
+        "writes_external_system": { "type": "boolean", "description": "外部システム（L Harness・CRM・SaaS・DB）へ書き込むか" },
+        "irreversible": { "type": "boolean", "description": "取り消せないか（送信・削除・公開・課金 等）" },
+        "touches_secrets": { "type": "boolean", "description": "APIキー・token・認証情報を作る・読む・変えるか" },
+        "personal_data": { "type": "boolean", "description": "個人情報（氏名・連絡先・LINE userId 等）を扱うか" },
+        "existing_gate": {
+          "type": "string",
+          "enum": ["human-approval-chain", "human-manual", "none", "unknown"],
+          "description": "この自動化を既に守っている既存のゲート。human-approval-chain＝署名付きのHuman承認（MA-17・CRM executor）。これは本判定の承認ではない",
+          "x-enum-descriptions": {
+            "human-approval-chain": "Each run already requires a specific, signed human approval before it can execute.",
+            "human-manual": "A human performs or starts each run by hand.",
+            "none": "Nothing stops it from running automatically.",
+            "unknown": "It is not known what protects it."
+          }
+        },
+        "rollback_available": { "type": "boolean", "description": "戻す手段があるか（旧版への rollback・取り消し操作）" },
+        "rate_or_cap_limited": { "type": "boolean", "description": "回数上限・頻度上限（frequency cap 等）で縛られているか" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 600, "description": "何を自動化するかの短い説明（PII・本文・Secret を入れない）" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "description": "Safety classification of one automation candidate before it is enabled or run. This decision never approves, enables or unblocks anything: existing human approvals and gates remain the only way anything runs. Decide how much human scrutiny this automation needs beyond the gates that already protect it.",
+      "x-jev-brief": "Safety classification of one E-NEXUS automation candidate before it is enabled or run. This decision never approves, enables or unblocks anything: existing human approvals and gates remain the only way anything runs. Decide how much human scrutiny this automation needs beyond the gates that already protect it. Before this question reaches you, deterministic rules have already handled secrets, paid APIs, external sends without a signed human approval, sends to several or all contacts, irreversible actions without a signed approval, production writes without rollback, and missing information. Input fields: automation_kind, environment (dev, staging, production), target_scope, external_send, paid_api, writes_external_system, irreversible, touches_secrets, personal_data, existing_gate (what already protects it), rollback_available, rate_or_cap_limited, summary (a short description without personal data). Missing optional fields mean the information is unknown.",
+      "required": ["safety_class", "human_review_required", "automation_route"],
+      "additionalProperties": false,
+      "x-outcome-invariants": [
+        { "id": "escalate-requires-human-review", "if": { "safety_class": "escalate" }, "then": { "human_review_required": true } },
+        { "id": "do-not-automate-requires-escalate", "if": { "automation_route": "do-not-automate" }, "then": { "safety_class": "escalate" } },
+        { "id": "existing-gates-requires-low", "if": { "automation_route": "existing-gates" }, "then": { "safety_class": "low" } },
+        { "id": "existing-gates-excludes-review", "if": { "automation_route": "existing-gates" }, "then": { "human_review_required": false } }
+      ],
+      "properties": {
+        "safety_class": {
+          "type": "string",
+          "enum": ["low", "elevated", "escalate"],
+          "description": "How risky is this automation, given what already protects it?",
+          "x-enum-descriptions": {
+            "low": "The existing gates cover the risk: it is internal, reversible, rate-limited, or every run already needs a signed human approval.",
+            "elevated": "Some risk remains that a human should be aware of (personal data, production impact, weak limits), but the existing gates still apply.",
+            "escalate": "The risk is not adequately covered by the existing gates and a human must look at it before it runs or is enabled."
+          }
+        },
+        "human_review_required": {
+          "type": "boolean",
+          "description": "Does a human need to review this specific automation before it runs or is enabled, beyond the gates that already exist? True if the risk is not covered by the existing gates, the scope or impact is unclear, or personal data or production systems are affected without a clear limit. False if the existing gates are enough.",
+          "x-jev-confidence": "escalation-only",
+          "x-boolean-criteria": { "true": "A human must review this automation before it runs or is enabled because the existing gates do not clearly cover its risk.", "false": "The existing gates clearly cover the risk; no additional human review is needed." }
+        },
+        "automation_route": {
+          "type": "string",
+          "enum": ["existing-gates", "human-review", "do-not-automate"],
+          "description": "The single next step, consistent with the other answers. None of these runs or approves anything.",
+          "x-enum-descriptions": {
+            "existing-gates": "Leave it to the gates that already protect it; no extra review.",
+            "human-review": "A human reviews this automation before it runs or is enabled.",
+            "do-not-automate": "Do not automate this; a human should do it by hand or redesign it."
+          }
+        }
+      }
+    }
+  }
+}

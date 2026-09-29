@@ -16,7 +16,7 @@ import { createHumanAdapter } from '../src/adapters/human/human-adapter.mjs';
 import { createMemoryMeter } from '../src/usage/metering.mjs';
 import { SchemaValidationError } from '../src/core/errors.mjs';
 
-const TYPES = ['paid-generation-gate', 'channel-selection', 'content-publish-gate'];
+const TYPES = ['paid-generation-gate', 'channel-selection', 'content-publish-gate', 'automation-safety-gate', 'customer-reply-gate', 'lead-triage'];
 
 test('x-jev-enum is justified by rule coverage: every value hidden from Jev is produced by some rule for that field', () => {
   for (const t of TYPES) {

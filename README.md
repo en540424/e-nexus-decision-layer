@@ -53,7 +53,7 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 | `src/usage/` | metering（JSONL 追記・集計） |
 | `registries/` | 4台帳（Vault側正本の派生スナップショット） |
 | `policies/` | routing（chain・閾値・rules）/ safety（Human-only）/ human-approval / cost / gateway（failure policy：human-required／deny のみ） |
-| `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate`（公開前判定）・`channel-selection`（候補媒体選定）はどちらも実行はしない（`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`） |
+| `schemas/` | common + ドメイン別 decision_type schema（openmontage / growth / ai-phone / travel-rate-camera / ai-cost-manager / claude-code）。growth の `content-publish-gate`（公開前判定）・`channel-selection`（候補媒体選定）・`automation-safety-gate`（自動化候補の安全区分）・`customer-reply-gate`（返信案の送信前確認）・`lead-triage`（見込み客の優先度付け）はどれも実行・送信・承認をしない（`docs/growth-content-publish-gate.md`・`docs/growth-channel-selection.md`・`docs/roadmap-future-use-cases.md`§5。後の3件は 2026-09-29 実働化） |
 | `integrations/` | claude-code / cursor / hermes からの呼び出し方（本体は変更不要）、openmontage の thin consumer adapter（Python・2026-09-26） |
 | `consumer-kit/` | Consumer Integration Kit：transport の言語非依存 conformance cases・fake Gateway・Node reference transport（標準は `docs/gateway.md` §9） |
 | `tests/` | schema / registry / routing / fallback / adapter failure / human gate / metering / PoC |
