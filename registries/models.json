@@ -37,15 +37,14 @@
       "provider": "typesafe-ai",
       "role": "decision-engine",
       "auto_selectable": true,
-      "status": "direct-and-vercel-provider-implemented",
-      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。到達経路は JEV_PROVIDER（direct / vercel / cloudflare）で切替。direct・vercelは2026-09-19に公式API仕様確認のうえ実装済み。vercelは同日実疎通成功（model typesafe-ai/jev、約3.1s、confidence≈0.08）。directはTypeSafe招待待ちでAPIキー未取得のため実疎通未実施。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
+      "status": "direct-provider-formal",
+      "description": "typed probabilistic decisions（classify/route/score）。長文生成には使わない。正式経路は TypeSafe Direct（POST https://api.typesafe.ai/v1/systemone。2026-09-29 に公式仕様を再確認し正式化）。Vercel AI Gateway 経由（2026-09-19〜09-26 に実疎通・09-29 に無料枠403）は暫定経路として2026-09-29に廃止・削除した。cloudflareは予約のみ。性能値（レイテンシ・価格比・選択肢上限等）はベンダー公表値のため仕様に固定しない",
       "routes": {
-        "direct": "implemented",
-        "vercel": "implemented-and-verified",
+        "direct": "formal",
         "cloudflare": "reserved"
       },
       "pricing": {
-        "$comment": "2026-09-19時点のベンダー公表値（docs.typesafe.ai/models）。恒久仕様ではない。実課金台帳はここではなく通常のUsage Meteringとコスト管理側が正本。",
+        "$comment": "2026-09-19時点のベンダー公表値（docs.typesafe.ai/models。2026-09-29 再確認：入力 $42/Btok・出力無料で変化なし）。恒久仕様ではない。実課金台帳はここではなく通常のUsage Meteringとコスト管理側が正本。",
         "input_usd_micros_per_million_tokens": 42000,
         "output_usd_micros_per_million_tokens": 0
       }

@@ -32,7 +32,10 @@ import { HumanGateViolationError, SchemaValidationError, DecisionLayerError } fr
 export const GATEWAY_CONTRACT_VERSION = '1';
 export const GATEWAY_VIAS = Object.freeze(['sdk', 'cli', 'http', 'mcp']);
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-const DEFAULT_TIMEOUT_MS = 30000; // Vercel 経路の 429 retry（SDK backoff 込み 6.8〜7.5s 実測）を十分に超える
+// 30s は 2026-09-19 の Vercel 経路実測（429 retry 込み 6.8〜7.5s）で決めた値。2026-09-29 に Direct へ移行後も据え置く：Direct の通常の再送
+// （1 試行 10s・backoff 0.5s→1s）より長く、全試行が timeout する最悪（約 31.5s）や長い Retry-After は GATEWAY_TIMEOUT（failure policy＝fail-closed）へ倒れる。
+// Direct の実 latency 分布（S5 Calibration）を見てから見直す
+const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_CONCURRENT = 4; // burst 5 連続で 429 を実測（2026-09-19）。それ未満に抑える
 
 /** error.code → 分類。HTTP status は http-server が envelope から決める（Decision 結果と HTTP status を混同しない） */

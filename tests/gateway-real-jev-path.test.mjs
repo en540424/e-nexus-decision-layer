@@ -1,7 +1,8 @@
 /**
- * Common Decision Gateway × 実 Jev 経路（Vercel transport）の通し検証（2026-09-26・MA-30 実JEV第1段）。
+ * Common Decision Gateway × 実 Jev 経路（TypeSafe Direct transport）の通し検証（2026-09-26・MA-30 実JEV第1段。
+ * 2026-09-29 に Vercel 経路廃止に合わせて transport を Direct へ移した。検査する性質は同じ）。
  *
- *   consumer → Gateway → DecisionEngine（production）→ rules → jev(vercel) → local → llm → human
+ *   consumer → Gateway → DecisionEngine（production）→ rules → jev(direct) → local → llm → human
  *
  * 目的：
  *   - 実 Jev 経路が「正常」なら Gateway は Jev の typed Decision をそのまま返し、不必要に human へ倒さない
@@ -9,7 +10,7 @@
  *     自動で進まない・承認キーを返さない
  *   - どちらの場合も usage の attempts[] に Jev 経路の証跡（route / networked / reason / tokens）が残る
  *
- * 実ネットワーク・実 'ai' パッケージは使わない（evaluateImpl を注入）。memory meter（usage.jsonl に書かない）。
+ * 実ネットワークは使わない（Direct provider に fetchImpl を注入）。memory meter（usage.jsonl に書かない）。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,21 +19,22 @@ import { createDecisionLayerEngine, gatewayAdapters } from '../src/gateway/engin
 import { createMemoryMeter } from '../src/usage/metering.mjs';
 import { createRulesAdapter } from '../src/adapters/rules/rules-adapter.mjs';
 import { createJevAdapter } from '../src/adapters/jev/jev-adapter.mjs';
-import { createVercelJevProvider } from '../src/adapters/jev/jev-vercel-provider.mjs';
+import { createDirectJevProvider } from '../src/adapters/jev/jev-direct-provider.mjs';
 import { createLocalAdapterStub } from '../src/adapters/local/local-adapter-stub.mjs';
 import { createLlmAdapterStub } from '../src/adapters/llm/llm-adapter-stub.mjs';
 import { createHumanAdapter } from '../src/adapters/human/human-adapter.mjs';
 
-const USABLE = Object.freeze({ EDL_ALLOW_NETWORK: 'true', JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'test-key-not-real' });
+const USABLE = Object.freeze({ EDL_ALLOW_NETWORK: 'true', JEV_PROVIDER: 'direct', JEV_API_KEY: 'test-key-not-real' });
 const APPROVAL_KEYS = ['approved', 'approval', 'approve', 'authorized', 'bypass_human_gate', 'override_budget', 'skip_human_review'];
 
 // rules に一致しない（$5 未満・subtitle 等でない）paid-generation-gate 入力 → Jev まで届く
 const INPUT = { asset_kind: 'scene', purpose: 'product hero shot we do not have locally', style: 'photoreal', estimated_paid_cost_usd_micros: 300000 };
 
 /** production と同じ並び（gatewayAdapters）で、Jev の transport だけ注入する */
-function gatewayWith({ env = USABLE, evaluateImpl }) {
+function gatewayWith({ env = USABLE, respond }) {
   let calls = 0;
-  const provider = createVercelJevProvider({ evaluateImpl: async (args) => { calls += 1; return evaluateImpl(args); } });
+  const fetchImpl = async (url, init) => { calls += 1; return respond(JSON.parse(init.body)); };
+  const provider = createDirectJevProvider({ fetchImpl, sleepImpl: async () => {} });
   const adapters = [
     createRulesAdapter(),
     createJevAdapter({ env, provider }),
@@ -49,19 +51,23 @@ function gatewayWith({ env = USABLE, evaluateImpl }) {
 
 const req = (extra = {}) => ({ decision_type: 'paid-generation-gate', application_id: 'claude-code', project_id: 'en-generate-hub', input: INPUT, ...extra });
 
-/** Vercel evaluate() の形で、全 question に明確に答える */
+/** HTTP 応答（fetch Response 相当）。status 200 なら body を JSON として返す */
+function httpResponse(status, body = {}) {
+  return { status, ok: status >= 200 && status < 300, headers: { get: () => null }, json: async () => body };
+}
+
+/** TypeSafe Direct（docs.typesafe.ai/api.md）の応答形で、全 question に明確に答える */
 function clearAnswers({ humanReview = 0.03 } = {}) {
-  return async () => ({
+  return async () => httpResponse(200, {
+    model: 'jev-1.13.0',
     answers: {
-      local_sufficient: { type: 'boolean', probability: 0.03 },
-      remotion_suitable: { type: 'boolean', probability: 0.03 },
-      paid_generation_required: { type: 'boolean', probability: 0.97 },
-      human_review_required: { type: 'boolean', probability: humanReview },
-      recommended_route: { type: 'choice', choice: 'en-generate-hub', probabilities: { 'en-generate-hub': 0.93 } },
+      local_sufficient: { type: 'noul', noul: 0.03 },
+      remotion_suitable: { type: 'noul', noul: 0.03 },
+      paid_generation_required: { type: 'noul', noul: 0.97 },
+      human_review_required: { type: 'noul', noul: humanReview },
+      recommended_route: { type: 'choice', choice: 'en-generate-hub', confidence: 0.93, probabilities: { 'en-generate-hub': 0.93 } },
     },
-    providerMetadata: { typesafe: { confidence: { recommended_route: 0.93 } } },
-    usage: { inputTokens: 420, outputTokens: 12 },
-    response: { modelId: 'typesafe-ai/jev' },
+    usage: { input_tokens: 420, output_tokens: 12 },
   });
 }
 
@@ -79,7 +85,7 @@ function assertFailsTowardHuman(envelope) {
 }
 
 test('real Jev path healthy: Gateway returns the Jev typed Decision (tier auto) instead of forcing human; not an approval', async () => {
-  const { gateway, meter, calls } = gatewayWith({ evaluateImpl: clearAnswers() });
+  const { gateway, meter, calls } = gatewayWith({ respond: clearAnswers() });
   const env = await gateway.decide(req({ correlation_id: 'smoke:healthy' }), { via: 'cli' });
   assert.equal(calls(), 1);
   assert.equal(env.ok, true);
@@ -96,16 +102,17 @@ test('real Jev path healthy: Gateway returns the Jev typed Decision (tier auto) 
   assert.equal(row.application_id, 'claude-code');
   assert.equal(row.correlation_id, 'smoke:healthy');
   assert.equal(jev.status, 'ok');
-  assert.equal(jev.route, 'vercel');
+  assert.equal(jev.route, 'direct');
+  assert.equal(jev.model_version, 'jev-1.13.0');
   assert.equal(jev.networked, true);
   assert.equal(jev.input_tokens, 420);
   assert.equal(row.attempts.some((a) => a.adapter === 'mock-jev'), false);
-  assert.ok(!JSON.stringify(row).includes(USABLE.AI_GATEWAY_API_KEY), 'secret never reaches usage metering');
-  assert.ok(!JSON.stringify(env).includes(USABLE.AI_GATEWAY_API_KEY), 'secret never reaches the envelope');
+  assert.ok(!JSON.stringify(row).includes(USABLE.JEV_API_KEY), 'secret never reaches usage metering');
+  assert.ok(!JSON.stringify(env).includes(USABLE.JEV_API_KEY), 'secret never reaches the envelope');
 });
 
 test('real Jev path healthy but uncertain (low confidence, like the 2026-09-19 first run) → human tier; Jev attempt still recorded as networked ok', async () => {
-  const { gateway, meter } = gatewayWith({ evaluateImpl: clearAnswers({ humanReview: 0.54 }) });
+  const { gateway, meter } = gatewayWith({ respond: clearAnswers({ humanReview: 0.54 }) });
   const env = await gateway.decide(req());
   assert.equal(env.decision.tier, 'human');
   assert.equal(env.decision.human_gate.required, true);
@@ -114,23 +121,20 @@ test('real Jev path healthy but uncertain (low confidence, like the 2026-09-19 f
   assert.equal(jev.networked, true);
 });
 
+// Direct は retryable（timeout・5xx・429）を 2 回まで再送する（初回＋2＝3 回送信）。非 retryable と応答不正は 1 回
 const FAILURES = [
-  ['network disabled (no EDL_ALLOW_NETWORK)', { env: { JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'test-key-not-real' } }, 'NETWORK_DISABLED', false, 0],
-  ['key missing', { env: { EDL_ALLOW_NETWORK: 'true', JEV_PROVIDER: 'vercel' } }, 'JEV_VERCEL_API_KEY_MISSING', false, 0],
-  ['provider timeout / abort', { evaluateImpl: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } }, 'JEV_NETWORK_ERROR', true, 1],
-  ['provider 503', { evaluateImpl: async () => { throw Object.assign(new Error('upstream'), { statusCode: 503, isRetryable: true }); } }, 'JEV_OVERLOADED', true, 1],
-  ['429 retries exhausted (RetryError)', {
-    evaluateImpl: async () => {
-      const inner = Object.assign(new Error('rate'), { statusCode: 429, isRetryable: true });
-      throw Object.assign(new Error('Failed after 3 attempts'), { name: 'RetryError', reason: 'maxRetriesExceeded', errors: [inner, inner, inner], lastError: inner });
-    },
-  }, 'JEV_RATE_LIMITED', true, 1],
-  ['malformed provider response (answers missing)', { evaluateImpl: async () => ({ usage: { inputTokens: 1, outputTokens: 0 } }) }, 'JEV_MALFORMED_RESPONSE', true, 1],
+  ['network disabled (no EDL_ALLOW_NETWORK)', { env: { JEV_PROVIDER: 'direct', JEV_API_KEY: 'test-key-not-real' } }, 'NETWORK_DISABLED', false, 0],
+  ['key missing', { env: { EDL_ALLOW_NETWORK: 'true', JEV_PROVIDER: 'direct' } }, 'JEV_API_KEY_MISSING', false, 0],
+  ['provider timeout / abort', { respond: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } }, 'JEV_TIMEOUT', true, 3],
+  ['provider 503', { respond: async () => httpResponse(503) }, 'JEV_OVERLOADED', true, 3],
+  ['429 retries exhausted', { respond: async () => httpResponse(429) }, 'JEV_RATE_LIMITED', true, 3],
+  ['403 (key accepted, account / early access not enabled)', { respond: async () => httpResponse(403) }, 'JEV_FORBIDDEN', true, 1],
+  ['malformed provider response (answers missing)', { respond: async () => httpResponse(200, { model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 0 } }) }, 'JEV_MALFORMED_RESPONSE', true, 1],
 ];
 
 for (const [name, opts, reason, networked, expectedCalls] of FAILURES) {
   test(`real Jev path failure → human, never auto-proceeds: ${name}`, async () => {
-    const { gateway, meter, calls } = gatewayWith({ evaluateImpl: clearAnswers(), ...opts });
+    const { gateway, meter, calls } = gatewayWith({ respond: clearAnswers(), ...opts });
     const env = await gateway.decide(req());
     assertFailsTowardHuman(env);
     assert.equal(calls(), expectedCalls, 'pre-send gates never invoke the transport');
@@ -146,18 +150,17 @@ for (const [name, opts, reason, networked, expectedCalls] of FAILURES) {
 test('Gateway does not degrade what Jev receives (2026-09-26 Calibration §28): state.input equals the consumer input exactly (types kept, nothing dropped or renamed), input_notes / narrowed options / derived route reach the provider', async () => {
   const seen = [];
   const { gateway } = gatewayWith({
-    evaluateImpl: async (args) => {
-      seen.push(args);
-      return {
+    respond: async (body) => {
+      seen.push(body);
+      return httpResponse(200, {
+        model: 'jev-1.13.0',
         answers: {
-          channel_status: { type: 'choice', choice: 'primary', probabilities: { primary: 0.95 } },
-          content_channel_fit: { type: 'choice', choice: 'high', probabilities: { high: 0.95 } },
-          human_review_required: { type: 'boolean', probability: 0.1 },
+          channel_status: { type: 'choice', choice: 'primary', confidence: 0.95, probabilities: { primary: 0.95 } },
+          content_channel_fit: { type: 'choice', choice: 'high', confidence: 0.93, probabilities: { high: 0.95 } },
+          human_review_required: { type: 'noul', noul: 0.1 },
         },
-        usage: { inputTokens: 1300, outputTokens: 90 },
-        response: { modelId: 'typesafe-ai/jev' },
-        providerMetadata: { typesafe: { confidence: { channel_status: 0.95, content_channel_fit: 0.93 } } },
-      };
+        usage: { input_tokens: 1300, output_tokens: 90 },
+      });
     },
   });
   const input = {

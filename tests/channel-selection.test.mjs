@@ -11,7 +11,7 @@ import { assertValid } from '../src/schemas/validate.mjs';
 import { createDecisionEngine } from '../src/core/decision-engine.mjs';
 import { createRulesAdapter } from '../src/adapters/rules/rules-adapter.mjs';
 import { createJevAdapter, buildJevRequest } from '../src/adapters/jev/jev-adapter.mjs';
-import { toGatewayQuestions } from '../src/adapters/jev/jev-vercel-provider.mjs';
+import { toDirectRequest } from '../src/adapters/jev/jev-direct-provider.mjs';
 import { createLocalAdapterStub } from '../src/adapters/local/local-adapter-stub.mjs';
 import { createLlmAdapterStub } from '../src/adapters/llm/llm-adapter-stub.mjs';
 import { createHumanAdapter } from '../src/adapters/human/human-adapter.mjs';
@@ -131,9 +131,9 @@ test('every outcome field maps to a Jev question (boolean / enum only) so Jev is
   assert.deepEqual(Object.keys(request.questions.content_channel_fit.criteria), ['high', 'medium', 'low']);
 });
 
-test('Vercel Gateway conversion (the Human smoke route) accepts this schema: no throw, non-empty criteria for every enum', () => {
+test('Direct request (the formal route since 2026-09-29) accepts this schema: no throw, non-empty criteria for every enum', () => {
   const { request } = buildJevRequest({ decisionType: DT_ID, outcomeSchema: OUTCOME, input: baseInput(), candidates: [] });
-  const gw = toGatewayQuestions(request.questions);
+  const gw = toDirectRequest(request).questions;
   assert.deepEqual(Object.keys(gw).sort(), Object.keys(request.questions).sort());
   for (const field of ['channel_status', 'content_channel_fit']) {
     for (const [v, text] of Object.entries(gw[field].criteria)) assert.ok(typeof text === 'string' && text.length > 0, `${field}.${v}`);

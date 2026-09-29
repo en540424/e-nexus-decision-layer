@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildJevRequest, parseJevResponse, createJevAdapter } from '../src/adapters/jev/jev-adapter.mjs';
-import { toGatewayQuestions } from '../src/adapters/jev/jev-vercel-provider.mjs';
+import { toDirectRequest } from '../src/adapters/jev/jev-direct-provider.mjs';
 import { loadDecisionType } from '../src/schemas/loader.mjs';
 import { assertValid } from '../src/schemas/validate.mjs';
 import { stripQuestionDesign } from '../scripts/poc-calibration.mjs';
@@ -41,9 +41,9 @@ test('buildJevRequest: instructions come from schema descriptions, choice criter
   assert.equal(request.state.brief, OUTCOME.description);
   assert.equal(request.state.task, 'paid-generation-gate');
   assert.deepEqual(request.state.input, { asset_kind: 'scene', purpose: 'x' });
-  // Vercel 経路でも説明が空文字にならない
-  const gw = toGatewayQuestions(request.questions);
-  for (const v of Object.values(gw.recommended_route.criteria)) assert.ok(v.length > 0);
+  // Direct に送る形（toDirectRequest 後）でも説明が空にならない（公式は null も許すが、improved variant は必ず説明を送る）
+  const direct = toDirectRequest(request);
+  for (const v of Object.values(direct.questions.recommended_route.criteria)) assert.ok(typeof v === 'string' && v.length > 0);
 });
 
 test('baseline variant (stripQuestionDesign) reproduces the generic instructions of the first real connectivity run, with no brief', () => {

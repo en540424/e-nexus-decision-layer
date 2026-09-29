@@ -17,7 +17,7 @@
 │   7 outcome validation  → 8 usage metering                      │
 └──────────────────────────────────────────────────────────────┘
                 ▼   Adapter Interface（supports / decide）
-   rules   jev(direct実装済み・vercel実疎通済み)   [mock-jev]   local(stub)   llm(stub)   human
+   rules   jev(direct＝正式経路)   [mock-jev]   local(stub)   llm(stub)   human
 ```
 
 ## 2. 判断の流れ
@@ -91,25 +91,24 @@ Pre-Decision                 Execution                    Post-Execution Verific
 
 ```
 Decision Layer → Jev Adapter（変換だけ） → Jev Provider（経路だけ）
-                                          ├─ direct     TypeSafe Direct API（実装済み。2026-09-19公式API仕様確認）
-                                          ├─ vercel     Vercel AI Gateway（実装済み。2026-09-19公式仕様確認）
+                                          ├─ direct     TypeSafe Direct API（正式経路。2026-09-19実装・2026-09-29公式仕様再確認で正式化）
                                           └─ cloudflare Cloudflare 経由（予約）
+                                          （vercel＝Vercel AI Gateway 経由は Direct までの暫定経路。2026-09-29 廃止・削除）
 ```
 `JEV_PROVIDER` で切替（既定 `direct`）。経路の追加は `src/adapters/jev/jev-provider-interface.mjs` の契約を満たす1ファイルで済み、Adapter・Engine は変更しない。
 API 仕様が未確認の経路（cloudflare）は `available()` が `JEV_ROUTE_NOT_IMPLEMENTED` を返し、Engine は次の Adapter へ落ちる。
 
 `direct`（`src/adapters/jev/jev-direct-provider.mjs`）は `POST https://api.typesafe.ai/v1/systemone` へ
-Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加なし）。403/422/429/529/5xx/timeoutの分類とリトライ
+Bearer認証で送る実装（Node組み込み `fetch`のみ、依存追加なし）。401/402/403/400/422/429/529/5xx/timeoutの分類とリトライ
 （408・429・5xx・timeoutのみ、`Retry-After`尊重、最大2回）、Network Gate二重チェック、Secret非表示はここで完結する。
 outcome schema → Jev questions（noul/choice/score）の写像と confidence 合成は `src/adapters/jev/jev-adapter.mjs`
 （変換層）が持つ。 question の判断基準は schema 側に書く（outcome field の `description` = instructions、`recommended_route` の
 `x-enum-descriptions` = choice criteria の説明、outcome の `description` = `state.brief`。2026-09-19 Confidence Calibration。
-第1回実測（同日）で description を書いた field の confidence は 0.04〜0.28 → 0.76〜1.00 に上がった。Vercel 経路の失敗は AI SDK の `RetryError` を unwrap して元の 429/5xx で分類する（`jev-vercel-provider.mjs` `classifyGatewayError`）。
+第1回実測（同日）で description を書いた field の confidence は 0.04〜0.28 → 0.76〜1.00 に上がった。（当時の Vercel 経路の失敗分類＝AI SDK `RetryError` の unwrap は、経路廃止とともに削除した。）
 Calibration は同日 **B（question 設計）で確定**、閾値・min 合成は維持、`human_review_required` は次フェーズで Hybrid（policy 側）へ（→ 2026-09-26 実装：escalation-only・`x-outcome-invariants`・`x-jev-enum`・`x-jev-derive`・`input_notes`。`docs/poc/calibration/2026-09-26-real-jev-calibration.md`）。auto は real Jev 0/14 で Production Auto Ready = NO、Wrapper Design Ready = YES（`docs/poc-paid-generation-gate.md` §Calibration 最終確定）。
-`docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。**APIキー未取得のため実疎通は未実施**（unit tests はすべて fake fetch。実APIは明示した
-integration test のみで叩く）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
+`docs/poc-paid-generation-gate.md` §Confidence Calibration）。description が無い field は汎用文になり実 Jev の confidence を大きく下げる。unit tests はすべて fake fetch（実APIは smoke・Calibration runner だけが叩く）。**実疎通は Human が `JEV_API_KEY` を設定した後**（2026-09-29 時点で鍵未発行）。詳細仕様は 2026-09-19 MA-30開発ログ「Jev公式API仕様の確定」節を正本とする。
 
-`vercel`（`src/adapters/jev/jev-vercel-provider.mjs`）は Vercel AI Gateway の Evaluation modality
+**【廃止・2026-09-29】以下は履歴。** `vercel`（旧 `src/adapters/jev/jev-vercel-provider.mjs`。git の 88459ad 以前）は Vercel AI Gateway の Evaluation modality
 （AI SDK 7 の `experimental_evaluate`。**REST互換エンドポイントには無い**、と公式に明記されている）を経由する。
 Gateway 側の質問型（`boolean`/`choice`/`score`、choice/score の confidence は `providerMetadata.typesafe.confidence`
 側）と Direct の内部形（`noul`/`choice`/`score`、confidence は answer 側）が異なるため、この Provider は
@@ -121,7 +120,7 @@ Decision Layer 全体の依存ゼロ方針とは別枠で `package.json` の `op
 `JEV_VERCEL_MODEL` で上書き可。Direct 用の `JEV_MODEL`／内部既定 `jev-latest` は Gateway 側へ持ち込まない）。
 403 は 401（キー不正）と分けて `JEV_FORBIDDEN`（カード未認証・モデル権限・Gatewayポリシー等）。
 unit tests はすべて注入した `evaluateImpl` で、実 SDK・実ネットワークを一切使わない。詳細は 2026-09-19 MA-30開発ログ
-「Vercel AI Gateway経由 Jev 実接続」「実疎通成功後の正式反映」節を正本とする。
+「Vercel AI Gateway経由 Jev 実接続」「実疎通成功後の正式反映」節を正本とする。2026-09-29 に Vercel の無料枠制限（403 `RestrictedModelsError`）で使えなくなり、Vercel へ課金しない方針で経路ごと廃止した（`ai` 依存も削除）。
 
 ## 10. 仕様に固定しない情報
 
@@ -151,7 +150,7 @@ decision（1件）
   - generic error → `null`
 - **unknown ≠ 0**：送っていないと確定できるときだけ cost 0 を `usage_known:true` で書く。送った可能性があるのに usage が無い attempt は
   `usage_known:false`・tokens/cost `null` とし、`usage_total.unknown_usage_attempts` に数える（捏造しない）
-- **1 attempt = `adapter.decide()` 1回**。Provider 内部の HTTP 再試行は `retry_count`（Direct は実カウント、Vercel は SDK 内部で観測不能なので `null`）
+- **1 attempt = `adapter.decide()` 1回**。Provider 内部の HTTP 再試行は `retry_count`（Direct は実カウント。廃止した Vercel 経路は SDK 内部で観測不能だったので `null` だった）
   であり attempt を増やさない。usage は最終応答の1回分だけ（二重計上しない）
 - 価格は `registries/models.json` の `pricing` だけを使う（コードに価格を固定しない）。attempt ごとの cost と decision 合計（`usage_total`）を区別する
 - Human Gate は無関係：attempt を記録するだけで承認・予算・課金の判断には一切使わない

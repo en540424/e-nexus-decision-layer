@@ -8,7 +8,7 @@ App / Agent / IDE（Claude Code・Cursor・Hermes・OpenAI系Agent・他LLM・�
   ↓  DecisionEngine 契約（差し替え可能）
 E-NEXUS Decision Layer（core: engine / router / fallback / confidence）
   ↓  Adapter Interface（src/adapters/adapter-interface.mjs）
-Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
+Rules ／ Jev（TypeSafe Direct＝正式経路、cloudflare予約。Vercel経路は2026-09-29廃止）／ Mock Jev ／ Local（stub）／ LLM（stub）／ Human
 ```
 
 - **consumer の正式入口は Common Decision Gateway**（2026-09-25・`docs/gateway.md`）。契約は Common Decision Contract v1（既存 DecisionResult を `decision` に包む envelope＋`request_id`／`correlation_id`／fail-closed の failure policy）。第1実consumer＝en-generate-hub `decision-gate`（`paid-generation-gate`）、Claude Code は Vault Skill `enexus-decision` から。MCP の接続は Human-only
@@ -16,7 +16,7 @@ Rules ／ Jev（direct・vercel実装、cloudflare予約）／ Mock Jev ／ Loca
 - **deterministic rules を先に評価**し、解けないときだけ確率的 Adapter → 最後は必ず Human。
 - **承認はしない**。outcome に `approved` 等の承認キーは構造上存在できず（`policies/safety/human-only.json`）、
   既存の Human-only ゲート（en-generate-hub 承認チェーン・Claude Code permissions・Product Hub 更新ボタン）は一切変更しない。
-- **APIキー不要で動く**。`JEV_API_KEY`（direct）／`AI_GATEWAY_API_KEY`（vercel、`JEV_PROVIDER=vercel`のときのみ。加えて`npm install`でoptionalDependencyの`ai`が要る）が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
+- **APIキー不要で動く**。`JEV_API_KEY`（TypeSafe Direct。依存パッケージ不要）が無ければ Jev Adapter は unavailable 扱いになり Mock / Human へ落ちる。キーと `EDL_ALLOW_NETWORK=true` が揃えば Jev は**既定で呼ばれる**（低コストGateが役割なので Cost Gate の対象外）。Claude／GPT 等の LLM Adapter は `options.allow_paid_adapters=true` のときだけ。
 - **usage metering** は初日から（`data/usage/usage.jsonl`、USD micros）。1行 = 1判定で、top-level は final resolver の usage、`attempts[]` / `usage_total` は途中で実際に呼んだ provider（低confidenceで human へ落ちた実 Jev 等）の usage も含む（docs/architecture.md §11）。
 
 ## 使い方
@@ -47,7 +47,7 @@ node src/cli.mjs usage --attempts --by provider   # attempt 単位（final が h
 |---|---|
 | `src/core/` | decision-engine / router / fallback / confidence / errors |
 | `src/gateway/` | Common Decision Gateway（gateway / engine 契約 / http-server / mcp-server）。`docs/gateway.md` |
-| `src/adapters/` | adapter-interface と jev（+ jev-provider-interface：direct / vercel / cloudflare 経路）/ rules / llm / local / human |
+| `src/adapters/` | adapter-interface と jev（+ jev-provider-interface：direct / cloudflare 経路）/ rules / llm / local / human |
 | `src/registries/` | Project / Skill / Agent / Model Registry の解決（`registries/*.json` を読む） |
 | `src/schemas/` | 依存ゼロの JSON Schema サブセット検証器 + loader |
 | `src/usage/` | metering（JSONL 追記・集計） |

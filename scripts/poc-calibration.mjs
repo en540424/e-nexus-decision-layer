@@ -59,11 +59,12 @@ import { checkOutcomeInvariants } from '../src/schemas/invariants.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_CASES_PATH = join(ROOT, 'docs', 'poc', 'calibration', 'paid-generation-gate.cases.json');
 export const RESULTS_DIR = join(ROOT, 'docs', 'poc', 'calibration', 'results');
+// AI_GATEWAY_API_KEY は Vercel 経路廃止（2026-09-29）後も User env に残り得る（削除は Human）。結果ファイルへの混入検査は続ける
 const SECRET_ENV_NAMES = ['AI_GATEWAY_API_KEY', 'JEV_API_KEY'];
 // 1 件目で止める理由：同じ鍵・同じ経路なら全ケースが同じ理由で落ちる（鍵無効・アカウント未有効・課金・request 形式・rate limit）。
-// JEV_PAYMENT_REQUIRED / JEV_REQUEST_REJECTED / JEV_PROVIDER_UNKNOWN は 2026-09-29（Direct 正式化の準備）に追加
+// JEV_PAYMENT_REQUIRED / JEV_REQUEST_REJECTED / JEV_PROVIDER_UNKNOWN は 2026-09-29（Direct 正式化）に追加
 const STOP_REASONS = new Set(['JEV_RATE_LIMITED', 'JEV_AUTH_FAILED', 'JEV_FORBIDDEN', 'JEV_PAYMENT_REQUIRED', 'JEV_REQUEST_REJECTED',
-  'JEV_VERCEL_API_KEY_MISSING', 'JEV_API_KEY_MISSING', 'JEV_PROVIDER_UNKNOWN', 'NETWORK_DISABLED']);
+  'JEV_API_KEY_MISSING', 'JEV_PROVIDER_UNKNOWN', 'NETWORK_DISABLED']);
 
 // ---------------------------------------------------------------- cases / question variants
 
@@ -278,7 +279,6 @@ function providerSummary(env) {
     return {
       route: p.id,
       model_id: typeof p.modelId === 'function' ? p.modelId(env) : (env.JEV_MODEL || 'jev-latest'),
-      ...(p.id === 'vercel' ? { zdr: env.JEV_ZDR === 'true' } : {}),
     };
   } catch (err) {
     return { route: env.JEV_PROVIDER ?? null, error: err?.details?.reason ?? err?.message ?? 'unknown' };
