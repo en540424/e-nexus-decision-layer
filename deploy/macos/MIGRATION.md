@@ -34,7 +34,7 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 - [ ] 1. [Human] 初期設定・Apple ID・判断 1 の設定・電源（停電後の自動起動）・（任意）リモートログイン（SSH）・Tailscale（MA-24 の Q6 ACL・Q7 port を先に確認）
 - [ ] 2. [Human] Command Line Tools（最初の `git` で出るダイアログ）・node≥20・python≥3.10 の導入（方法は `〔実機で確定〕`）
 - [ ] 3. [Human] `gh auth login`（private repo の clone に必要）
-- [ ] 4. [AI可] `sh deploy/macos/bootstrap.sh --base 〔実機で確定〕 --owner en540424 --bundle-dir <bundle を置いた場所>`（最初の decision-layer だけは手で clone する）
+- [ ] 4. [AI可] `sh deploy/macos/bootstrap.sh --base 〔実機で確定〕 --owner <GitHub の owner> --bundle-dir <bundle を置いた場所>`（最初の decision-layer だけは手で clone する）
 - [ ] 5. [AI可] `sh deploy/macos/doctor.sh --base 〔実機で確定〕` が FAIL なし
 - [ ] 6. [Human・TTY] en-generate-hub：`bash scripts/secret-migrate.sh set fal`・`set wavespeed` → shell profile の `FAL_KEY`／`WAVESPEED_API_KEY` の export を消す → `bash scripts/secret-boundary-probe.sh` が exit 0（SSH 越しなら login Keychain のロック解除が要る＝`〔実機で確定〕`）
 - [ ] 7. [Human・TTY・使うときだけ] `bash deploy/macos/keychain-edl.sh set <name>`（判断 2・3 の結果）
