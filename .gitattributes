@@ -1,0 +1,3 @@
+# 2026-09-29：macOS／POSIX 用の shell script（deploy/macos/*.sh・integrations/openmontage/launch-openmontage.sh）は
+# CRLF で checkout すると sh／bash で動かないので LF に固定する（en-generate-hub・en-sns-hub と同じ）
+*.sh text eol=lf
