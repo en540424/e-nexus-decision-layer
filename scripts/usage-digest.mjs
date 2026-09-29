@@ -16,7 +16,7 @@
  * 通知（任意・既定 OFF）：`--webhook credential:E-NEXUS/edl/<name>` のときだけ、異常があれば（`--webhook-always` なら毎回）digest を
  * POST する。URL は OS 資格情報ストアからだけ読む（引数・環境変数に URL を置かない＝token 入りの URL を shell 履歴・ps に残さない）。
  * https 必須。webhook 先の登録（資格情報ストアへの保存）は Human。共通通知 package は作らない（consumer ごとに持つ決定・MA-30）。
- * 定期実行（systemd timer・launchd・Task Scheduler）の登録も Human（docs/gateway.md §13）。
+ * 定期実行（systemd timer・launchd・Task Scheduler）の登録も Human（docs/deploy-production-gateway.md §5・docs/gateway.md §8）。
  */
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
