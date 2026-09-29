@@ -72,6 +72,8 @@ Human が「`direct-only-cutover` を `master` へ merge する」ことを明�
 | 残すもの | `request-vercel-test.json`（中身は provider 非依存の `paid-generation-gate` request。decision-log 2026-09-19 の判断どおり再現用 fixture として保持し、calibration cases・過去結果が名前で参照するため改名しない）。`docs/poc-paid-generation-gate.md` の Vercel 前提の手順には「廃止・Direct を使う」注記を付けた（本文は履歴として残す） |
 
 **Human Required（残り・任意）**：
-1. branch `direct-only-cutover`（local・origin）の削除（branch 削除は Human-only。merge 済みなので残しても害はない）
+1. ~~branch `direct-only-cutover`（local・origin）の削除（branch 削除は Human-only。merge 済みなので残しても害はない）~~ → 完了（2026-09-29、local・origin とも `git branch -d`／`push --delete` で削除）
 2. User env の `AI_GATEWAY_API_KEY` 削除・Vercel 側でのキー失効
-3. repo `.env.example` の Vercel 節の削除（`.env*` は機械ガードで Claude Code は編集しない）
+3. ~~repo `.env.example` の Vercel 節の削除（`.env*` は機械ガードで Claude Code は編集しない）~~ → 完了（2026-09-29、`.env.example` の編集は許可された。Vercel 節（`AI_GATEWAY_API_KEY`・`AI_GATEWAY_BASE_URL`・`JEV_VERCEL_MODEL`・`JEV_ZDR`）を削除し、`JEV_PROVIDER` の説明を direct のみ＋vercel 廃止注記へ）
+
+**補足**：Skill `enexus-decision` は Vault `.claude/skills` だけで使う Skill（skill-sync のどの配布グループにも入っていない・配布先なし）。Vault 側の更新でそのまま最新
