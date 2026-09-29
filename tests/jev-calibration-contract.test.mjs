@@ -1,14 +1,13 @@
 /**
  * 実JEV Calibration（2026-09-26）で追加した Jev Adapter の汎用機構を固定する。
  *   x-jev-enum（Rules First 通過後に到達し得る選択肢だけを提示）／x-jev-derive（定義上従属する field は導出）／
- *   x-boolean-criteria（Vercel boolean criteria）／input_notes（input enum 値の意味）／x-outcome-invariants（自己矛盾 → confidence 0）
+ *   x-boolean-criteria（Direct noul criteria）／input_notes（input enum 値の意味）／x-outcome-invariants（自己矛盾 → confidence 0）
  * いずれも decision_type 固有のケースに効く分岐ではなく、schema 宣言だけで動く。実ネットワークは使わない。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readJson, loadDecisionType } from '../src/schemas/loader.mjs';
 import { buildJevRequest, parseJevResponse, createJevAdapter } from '../src/adapters/jev/jev-adapter.mjs';
-import { toGatewayQuestions } from '../src/adapters/jev/jev-vercel-provider.mjs';
 import { toDirectRequest } from '../src/adapters/jev/jev-direct-provider.mjs';
 import { checkOutcomeInvariants, outcomeInvariantsOf } from '../src/schemas/invariants.mjs';
 import { createDecisionEngine } from '../src/core/decision-engine.mjs';
@@ -89,16 +88,14 @@ test('invalid annotations fail loudly instead of guessing', () => {
   assert.throws(() => parseJevResponse({ answers: { r: { type: 'choice', choice: 'b', confidence: 0.9 } } }, { fieldPlans: plans }), (e) => e.details.reason === 'JEV_MALFORMED_RESPONSE');
 });
 
-test('boolean criteria reach both the Vercel Gateway question and the Direct API noul question (review P D6)', () => {
+test('boolean criteria reach the Direct API noul question (review P D6); fields without x-boolean-criteria send none', () => {
   const outcome = loadDecisionType('paid-generation-gate').schema.properties.outcome;
   const { request } = buildJevRequest({ decisionType: 'paid-generation-gate', outcomeSchema: outcome, input: { asset_kind: 'image', purpose: 'p' }, candidates: [] });
   assert.ok(request.questions.human_review_required.criteria.true.length > 20);
-  const gw = toGatewayQuestions(request.questions);
-  assert.deepEqual(gw.human_review_required.criteria, request.questions.human_review_required.criteria);
-  assert.ok(gw.local_sufficient.criteria.true.length > 20);
-  const plain = toGatewayQuestions({ f: { type: 'noul', instructions: 'i' } });
-  assert.deepEqual(plain.f, { type: 'boolean', instructions: 'i' }, 'fields without x-boolean-criteria send none');
+  const plain = toDirectRequest({ model: 'm', state: {}, questions: { f: { type: 'noul', instructions: 'i' } } });
+  assert.deepEqual(plain.questions.f, { type: 'noul', instructions: 'i' }, 'fields without x-boolean-criteria send none');
   const direct = toDirectRequest(request);
+  assert.ok(direct.questions.local_sufficient.criteria.true.length > 20);
   assert.deepEqual(direct.questions.human_review_required.criteria, request.questions.human_review_required.criteria);
   assert.ok(!('criteria' in direct.questions.recommended_route) || direct.questions.recommended_route.criteria === request.questions.recommended_route.criteria);
   // 形が崩れた noul criteria（片側欠け）は推測で補わず送らない

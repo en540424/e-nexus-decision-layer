@@ -633,7 +633,7 @@ def agent_brief(reports_dir):
 def child_env(base, cfg, reports_dir):
     spec = om.load_engine_env_spec(om.resolve_edl_home(cfg.gateway_env or os.environ))
     engine_prefixes = (om.GATEWAY_NAMESPACE_PREFIX, *spec["prefixes"])
-    engine_names = set(spec["names"])
+    engine_names = set(spec["names"]) | set(spec.get("withhold", []))   # withhold＝廃止経路の Secret 等（manifest が知る）
     env, stripped = {}, []
     for k, v in base.items():
         ku = k.upper()

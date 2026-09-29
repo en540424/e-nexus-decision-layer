@@ -136,29 +136,31 @@ test('analyze / analyzeToMarkdown: distribution, grouping, field-level, metering
 
 // ---- 2026-09-19 継続：RetryError 診断・merge・payload shape ----
 
-test('runCases: a RetryError-wrapped 503 from the real provider path is recorded with diagnostic (status / retry_count / error_name), networked=true in attempts[], and the run continues (not an immediate stop)', async () => {
+test('runCases: a 503 that exhausts the Direct provider retries is recorded with diagnostic (status / retry_count), networked=true in attempts[], and the run continues (not an immediate stop)', async () => {
   const { mergeResults } = await import('../scripts/poc-calibration.mjs');
-  const { createVercelJevProvider } = await import('../src/adapters/jev/jev-vercel-provider.mjs');
+  const { createDirectJevProvider } = await import('../src/adapters/jev/jev-direct-provider.mjs');
+  // 2026-09-29：Vercel（AI SDK の RetryError）から Direct（自前の再送 2 回）へ移した。1 件目は 3 回とも 503、2 件目は正常
   let calls = 0;
-  const inner = Object.assign(new Error('service unavailable'), { name: 'GatewayInternalServerError', statusCode: 503, isRetryable: true });
-  const evaluateImpl = async ({ questions }) => {
+  const fetchImpl = async (url, init) => {
     calls += 1;
-    if (calls === 1) throw Object.assign(new Error('Failed after 3 attempts'), { name: 'RetryError', reason: 'maxRetriesExceeded', errors: [inner, inner, inner], lastError: inner });
+    if (calls <= 3) return { ok: false, status: 503, headers: { get: () => null }, json: async () => ({}) };
+    const { questions } = JSON.parse(init.body);
     const answers = {};
     // 自己矛盾しない回答（remotion 可・有料不要）。全部 true にすると x-outcome-invariants に当たり jev で確定しない
-    for (const [name, q] of Object.entries(questions)) answers[name] = q.type === 'boolean' ? { type: 'boolean', probability: name === 'paid_generation_required' ? 0.03 : 0.97 } : { type: 'choice', choice: 'remotion' };
-    return { answers, usage: { inputTokens: 300, outputTokens: 20 }, response: { modelId: 'typesafe-ai/jev' }, providerMetadata: { typesafe: { confidence: { recommended_route: 0.9 } } } };
+    for (const [name, q] of Object.entries(questions)) answers[name] = q.type === 'noul' ? { type: 'noul', noul: name === 'paid_generation_required' ? 0.03 : 0.97 } : { type: 'choice', choice: 'remotion', confidence: 0.9 };
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ model: 'jev-1.13.0', answers, usage: { input_tokens: 300, output_tokens: 20 } }) };
   };
-  const provider = createVercelJevProvider({ evaluateImpl });
+  const provider = createDirectJevProvider({ fetchImpl, sleepImpl: async () => {} });
   const doc = loadCases();
-  const env = { EDL_ALLOW_NETWORK: 'true', AI_GATEWAY_API_KEY: 'test-key-not-real-0000', JEV_PROVIDER: 'vercel' };
+  const env = { EDL_ALLOW_NETWORK: 'true', JEV_API_KEY: 'test-key-not-real-0000', JEV_PROVIDER: 'direct' };
   const meter = createMemoryMeter();
   const { records, stopped } = await runCases({ doc, variant: 'improved', only: ['A3-motion-lower-third', 'B1-photoreal-scene-baseline'], env, meter, provider, delayMs: 1, pauseAfterRetryableMs: 1 });
   assert.equal(stopped, null, 'one retryable failure does not stop the run');
   const a3 = records[0];
   assert.equal(a3.jev.status, 'unavailable');
   assert.equal(a3.jev.reason, 'JEV_OVERLOADED');
-  assert.deepEqual(a3.jev.diagnostic, { status: 503, retryable: true, retry_count: 2, retry_reason: 'maxRetriesExceeded', error_name: 'GatewayInternalServerError' });
+  assert.equal(calls >= 4, true);
+  assert.deepEqual(a3.jev.diagnostic, { status: 503, retryable: true, retry_count: 2 });
   const jevAttempt = a3.usage_record.attempts.find((a) => a.adapter === 'jev');
   assert.equal(jevAttempt.networked, true, 'retried ⇒ dispatched');
   assert.equal(jevAttempt.retry_count, 2);
@@ -187,13 +189,13 @@ test('runCases: a RetryError-wrapped 503 from the real provider path is recorded
 
 test('payload shape: the cases that failed in the real run (D2 / E1 / A3 / B1) build the same question structure as the cases that succeeded — no case-specific payload defect', async () => {
   const { buildJevRequest } = await import('../src/adapters/jev/jev-adapter.mjs');
-  const { toGatewayQuestions } = await import('../src/adapters/jev/jev-vercel-provider.mjs');
+  const { toDirectRequest } = await import('../src/adapters/jev/jev-direct-provider.mjs');
   const doc = loadCases();
   const dt = loadDecisionType(doc.decision_type);
   const shapes = new Set();
   for (const c of doc.cases.filter((x) => x.expected.resolver === 'jev')) {
     const { request } = buildJevRequest({ decisionType: doc.decision_type, outcomeSchema: dt.schema.properties.outcome, input: c.input, candidates: [] });
-    const gw = toGatewayQuestions(request.questions);
+    const gw = toDirectRequest(request).questions;
     JSON.parse(JSON.stringify(request.state)); // JSON-compatible state
     for (const [name, q] of Object.entries(gw)) {
       assert.ok(typeof q.instructions === 'string' && q.instructions.length > 0, `${c.case_id}.${name} instructions`);

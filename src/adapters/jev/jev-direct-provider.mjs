@@ -11,7 +11,7 @@
  * エラー: 401（キー無効・再試行しない）／422（body検証失敗・再試行しない）／429（rate limit）／
  *         408・5xx・529（overloaded）は指数バックオフで再試行、Retry-After（秒）/retry-after-ms を尊重。
  *
- * 2026-09-29 再確認（docs.typesafe.ai/api.md・/models.md。TypeSafe Direct 正式化・Vercel 経路廃止の準備）:
+ * 2026-09-29 再確認（docs.typesafe.ai/api.md・/models.md。TypeSafe Direct を正式経路とし、Vercel 経路を廃止）:
  *   endpoint・Bearer 認証・request {model, state, questions}・noul criteria {true,false} optional は上記と同じ。
  *   応答の `model` は「実際に答えた版付きID」（例 jev-1.13.0。jev-latest / jev-preview は alias）→ jev-adapter が model_version に写す。
  *   choice / score は probabilities と confidence、score は legend も返す（legend は使わない）。
@@ -109,7 +109,7 @@ async function classifyResponse(res) {
 
 /**
  * noul の criteria（x-boolean-criteria 由来）：公式 API（docs.typesafe.ai/api.md・2026-09-29 Fable追加レビューP D6 で確認）で
- * Noul の `criteria: { true, false }` は optional として対応済み。以前は「仕様未確認」で strip していたが、Vercel 経路と同じ
+ * Noul の `criteria: { true, false }` は optional として対応済み。以前は「仕様未確認」で strip していたが、当時の Vercel 経路と同じ
  * 質問を Direct にも送るため、true / false が両方 string の正しい形のときだけ送る（形が崩れたものは送らない＝推測で補わない）。
  */
 export function toDirectRequest(request) {

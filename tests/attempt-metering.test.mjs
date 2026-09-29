@@ -12,7 +12,6 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDirectJevProvider } from '../src/adapters/jev/jev-direct-provider.mjs';
-import { createVercelJevProvider } from '../src/adapters/jev/jev-vercel-provider.mjs';
 import { createJevAdapter, parseJevResponse } from '../src/adapters/jev/jev-adapter.mjs';
 import { createMockJevAdapter } from '../src/adapters/jev/mock-jev-adapter.mjs';
 import { createRulesAdapter } from '../src/adapters/rules/rules-adapter.mjs';
@@ -227,7 +226,7 @@ test('Jev retry: 503,503,200 → ONE attempt with retry_count=2, usage counted o
   assert.equal(r2.resolved_by, 'human');
 });
 
-test('Jev timeout (AbortError) → networked=true, unknown usage; Vercel route: retry_count is null (SDK-internal, not observable), route=vercel', async () => {
+test('Jev timeout (AbortError) → networked=true, unknown usage; low-confidence success keeps retry_count 0 and the versioned model; 403 after send is networked', async () => {
   const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
   const t = directJev([abort, abort, abort]);
   const { engine } = makeEngine({ adapters: chainOf(t.adapter) });
@@ -238,35 +237,25 @@ test('Jev timeout (AbortError) → networked=true, unknown usage; Vercel route: 
   assert.equal(a.usage_known, false);
   assert.equal(a.retry_count, 2);
 
-  const evaluateImpl = async () => ({
-    answers: {
-      local_sufficient: { type: 'boolean', probability: 0.01 },
-      remotion_suitable: { type: 'boolean', probability: 0.01 },
-      paid_generation_required: { type: 'boolean', probability: 0.99 },
-      human_review_required: { type: 'boolean', probability: 0.01 },
-      recommended_route: { type: 'choice', choice: 'en-generate-hub', probabilities: { 'en-generate-hub': 0.9 } },
-    },
-    providerMetadata: { typesafe: { confidence: { recommended_route: 0.08 } } },
-    usage: { inputTokens: 512, outputTokens: 8 },
-    response: { modelId: 'typesafe-ai/jev' },
-  });
-  const vercel = createJevAdapter({ env: { JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }, provider: createVercelJevProvider({ evaluateImpl }) });
-  const v = makeEngine({ adapters: chainOf(vercel) });
+  // 低 confidence の正常応答（初回で成功）：retry_count は Direct が実送信回数として書く 0。model は応答の版付き ID
+  // （2026-09-29 Vercel 経路廃止で、この検査は Vercel の evaluate 形から Direct の公式形へ移した。検査内容は同じ）
+  const low = directJev([fakeResponse({ body: jevBody({ choiceConfidence: 0.08, inputTokens: 512, outputTokens: 8 }) })]);
+  const v = makeEngine({ adapters: chainOf(low.adapter) });
   const rv = await v.engine.decide(gateRequest(PHOTOREAL));
   const b = jevAttempt(rv);
   assert.equal(b.status, 'ok');
   assert.equal(b.confidence, 0.08);
-  assert.equal(b.route, 'vercel');
-  assert.equal(b.model, 'typesafe-ai/jev');
+  assert.equal(b.route, 'direct');
+  assert.equal(b.model, 'jev-1.13.0');
   assert.equal(b.networked, true);
-  assert.equal(b.retry_count, null);
+  assert.equal(b.retry_count, 0);
   assert.equal(b.input_tokens, 512);
   assert.equal(rv.resolved_by, 'human');
   assert.equal(v.meter.readAll()[0].usage_total.input_tokens, 512);
 
-  // Vercel 側の HTTP エラーも送信後 → networked=true
-  const failing = createJevAdapter({ env: { JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }, provider: createVercelJevProvider({ evaluateImpl: async () => { throw Object.assign(new Error('forbidden'), { statusCode: 403 }); } }) });
-  const f = makeEngine({ adapters: chainOf(failing) });
+  // 送信後の HTTP 拒否（403）も networked=true
+  const failing = directJev([fakeResponse({ status: 403 })]);
+  const f = makeEngine({ adapters: chainOf(failing.adapter) });
   const rf = await f.engine.decide(gateRequest(PHOTOREAL));
   assert.equal(jevAttempt(rf).reason, 'JEV_FORBIDDEN');
   assert.equal(jevAttempt(rf).networked, true);

@@ -170,7 +170,7 @@ def resolve_edl_home(env=None):
 
 
 def load_engine_env_spec(edl_home):
-    empty = {"prefixes": [], "names": []}
+    empty = {"prefixes": [], "names": [], "withhold": []}
     try:
         doc = json.loads((Path(edl_home) / ENGINE_ENV_MANIFEST).read_text(encoding="utf-8"))
         prefixes = doc.get("forward", {}).get("prefixes")
@@ -181,7 +181,11 @@ def load_engine_env_spec(edl_home):
             return empty
         if not all(isinstance(n, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", n) for n in names):
             return empty
-        return {"prefixes": prefixes, "names": names}
+        # withhold（2026-09-29）：Gateway へは渡さないが agent 系の子 process から外す名前。形が崩れていれば空（forward は有効のまま）
+        withhold = doc.get("withhold", {}).get("names", [])
+        if not isinstance(withhold, list) or not all(isinstance(n, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", n) for n in withhold):
+            withhold = []
+        return {"prefixes": prefixes, "names": names, "withhold": withhold}
     except Exception:  # noqa: BLE001 - 読めなければ EDL_* のみ（fail-closed）
         return empty
 

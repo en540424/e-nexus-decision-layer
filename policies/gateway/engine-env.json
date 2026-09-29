@@ -1,5 +1,5 @@
 {
-  "$comment": "Common Decision Gateway を別 process（CLI `gateway decide --stdin`）として起動する consumer が、子 process へ渡してよい環境変数の『名前』。値は持たない・書かない。Decision Engine（現在は Decision Layer core → Jev Adapter → Jev Provider）が読む env 名はこのファイルだけが知り、consumer は Jev 固有の名前（JEV_* / AI_GATEWAY_*）をコードに持たない。engine を別の Decision Engine へ差し替えるときは、consumer ではなくこのファイルを変える。consumer はこのファイルが読めなければ EDL_* だけを渡す（engine は外部判断経路を使えず rules → human へ倒れる＝fail-closed）。consumer 自身の Secret（FAL_KEY 等）は consumer 側で常に除外する。tests/gateway-engine-env.test.mjs が src の env 参照をすべて網羅していることを検査する。2026-09-26 新設（MA-30 実JEV第1段）。",
+  "$comment": "Common Decision Gateway を別 process（CLI `gateway decide --stdin`）として起動する consumer が、子 process へ渡してよい環境変数の『名前』。値は持たない・書かない。Decision Engine（現在は Decision Layer core → Jev Adapter → Jev Provider）が読む env 名はこのファイルだけが知り、consumer は Jev 固有の名前（JEV_* 等）をコードに持たない。engine を別の Decision Engine へ差し替えるときは、consumer ではなくこのファイルを変える。consumer はこのファイルが読めなければ EDL_* だけを渡す（engine は外部判断経路を使えず rules → human へ倒れる＝fail-closed）。consumer 自身の Secret（FAL_KEY 等）は consumer 側で常に除外する。tests/gateway-engine-env.test.mjs が src の env 参照をすべて網羅していることを検査する。2026-09-26 新設（MA-30 実JEV第1段）。2026-09-29 Vercel 経路廃止で JEV_VERCEL_MODEL / JEV_ZDR / AI_GATEWAY_API_KEY / AI_GATEWAY_BASE_URL を外した（engine はもう読まない。consumer 側で AI_GATEWAY_API_KEY を除去する多層防御はそのまま）。",
   "contract_version": "1",
   "forward": {
     "prefixes": ["EDL_"],
@@ -8,11 +8,16 @@
       "JEV_API_KEY",
       "JEV_API_BASE_URL",
       "JEV_MODEL",
-      "JEV_TIMEOUT_MS",
-      "JEV_VERCEL_MODEL",
-      "JEV_ZDR",
+      "JEV_TIMEOUT_MS"
+    ]
+  },
+  "withhold": {
+    "$comment": "Gateway 子 process へは渡さない（engine はもう読まない）が、agent 系の子 process（OpenMontage Launcher が起動する agent 等）の env からは外す名前。2026-09-29 Vercel 経路廃止で forward から外した Secret 系の名前を置く。User env に AI_GATEWAY_API_KEY が残る間、forward から消しただけだと Launcher の除去対象からも消えて agent へ渡ってしまうため（MA-30 §18-13 の多層防御を維持）。consumer はこの欄の名前をコードに持たない。",
+    "names": [
       "AI_GATEWAY_API_KEY",
-      "AI_GATEWAY_BASE_URL"
+      "AI_GATEWAY_BASE_URL",
+      "JEV_VERCEL_MODEL",
+      "JEV_ZDR"
     ]
   }
 }

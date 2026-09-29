@@ -21,7 +21,7 @@
  *     networked?: boolean,        // 外部 provider へ実際にリクエストを送ったか。省略時は「不明（null）」として記録される。
  *                                 //   送っていない Adapter（rules / human / mock / local）は false を明示する
  *     model?: string,             // provider が実際に使ったモデルID（adapter.model の上書き。実応答から取れる場合のみ）
- *     route?: string,             // 到達経路（例: jev の 'direct' / 'vercel'）
+ *     route?: string,             // 到達経路（例: jev の 'direct'。usage.jsonl の過去行には廃止済みの 'vercel' もある）
  *     retry_count?: number,       // provider 内部の再試行回数（取得できる場合のみ。捏造しない）
  *   }
  *

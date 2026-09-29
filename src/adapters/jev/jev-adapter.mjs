@@ -13,9 +13,9 @@
  *
  * 構造（経路を固定しない）:
  *   Decision Layer → Jev Adapter（この file：変換だけ）→ Jev Provider（jev-provider-interface.mjs：経路だけ）
- *                                                         ├─ direct（TypeSafe Direct API。実装済み）
- *                                                         ├─ vercel（Vercel AI Gateway。予約）
+ *                                                         ├─ direct（TypeSafe Direct API。正式経路・2026-09-29〜）
  *                                                         └─ cloudflare（Cloudflare 経由。予約）
+ *   （vercel＝Vercel AI Gateway 経由は Direct までの暫定経路で、2026-09-29 に廃止・削除）
  *   経路の追加は Provider 1ファイルで済み、この Adapter・Engine は変更しない。
  *
  * outcome schema → Jev questions の写像（2026-09-19 Jev公式API仕様確認済み。詳細は MA-30開発ログ参照）:
@@ -39,13 +39,14 @@
  * APIキーの値をログ・例外メッセージ・結果へ含めない。
  *
  * model_version / evidence（2026-09-29・Fable追加レビューP D1・D3）:
- *   model_version = 応答から分かる実版（例 jev-1.13.0）。Direct は応答 `model` が版なら、Vercel は provider が providerMetadata 等から
- *   拾えた場合だけ。alias（jev / jev-latest / typesafe-ai/jev）しか無ければ null（alias を版として記録しない）。
+ *   model_version = 応答から分かる実版（例 jev-1.13.0）。Direct は応答 `model` が版なら（公式：応答の model は答えた版付きID）。
+ *   provider が raw に model_version / routing を載せた場合も allowlist で読む（現行の Direct は載せない）。
+ *   alias（jev / jev-latest / jev-preview）しか無ければ null（alias を版として記録しない）。
  *   evidence = 観測用の補助記録（tier・confidence 合成には使わない）：response_model・model_version_source・Gateway routing・
  *   question ごとの probabilities（choice/score は Jev の分布、noul は { true: p, false: 1-p }。小数4桁）。
  *
  * attempt metering（2026-09-19）:
- *   正常応答は networked:true・route（direct/vercel）・model（応答の実モデルID）・retry_count（Provider が meta に書いた場合のみ）を
+ *   正常応答は networked:true・route（direct 等）・model（応答の実モデルID）・retry_count（Provider が meta に書いた場合のみ）を
  *   AdapterResult に付ける。送信後の失敗（HTTP/timeout/応答不正）は Provider／parseJevResponse が details.networked=true を付けて throw し、
  *   送信前のゲート（NETWORK_DISABLED / *_KEY_MISSING / JEV_UNSUPPORTED_OUTCOME_FIELD 等）は付けない（core が false と扱う）。
  */
@@ -100,7 +101,7 @@ function jevEnumOf(name, fieldSchema) {
 function planForField(name, fieldSchema, decisionType) {
   const instructions = fieldSchema?.description || `Determine ${name} for this ${decisionType} decision.`;
   if (fieldSchema?.type === 'boolean') {
-    // x-boolean-criteria（任意）：true / false それぞれの意味。Vercel Gateway の boolean criteria・Direct の noul criteria へ渡す（2026-09-29〜 Direct も送る）
+    // x-boolean-criteria（任意）：true / false それぞれの意味。Direct の noul criteria（公式 optional）へ渡す
     const bc = fieldSchema['x-boolean-criteria'];
     const criteria = bc && typeof bc.true === 'string' && typeof bc.false === 'string' ? { true: bc.true, false: bc.false } : null;
     return { question: { type: 'noul', instructions, ...(criteria ? { criteria } : {}) }, plan: { kind: 'noul' } };
@@ -179,7 +180,7 @@ export function buildJevRequest({ decisionType, outcomeSchema, input, candidates
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
-/** 版らしい文字列（数字.数字 を含む）か。alias は false（jev-vercel-provider.mjs の looksVersioned と同じ判定。循環 import を避けて複製） */
+/** 版らしい文字列（数字.数字 を含む）か。alias（jev-latest 等）は false */
 function looksVersioned(v) {
   return typeof v === 'string' && SAFE_ID.test(v) && /\d+\.\d+/.test(v);
 }

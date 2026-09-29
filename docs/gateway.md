@@ -14,7 +14,7 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
                                      ▼  DecisionEngine 契約（src/gateway/engine.mjs）
                      Decision Layer core（schema → safety → registry → router → fallback → Human Gate → metering）
                                      ▼  Adapter Interface
-                     Rules → Jev（Provider: vercel / direct / cloudflare予約）→ local → llm → Human
+                     Rules → Jev（Provider: direct＝TypeSafe Direct / cloudflare予約）→ local → llm → Human
 ```
 
 ## 1. 責務（何を持ち、何を持たないか）
@@ -245,35 +245,35 @@ HTTP / Production 用 transport は Production Gateway の構築（Human-only）
 | env | 値 | 読む場所 |
 |---|---|---|
 | `EDL_ALLOW_NETWORK` | `true` | jev-adapter / 各 Provider（二重チェック）。これが無いと送信前に `NETWORK_DISABLED` |
-| `JEV_PROVIDER` | `vercel` | provider 選択（未設定は `direct`＝TypeSafe 招待待ちなので `JEV_API_KEY_MISSING` で止まる） |
-| `AI_GATEWAY_API_KEY` | （Secret。Human のみが設定） | vercel provider。無いと `JEV_VERCEL_API_KEY_MISSING` |
-| 任意：`JEV_VERCEL_MODEL`（既定 `typesafe-ai/jev`）・`JEV_ZDR`・`AI_GATEWAY_BASE_URL` | | vercel provider |
+| `JEV_PROVIDER` | `direct`（未設定でも `direct`） | provider 選択。**`vercel` は 2026-09-29 に廃止**＝`vercel` のままだと `JEV_PROVIDER_UNKNOWN` で Jev は使われず human へ倒れる |
+| `JEV_API_KEY` | （Secret。Human のみが設定。発行は console.typesafe.ai/keys） | direct provider。無いと `JEV_API_KEY_MISSING`。公式 SDK の名前 `TYPESAFE_API_KEY` は読まない |
+| 任意：`JEV_MODEL`（既定 `jev-latest`）・`JEV_API_BASE_URL`・`JEV_TIMEOUT_MS`（既定 10000） | | direct provider |
 
 - 3 つが **Gateway を起動する process の env** に揃ったときだけ実 Jev へ送る。CLI は `.env` を読まない。AI は設定しない（CLAUDE.md）
 - `gateway health` の `engine_health.jev` = `{ provider, network_enabled, usable, reason }`（キーの有無のみ）。`usable:true` が前提条件
-- timeout 30s・同時実行 4（§4）。AI SDK が 408/409/429/5xx を最大 2 回 retry（2s→4s）。失敗は reason 語彙（`JEV_RATE_LIMITED` / `JEV_OVERLOADED` / `JEV_NETWORK_ERROR` / `JEV_MALFORMED_RESPONSE` 等）で attempts[] に残り、human へ倒れる（`tests/gateway-real-jev-path.test.mjs`）
+- Gateway timeout 30s・同時実行 4（§4）。Direct provider は 1 試行 10s、408/429/5xx/529/timeout を最大 2 回 retry（backoff 0.5s→1s・`Retry-After` 尊重）。401/402/403/400/422 は再試行しない。失敗は reason 語彙（`JEV_AUTH_FAILED` / `JEV_FORBIDDEN` / `JEV_PAYMENT_REQUIRED` / `JEV_REQUEST_REJECTED` / `JEV_RATE_LIMITED` / `JEV_OVERLOADED` / `JEV_TIMEOUT` / `JEV_MALFORMED_RESPONSE` 等）で attempts[] に残り、human へ倒れる（`tests/gateway-real-jev-path.test.mjs`）
 
 ### 11-2. consumer へ渡す env は engine-env manifest が決める
 
 別 process で Gateway CLI を起動する consumer（en-generate-hub 等）は、子 process に **OS 基本 + `EDL_*` + `policies/gateway/engine-env.json` の名前** だけを渡す。
-consumer は Jev 固有の env 名（`JEV_*` / `AI_GATEWAY_*`）をコードに持たない。engine を替えるときはこの manifest だけ変える。
+consumer は Jev 固有の env 名（`JEV_*` 等）をコードに持たない。2026-09-29 の Vercel 廃止では manifest から `AI_GATEWAY_*`・`JEV_VERCEL_MODEL`・`JEV_ZDR` を外しただけで、consumer のコードは変えていない。engine を替えるときはこの manifest だけ変える。
 manifest が読めない consumer は `EDL_*` だけを渡す（外部判断経路が使えず human へ倒れる＝fail-closed）。
 `tests/gateway-engine-env.test.mjs` が「src が読む env 名をすべて manifest が網羅している」ことを検査する。Claude Code（Skill → CLI）は Claude Code process の env をそのまま継承する。
 
 ### 11-3. 「実 Jev を使った」の判定
 
 `resolved_by` では判定しない（実 Jev が正常応答しても confidence が閾値未満なら `tier:human`・`resolved_by:human` になる）。
-usage.jsonl の行の `attempts[]` に **`adapter=jev`・`status=ok`・`networked=true`・`route` が実経路（`vercel` / `direct`）・`input_tokens>0`** があれば実 Jev 証跡。
+usage.jsonl の行の `attempts[]` に **`adapter=jev`・`status=ok`・`networked=true`・`route` が実経路（`direct`。2026-09-29 以前の行は廃止済みの `vercel`）・`input_tokens>0`** があれば実 Jev 証跡。
 
 ```bash
 node scripts/real-jev-evidence.mjs --since <smoke開始のISO時刻> --expect claude-code,en-generate-hub   # 両 consumer に証跡が無ければ exit 1
 ```
 
-2026-09-29〜：Jev の ok attempt は任意フィールド `model_version`（応答から分かる実版。alias しか無ければ `null`）と `evidence`（`response_model`・`model_version_source`・Gateway `routing.resolved_provider`・question ごとの `probabilities`）を持つ。**観測用で tier・confidence には使わない**。Contract v1 の envelope 項目は変えていない（`decision.fallback.trace` の attempt record へ任意項目を足しただけ・後方互換）。Vercel 経路の 403 は `JEV_FORBIDDEN` のまま、内側の原因（例 `RestrictedModelsError`・`no_providers_available`）を calibration の診断に残す（`docs/poc/calibration/2026-09-29-extended-calibration.md`）。
+2026-09-29〜：Jev の ok attempt は任意フィールド `model_version`（応答から分かる実版。alias しか無ければ `null`）と `evidence`（`response_model`・`model_version_source`・Gateway `routing.resolved_provider`・question ごとの `probabilities`）を持つ。**観測用で tier・confidence には使わない**。Contract v1 の envelope 項目は変えていない（`decision.fallback.trace` の attempt record へ任意項目を足しただけ・後方互換）。Direct の応答 `model` は実際に答えた版（例 `jev-1.13.0`）なので `model_version` に入る（`jev-latest` 等の alias なら `null`）。Gateway `routing` は廃止した Vercel 経路でだけ付いた項目。
 
 ### 11-4. smoke 手順（Human が env を設定した後。有料生成・公開・production mutation はしない）
 
-1. `node src/cli.mjs gateway health` → `jev.usable: true`・`provider: vercel`
+1. `node src/cli.mjs gateway health` → `jev.usable: true`・`provider: direct`
 2. Claude Code consumer：Skill `enexus-decision` の手順どおり `application_id:"claude-code"` の `channel-selection`（無害な架空 dev-log × note・未公開）を `gateway decide --stdin`
 3. en-generate consumer：en-generate-hub で `node src/cli.mjs decision-gate --input <request.json> --json`（MA-17 承認の手前で止まる。run / approve / submit はしない）。`purpose` は Jev へ送られるので、smoke では既存 example を scratchpad へコピーし、`purpose` を人名・固有の人物設定を含まない短い架空の説明に差し替えて使う
 4. 任意：`gateway serve`（loopback・一時起動）へ `POST /v1/decisions` を 1 回（`application_id:"http-smoke"`）→ 停止

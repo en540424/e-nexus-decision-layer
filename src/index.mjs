@@ -54,7 +54,7 @@ export function createDecisionLayer({ adapters, meter, env = process.env, ...res
 
 export { createDecisionEngine } from './core/decision-engine.mjs';
 export { createRulesAdapter, createJevAdapter, createMockJevAdapter, createLlmAdapterStub, createLocalAdapterStub, createHumanAdapter };
-export { JEV_PROVIDER_IDS, assertJevProviderShape, resolveJevProvider, createDirectJevProvider, createVercelJevProvider, createCloudflareJevProvider } from './adapters/jev/jev-provider-interface.mjs';
+export { JEV_PROVIDER_IDS, assertJevProviderShape, resolveJevProvider, createDirectJevProvider, createCloudflareJevProvider } from './adapters/jev/jev-provider-interface.mjs';
 export { createFileMeter, createMemoryMeter, summarize, summarizeAttempts, attemptsOf, attemptsFromTrace, totalUsage, USAGE_FIELDS, ATTEMPT_FIELDS } from './usage/metering.mjs';
 export { resolveCandidates, resolveProject, loadRegistry, checkRegistries } from './registries/registry.mjs';
 export { listDecisionTypes, loadDecisionType } from './schemas/loader.mjs';

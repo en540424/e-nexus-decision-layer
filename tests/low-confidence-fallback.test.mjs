@@ -35,8 +35,9 @@ test('realJevUsable: true only when the resolved provider has its key AND the ne
   assert.equal(realJevUsable({ JEV_API_KEY: 'k' }), false, 'key without network gate');
   assert.equal(realJevUsable({ EDL_ALLOW_NETWORK: 'true' }), false, 'network gate without key');
   assert.equal(realJevUsable({ JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), true, 'direct');
-  assert.equal(realJevUsable({ JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), true, 'vercel');
-  assert.equal(realJevUsable({ JEV_PROVIDER: 'vercel', JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), false, 'vercel needs AI_GATEWAY_API_KEY, not JEV_API_KEY');
+  assert.equal(realJevUsable({ JEV_PROVIDER: 'direct', JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), true, 'direct (explicit)');
+  assert.equal(realJevUsable({ JEV_PROVIDER: 'direct', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), false, 'direct needs JEV_API_KEY; the removed Vercel key does not count');
+  assert.equal(realJevUsable({ JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), false, 'removed route (2026-09-29) → not usable, never throws');
   assert.equal(realJevUsable({ JEV_PROVIDER: 'cloudflare', EDL_ALLOW_NETWORK: 'true' }), false, 'reserved route');
   assert.equal(realJevUsable({ JEV_PROVIDER: 'nope', EDL_ALLOW_NETWORK: 'true' }), false, 'unknown route never throws');
 });
@@ -45,7 +46,7 @@ test('defaultAdapters: mock-jev is present only when the real Jev route is NOT u
   const ids = (env) => defaultAdapters({ env }).map((a) => a.id);
   assert.deepEqual(ids({}), ['rules', 'jev', 'mock-jev', 'local', 'llm', 'human'], 'no key → mock stays (documented "works without API key")');
   assert.deepEqual(ids({ JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), ['rules', 'jev', 'local', 'llm', 'human'], 'direct usable → no mock');
-  assert.deepEqual(ids({ JEV_PROVIDER: 'vercel', AI_GATEWAY_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), ['rules', 'jev', 'local', 'llm', 'human'], 'vercel usable → no mock');
+  assert.deepEqual(ids({ JEV_PROVIDER: 'direct', JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'true' }), ['rules', 'jev', 'local', 'llm', 'human'], 'direct (explicit) usable → no mock');
   assert.deepEqual(ids({ JEV_API_KEY: 'k', EDL_ALLOW_NETWORK: 'false' }), ['rules', 'jev', 'mock-jev', 'local', 'llm', 'human'], 'network gate closed → mock stays');
 });
 

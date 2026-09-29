@@ -37,6 +37,13 @@ test('engine-env manifest covers every env name the engine source reads (so cons
   assert.deepEqual(missing, [], `add to policies/gateway/engine-env.json: ${missing.join(', ')}`);
 });
 
+test('engine-env manifest withhold (2026-09-29): names only, never forwarded, and every name the removed Vercel route used is withheld from agents', () => {
+  const w = manifest.withhold?.names ?? [];
+  for (const n of w) assert.match(n, /^[A-Z][A-Z0-9_]*$/);
+  for (const n of w) assert.equal(covered(n), false, `${n} must not be forwarded to the Gateway`);
+  for (const n of ['AI_GATEWAY_API_KEY', 'AI_GATEWAY_BASE_URL', 'JEV_VERCEL_MODEL', 'JEV_ZDR']) assert.ok(w.includes(n), n);
+});
+
 test('engine-env manifest never lists consumer-side generation secrets', () => {
   for (const n of ['FAL_KEY', 'FAL_API_KEY', 'WAVESPEED_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) assert.equal(covered(n), false, n);
 });

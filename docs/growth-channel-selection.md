@@ -121,7 +121,7 @@ reason code 専用 field は置かない。決定的な理由は `rationale` の
 実 Jev キーは Human のシェルにしか無いため、本実装の Jev 経路は注入した fake provider でのみ検証済み（実通信は未実施）。Human が実疎通を確認する場合：
 
 ```powershell
-$env:JEV_PROVIDER="vercel"; $env:EDL_ALLOW_NETWORK="true"   # AI_GATEWAY_API_KEY は既に設定済みのシェルで
+$env:JEV_PROVIDER="direct"; $env:EDL_ALLOW_NETWORK="true"   # JEV_API_KEY（TypeSafe Direct）は既に設定済みのシェルで（2026-09-29 Vercel 経路廃止）
 node src/cli.mjs decide --file docs/growth/channel-selection.sample-request.json
 ```
 

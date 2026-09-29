@@ -10,11 +10,12 @@ import { AdapterUnavailableError } from '../src/core/errors.mjs';
 import { loadDecisionType, readJson } from '../src/schemas/loader.mjs';
 import { makeEngine } from './helpers.mjs';
 
-test('provider interface: shape is enforced; three routes are named (direct/vercel implemented, cloudflare reserved)', () => {
-  assert.deepEqual([...JEV_PROVIDER_IDS], ['direct', 'vercel', 'cloudflare']);
+test('provider interface: shape is enforced; routes are direct (implemented, formal) and cloudflare (reserved). vercel was removed 2026-09-29', () => {
+  assert.deepEqual([...JEV_PROVIDER_IDS], ['direct', 'cloudflare']);
   assert.throws(() => assertJevProviderShape({ id: 'x' }), /available\(\) missing/);
   assert.equal(resolveJevProvider({}).id, 'direct', 'default route is direct');
-  assert.equal(resolveJevProvider({ JEV_PROVIDER: 'vercel' }).id, 'vercel');
+  // 廃止した経路名が env に残っていても direct へ読み替えない（推測で別経路へ送らない＝fail-closed。JEV_PROVIDER_UNKNOWN）
+  assert.throws(() => resolveJevProvider({ JEV_PROVIDER: 'vercel' }), (e) => e instanceof AdapterUnavailableError && e.details.reason === 'JEV_PROVIDER_UNKNOWN' && e.details.route === 'vercel');
   assert.throws(() => resolveJevProvider({ JEV_PROVIDER: 'nope' }), (e) => e instanceof AdapterUnavailableError && e.details.route === 'nope');
 });
 
