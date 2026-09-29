@@ -16,3 +16,5 @@ Cursor の Agent / Rules から同じ CLI を呼ぶ。本体は変更不要。
 
 `integrations/cursor/enexus-decision.mdc`（Cursor の Project Rule 形式：frontmatter `description`・`alwaysApply: false`＝Agent が description を見て適用を決める。形式は Cursor docs で確認）。使う repo の `.cursor/rules/` へ写し、`<repo>` を `e-nexus-decision-layer` の場所に置き換える。内容は Claude Code の `enexus-decision` Skill と同じ契約（`application_id: "cursor"`・`expected_environment: "dev"`・stdin・fail-closed・判定は承認ではない）。Cursor の User Rules・MCP への登録は Human が行う。
 
+**2026-09-29 配置済み**：`e-nexus-decision-layer`（`node src/cli.mjs`）・`en-sns-hub`・`en-generate-hub`（`node ../e-nexus-decision-layer/src/cli.mjs`）の `.cursor/rules/enexus-decision.mdc`。repo を兄弟フォルダに並べる配置（Windows・Mac mini の `deploy/macos/bootstrap.sh` 共通）を前提にした相対パスなので、PC ごとの書き換えは要らない。雛形を直したら 3 か所へ写し直す。rule の表の 4 type を使わない repo（crm-core 等）には置いていない。
+
