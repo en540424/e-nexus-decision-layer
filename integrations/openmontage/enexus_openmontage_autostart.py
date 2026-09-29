@@ -13,7 +13,10 @@ watcher 本体（enexus_openmontage_launcher.py の `watch`）は OS 非依存�
       action   = pythonw.exe enexus_openmontage_launcher.py watch --autostart --quiet --notify（console を出さない）
       watcher は既に動いている watcher（Launcher 内の監視を含む）がいれば何もせず 0 で終わる。Launcher が終われば次の
       繰り返しで常駐 watcher が引き継ぐ
-    macOS（Mac mini 移行用・未検証）：LaunchAgent（RunAtLoad・KeepAlive・ThrottleInterval 60）
+    macOS（Mac mini 移行用・実機未検証）：LaunchAgent（RunAtLoad・KeepAlive・ThrottleInterval 60）。2026-09-29 補強：launchd の最小 PATH では
+      node（Decision Gateway CLI）が見つからず判定が GATEWAY_NOT_FOUND→human になるため、install 時に node・python の場所を含む PATH を
+      EnvironmentVariables へ入れる。stdout/stderr は state_dir/autostart/launchd.*.log。status・install の検証は `launchctl print`。
+      Secret（Jev 鍵等）は plist に書かない（Mac mini 上の鍵の置き場は Human が決める。未設定なら判定は rules→human＝fail-closed）
 
 CLI（enexus_openmontage_launcher.py から呼ぶ）:
     launch-openmontage.cmd autostart install     # 登録（同じ内容で上書き＝何度実行してもよい）して今すぐ起動
@@ -25,10 +28,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from xml.sax.saxutils import escape
 
 import enexus_openmontage_launcher as la
@@ -37,6 +42,11 @@ TASK_NAME = "E-NEXUS OpenMontage Watcher"
 LAUNCHD_LABEL = "com.enexus.openmontage-watcher"
 REPEAT_INTERVAL = "PT1M"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _platform():
+    """"windows" | "darwin" | その他の sys.platform。install / uninstall / restart / status の分岐はこれだけを見る"""
+    return "windows" if os.name == "nt" else sys.platform
 
 
 def _run(cmd, runner=None):
@@ -137,9 +147,34 @@ def task_xml(user, python, arguments, workdir, description=None, start_boundary=
 """
 
 
-def launchagent_plist(python, arguments, workdir):
-    """macOS LaunchAgent（Mac mini 移行用・未検証）。KeepAlive＋ThrottleInterval で落ちても 60 秒以内に戻る"""
+LAUNCHD_BASE_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+def launchd_path(python=None, which=shutil.which):
+    """launchd の最小 PATH に、node（Gateway CLI）と python の場所を足した PATH（重複なし・順序保持）"""
+    dirs = []
+    node = which("node")
+    for p in [node, python]:
+        if p:
+            d = str(PurePosixPath(str(p).replace("\\", "/")).parent)
+            if d not in dirs:
+                dirs.append(d)
+    for d in LAUNCHD_BASE_PATH:
+        if d not in dirs:
+            dirs.append(d)
+    return ":".join(dirs)
+
+
+def launchagent_plist(python, arguments, workdir, path_env=None, log_dir=None):
+    """macOS LaunchAgent（Mac mini 移行用・実機未検証）。KeepAlive＋ThrottleInterval で落ちても 60 秒以内に戻る。
+    path_env＝EnvironmentVariables の PATH（node を見つけるため）。log_dir＝stdout/stderr の出力先。Secret は入れない"""
     items = "".join(f"\n    <string>{escape(a)}</string>" for a in [str(python), *arguments])
+    extra = ""
+    if path_env:
+        extra += f"\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>{escape(path_env)}</string>\n  </dict>"
+    if log_dir:
+        extra += (f"\n  <key>StandardOutPath</key>\n  <string>{escape(str(Path(log_dir) / 'launchd.out.log'))}</string>"
+                  f"\n  <key>StandardErrorPath</key>\n  <string>{escape(str(Path(log_dir) / 'launchd.err.log'))}</string>")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -158,7 +193,7 @@ def launchagent_plist(python, arguments, workdir):
   <key>ThrottleInterval</key>
   <integer>60</integer>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Background</string>{extra}
 </dict>
 </plist>
 """
@@ -177,7 +212,7 @@ def current_user(env=None):
 def install(state_dir=None, runner=None, start=True, env=None):
     state_dir = Path(state_dir or la.DEFAULT_STATE_DIR)
     args = watcher_arguments(state_dir)
-    if os.name == "nt":
+    if _platform() == "windows":
         xml = task_xml(current_user(env), background_python(), args, la.HERE)
         xml_path = state_dir / "autostart" / "task.xml"
         xml_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,15 +225,21 @@ def install(state_dir=None, runner=None, start=True, env=None):
             if r2.returncode != 0:
                 return {"ok": False, "step": "run", "detail": (r2.stdout + r2.stderr).strip()[-500:]}
         return {"ok": True, "platform": "windows-task-scheduler", "task": TASK_NAME, "definition": str(xml_path), "started": start}
-    if sys.platform == "darwin":
+    if _platform() == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
         plist.parent.mkdir(parents=True, exist_ok=True)
-        plist.write_text(launchagent_plist(background_python(), args, la.HERE), encoding="utf-8")
+        log_dir = state_dir / "autostart"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        python = background_python()
+        plist.write_text(launchagent_plist(python, args, la.HERE, path_env=launchd_path(python), log_dir=log_dir), encoding="utf-8")
         uid = os.getuid()
-        _run(["launchctl", "bootout", f"gui/{uid}", str(plist)], runner)
+        _run(["launchctl", "bootout", f"gui/{uid}", str(plist)], runner)   # 既存の登録を外す（無ければ失敗してよい）
         r = _run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], runner)
-        return {"ok": r.returncode == 0, "platform": "macos-launchagent", "definition": str(plist), "verified": False}
-    return {"ok": False, "step": "platform", "detail": f"未対応の platform: {sys.platform}（watch を常駐させる仕組みを追加してください）"}
+        if r.returncode != 0:
+            return {"ok": False, "step": "bootstrap", "platform": "macos-launchagent", "detail": (r.stdout + r.stderr).strip()[-500:]}
+        st = launchd_status(runner)
+        return {"ok": bool(st.get("loaded")), "platform": "macos-launchagent", "definition": str(plist), "verified": bool(st.get("loaded")), "status": st}
+    return {"ok": False, "step": "platform", "detail": f"未対応の platform: {_platform()}（watch を常駐させる仕組みを追加してください）"}
 
 
 def _stop_autostart_watcher(state_dir, runner=None, wait_s=10.0):
@@ -225,12 +266,12 @@ def _stop_autostart_watcher(state_dir, runner=None, wait_s=10.0):
 
 def uninstall(state_dir=None, runner=None):
     state_dir = Path(state_dir or la.DEFAULT_STATE_DIR)
-    if os.name == "nt":
+    if _platform() == "windows":
         _run(["schtasks", "/End", "/TN", TASK_NAME], runner)
         r = _run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], runner)
         deleted = r.returncode == 0
         detail = None if deleted else (r.stdout + r.stderr).strip()[-300:]
-    elif sys.platform == "darwin":
+    elif _platform() == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
         _run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist)], runner)
         deleted = True
@@ -240,7 +281,7 @@ def uninstall(state_dir=None, runner=None):
             pass
         detail = None
     else:
-        deleted, detail = False, f"未対応の platform: {sys.platform}"
+        deleted, detail = False, f"未対応の platform: {_platform()}"
     stop = _stop_autostart_watcher(state_dir, runner)
     return {"ok": deleted or "cannot find" in (detail or "").lower() or "見つかりません" in (detail or ""),
             "deleted": deleted, "detail": detail, "watcher": stop}
@@ -250,10 +291,10 @@ def restart(state_dir=None, runner=None):
     """常駐 watcher（role=autostart）を止めて Task から起動し直す。登録は変えない（code を更新した時に使う）"""
     state_dir = Path(state_dir or la.DEFAULT_STATE_DIR)
     stop = _stop_autostart_watcher(state_dir, runner)
-    if os.name == "nt":
+    if _platform() == "windows":
         r = _run(["schtasks", "/Run", "/TN", TASK_NAME], runner)
         ok = r.returncode == 0
-    elif sys.platform == "darwin":
+    elif _platform() == "darwin":
         r = _run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], runner)
         ok = r.returncode == 0
     else:
@@ -261,11 +302,31 @@ def restart(state_dir=None, runner=None):
     return {"ok": ok, "stopped": stop}
 
 
+def parse_launchctl_print(text):
+    """`launchctl print gui/<uid>/<label>` の出力から state・pid・last exit code を読む（表示用・無ければ None）"""
+    def grab(pattern):
+        m = re.search(pattern, text or "", re.MULTILINE)
+        return m.group(1).strip() if m else None
+    pid = grab(r"^\s*pid = (\d+)")
+    code = grab(r"^\s*last exit code = (-?\d+)")
+    return {"state": grab(r"^\s*state = (\S+)"), "pid": int(pid) if pid else None, "last_exit_code": int(code) if code else None}
+
+
+def launchd_status(runner=None):
+    """LaunchAgent の読み込み状態（launchctl print）。plist があるか・launchd に読み込まれているか・動いているか"""
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+    r = _run(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], runner)
+    loaded = r.returncode == 0
+    info = parse_launchctl_print(r.stdout) if loaded else {"state": None, "pid": None, "last_exit_code": None}
+    return {"installed": plist.exists(), "loaded": loaded, "platform": "macos-launchagent", **info}
+
+
 def task_status(runner=None):
     """登録の有無・状態・最後の実行結果（Windows）。値は表示用"""
-    if os.name != "nt":
-        plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
-        return {"installed": plist.exists(), "platform": sys.platform}
+    if _platform() != "windows":
+        if _platform() == "darwin":
+            return launchd_status(runner)
+        return {"installed": False, "platform": _platform(), "detail": "未対応の platform"}
     ps = (f"$t = Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue; if (-not $t) {{ '{{\"installed\":false}}'; exit }};"
           "$i = $t | Get-ScheduledTaskInfo; [pscustomobject]@{installed=$true; state=[string]$t.State;"
           "last_run=[string]$i.LastRunTime; last_result=$i.LastTaskResult; next_run=[string]$i.NextRunTime;"

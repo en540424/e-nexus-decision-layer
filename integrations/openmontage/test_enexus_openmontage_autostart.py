@@ -191,5 +191,135 @@ class CliTest(unittest.TestCase):
         self.assertIn("install / uninstall / status / restart", out.getvalue())
 
 
+class MacLaunchAgentTest(unittest.TestCase):
+    """2026-09-29：macOS 経路を Windows 上でも検査する（sys.platform・os.getuid・Path.home を差し替え、launchctl は fake runner）。
+    実機の launchd での確認は Mac mini 到着後（Human）"""
+
+    LAUNCHCTL_PRINT = "gui/501/com.enexus.openmontage-watcher = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = 0\n}\n"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="om-mac-"))
+        self.state = self.tmp / "state"
+        self._platform, self._home = au._platform, Path.home
+        self._getuid = getattr(os, "getuid", None)
+        au._platform = lambda: "darwin"
+        os.getuid = lambda: 501  # Windows には無い
+        Path.home = classmethod(lambda cls: self.tmp / "home")
+
+    def tearDown(self):
+        au._platform = self._platform
+        Path.home = self._home
+        if self._getuid is None:
+            del os.getuid
+        else:
+            os.getuid = self._getuid
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def runner(self, print_rc=0):
+        calls = []
+
+        def run(cmd):
+            calls.append(list(cmd))
+            if cmd[:2] == ["launchctl", "print"]:
+                return subprocess.CompletedProcess(cmd, print_rc, stdout=self.LAUNCHCTL_PRINT if print_rc == 0 else "", stderr="" if print_rc == 0 else "not found")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return run, calls
+
+    def _install(self, run):
+        return au.install(state_dir=self.state, runner=run)
+
+    def test_install_writes_plist_with_path_and_logs_then_verifies_with_launchctl_print(self):
+        run, calls = self.runner()
+        r = self._install(run)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["verified"])
+        self.assertEqual(r["status"]["state"], "running")
+        self.assertEqual(r["status"]["pid"], 4242)
+        self.assertEqual([c[:2] for c in calls], [["launchctl", "bootout"], ["launchctl", "bootstrap"], ["launchctl", "print"]])
+        self.assertEqual(calls[1][2], "gui/501")
+        plist = plistlib.loads((self.tmp / "home" / "Library" / "LaunchAgents" / f"{au.LAUNCHD_LABEL}.plist").read_bytes())
+        path = plist["EnvironmentVariables"]["PATH"].split(":")
+        self.assertIn("/usr/bin", path)
+        self.assertIn("/opt/homebrew/bin", path)
+        self.assertEqual(Path(plist["StandardErrorPath"]).name, "launchd.err.log")
+        self.assertNotIn("JEV_API_KEY", json.dumps(plist), "no secrets in the plist")
+        self.assertEqual(set(plist["EnvironmentVariables"]), {"PATH"})
+
+    def test_install_reports_failure_when_launchd_does_not_load_it(self):
+        run, _ = self.runner(print_rc=113)
+        r = self._install(run)
+        self.assertFalse(r["ok"])
+        self.assertFalse(r["verified"])
+
+    def test_status_uninstall_restart_use_launchctl(self):
+        run, calls = self.runner()
+        st = au.task_status(runner=run)
+        self.assertTrue(st["loaded"])
+        self.assertEqual(st["last_exit_code"], 0)
+        au.restart(state_dir=self.state, runner=run)
+        self.assertIn(["launchctl", "kickstart", "-k", f"gui/501/{au.LAUNCHD_LABEL}"], calls)
+        u = au.uninstall(state_dir=self.state, runner=run)
+        self.assertTrue(u["ok"])
+        self.assertTrue(any(c[:2] == ["launchctl", "bootout"] for c in calls))
+
+    def test_parse_launchctl_print_tolerates_missing_fields(self):
+        self.assertEqual(au.parse_launchctl_print(""), {"state": None, "pid": None, "last_exit_code": None})
+        self.assertEqual(au.parse_launchctl_print("\tstate = waiting\n\tlast exit code = 78\n"), {"state": "waiting", "pid": None, "last_exit_code": 78})
+
+    def test_launchd_path_puts_node_and_python_first_without_duplicates(self):
+        p = au.launchd_path("/opt/py/bin/python3", which=lambda name: "/opt/homebrew/bin/node" if name == "node" else None).split(":")
+        self.assertEqual(p[:2], ["/opt/homebrew/bin", "/opt/py/bin"])
+        self.assertEqual(len(p), len(set(p)))
+
+
+class PosixProcessGroupTest(unittest.TestCase):
+    """headless（capture）の agent は POSIX で新しい session として起動し、stop() は group ごと止める（Windows の Job Object 相当）"""
+
+    def test_capture_mode_starts_new_session_and_stop_kills_the_group(self):
+        started, killed = {}, []
+
+        class FakeProc:
+            pid = 7777
+            returncode = None
+            stdout = stderr = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                if killed:
+                    self.returncode = -15
+                    return self.returncode
+                raise subprocess.TimeoutExpired("x", timeout)
+
+        def fake_popen(argv, **kw):
+            started.update(kw)
+            return FakeProc()
+
+        orig = (la._posix_group_kill, la.subprocess.Popen, getattr(la.os, "killpg", None), la.bind_child_lifetime)
+        la._posix_group_kill = lambda: True
+        la.subprocess.Popen = fake_popen
+        la.os.killpg = lambda pid, sig: killed.append((pid, sig))
+        la.bind_child_lifetime = lambda pid: None
+        try:
+            ap = la.AgentProcess(["agent"], cwd=".", env={}, console="none", capture=False)
+            ap.start()
+            self.assertNotIn("start_new_session", started, "interactive/console mode keeps the terminal's process group")
+            started.clear()
+            ap = la.AgentProcess(["agent"], cwd=".", env={}, console="none", capture=True)
+            ap._pump = lambda *a: None
+            ap.start()
+            self.assertTrue(started.get("start_new_session"))
+            ap.stop(grace_s=0.01)
+            self.assertEqual(killed[0][0], 7777)
+        finally:
+            la._posix_group_kill, la.subprocess.Popen = orig[0], orig[1]
+            if orig[2] is None:
+                del la.os.killpg
+            else:
+                la.os.killpg = orig[2]
+            la.bind_child_lifetime = orig[3]
+
+
 if __name__ == "__main__":
     unittest.main()

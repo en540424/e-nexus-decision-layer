@@ -704,6 +704,11 @@ def bind_child_lifetime(pid):
         return None
 
 
+def _posix_group_kill():
+    """POSIX で headless agent を process group ごと止められるか（Windows は Job Object が担う）。test はこれを差し替える"""
+    return os.name != "nt" and hasattr(os, "killpg")
+
+
 class AgentProcess:
     def __init__(self, argv, cwd, env, console="new", capture=False, log=None):
         self.argv, self.cwd, self.env = argv, cwd, env
@@ -718,6 +723,10 @@ class AgentProcess:
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
         if self.capture:
             kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # POSIX の headless 実行（capture）は新しい session＝process group にし、stop() で group ごと止める（Windows の Job Object に相当。
+            # 2026-09-29）。対話（console）実行は端末の foreground を奪わないよう従来どおり（端末を閉じれば SIGHUP で止まる）
+            if _posix_group_kill():
+                kwargs["start_new_session"] = True
         self.proc = subprocess.Popen(self.argv, cwd=self.cwd, env=self.env, **kwargs)
         self.job = bind_child_lifetime(self.proc.pid)
         if self.capture:
@@ -750,7 +759,20 @@ class AgentProcess:
         """process tree ごと止める（claude は子 process を持つ）。まず穏当に、残れば強制"""
         if not self.proc or self.proc.poll() is not None:
             return self.proc.returncode if self.proc else None
-        if os.name == "nt":
+        if self.capture and _posix_group_kill():
+            # 新しい session で起動した headless agent は group ごと（子 process も含めて）止める
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                return self.proc.wait(grace_s)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        elif os.name == "nt":
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T"], capture_output=True, creationflags=flags)
             try:

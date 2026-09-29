@@ -76,7 +76,7 @@ launch-openmontage.cmd autostart uninstall   # 登録を削除し、常駐 watch
 - sleep / resume：tick の間隔が 10 秒を超えたら全体を再走査する。停止中（ログオフ・再起動・watcher 停止）に書かれた gate は起動時の走査で拾い、
   処理済みは再判定しない
 - 常駐負荷（実測・project 1 件）：CPU 1 コアの 0.5%（全体 0.025%）・working set 27MB・disk 書き込みは heartbeat だけ（1 分 4 回・3KB）・読み込み 0
-- macOS（Mac mini 移行用）：同じ `autostart install` が LaunchAgent（RunAtLoad・KeepAlive・ThrottleInterval 60）を書く。**未検証**
+- macOS（Mac mini 移行用）：同じ `autostart install` が LaunchAgent（RunAtLoad・KeepAlive・ThrottleInterval 60）を書く。**実機未検証**。2026-09-29 補強：plist に node・python の場所を含む `PATH`（launchd の最小 PATH では Gateway CLI の node が見つからず判定が human に倒れていた）と stdout／stderr の出力先（`<state_dir>/autostart/launchd.*.log`）を入れ、install 後と `autostart status` は `launchctl print` で読み込み・state・pid・last exit code を確かめる（fake runner の test あり）。Secret は plist に入れない（Mac mini 上の Jev 鍵の置き場は Human が決める＝未設定なら rules→human）。headless（capture）で起動した agent は POSIX では新しい session にし、停止は process group ごと
 
 ## 置き場所の理由
 
