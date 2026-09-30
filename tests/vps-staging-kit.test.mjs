@@ -52,6 +52,8 @@ test('stage.sh: changes only staging (systemctl through the staging-only wrapper
   assert.match(s, /grep -Eq '\^\(EDL_ALLOW_NETWORK\|JEV_API_KEY/, 'paid/network keys abort the run');
   assert.match(s, /RESERVED_PORTS="22 80 443 4188 5678 5679 8443 8444 8787 18789"/, 'existing ports are reserved');
   assert.match(s, /trap 'restore_after_failure "\$bk"' EXIT/, 'failure tests restore the env file even when interrupted');
+  assert.match(s, /trap 'restore_after_failure "\$bk"; trap - EXIT; exit 130' HUP INT TERM/, 'a dropped ssh session or Ctrl+C during the failure tests still restores staging');
+  assert.match(s, /^trap '' PIPE$/m, 'a closed ssh pipe does not kill a phase half-way');
   assert.ok(/printf '%s\\n' "\$tok"/.test(s) && /token\(\) \{/.test(s), 'the token leaves the host only through the token phase (stdout, captured by run.mjs)');
 });
 
