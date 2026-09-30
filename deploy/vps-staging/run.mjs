@@ -253,7 +253,7 @@ export function releaseSupportsStaging(showFile) {
   return /RestartPreventExitStatus=2/.test(svc ?? '') && /--memory-max/.test(svc ?? '') && /'systemd'/.test(job ?? '');
 }
 
-function resolveTailnet(name) {
+export function resolveTailnet(name) {
   const ipR = spawnSync('tailscale', ['ip', '-4', name], { encoding: 'utf8', windowsHide: true });
   const ip = (ipR.stdout || '').trim().split(/\s+/)[0];
   if (ipR.status !== 0 || !/^100\.\d+\.\d+\.\d+$/.test(ip)) throw new Error(`tailscale ip -4 ${name} failed (is this PC on the tailnet?)`);

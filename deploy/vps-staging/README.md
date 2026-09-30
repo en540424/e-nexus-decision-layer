@@ -68,6 +68,8 @@ Mac mini / Hermes / PC ──Tailnet HTTPS──▶ Tailscale Serve https:<serve
 2. consumer（Hermes は `consumer-kit/python/enexus_http_transport.py`）は `HttpTransport(<staging URL>, <Keychain の token>, "staging")`。
    https 必須のまま（Tailscale Serve が TLS 終端）。`gateway.environment` が staging でないと `ENVIRONMENT_MISMATCH`（fail-closed）。
 3. Windows の PC では run.mjs が同じ名前で資格情報マネージャーへ入れてある（`credential:E-NEXUS/edl/gateway-token-staging`）。
+   run.mjs を流していない 2 台目以降の Windows PC（会社PC 等・2026-09-30）は、run.mjs（deploy 演習つき）ではなく
+   `node deploy/vps-staging/pc-fetch-token.mjs --tailscale-name <VPS> [--identity <鍵>]`（Human・ssh 1 回・VPS は読むだけ）で同じ名前へ入れる。
 
 VPS の root へ Mac から SSH できること（鍵の登録か password）は Human の準備。token を回す（rotation）ときは VPS の env file の
 `EDL_GATEWAY_TOKEN` を変えて run.mjs を流し直し、PC（自動）と Mac（このスクリプト）を入れ直す。
