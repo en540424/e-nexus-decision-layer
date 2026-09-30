@@ -23,7 +23,7 @@ const SHA_B = 'b'.repeat(40);
 const TOKEN = 'f'.repeat(64);
 
 test('shell scripts: ASCII only, LF only, bash syntax ok (bash -n from stdin when bash exists)', () => {
-  for (const f of ['audit.sh', 'stage.sh']) {
+  for (const f of ['audit.sh', 'stage.sh', 'mac-fetch-token.sh']) {
     const s = read(f);
     assert.ok(![...s].some((c) => c.charCodeAt(0) > 127), `${f} is ASCII only (piped through Windows shells)`);
     assert.ok(!s.includes('\r'), `${f} has no CR`);
@@ -241,4 +241,14 @@ test('stage.sh checkout_release with real git: fresh clone, a never-checked-out 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('mac-fetch-token.sh: the token goes to security -i on stdin only (never echoed, never an argument), then only present/absent', () => {
+  const s = read('mac-fetch-token.sh');
+  const code = s.split('\n').filter((l) => !l.trim().startsWith('#'));
+  assert.ok(code.some((l) => l.includes(`printf 'add-generic-password -U -s E-NEXUS/edl/gateway-token-staging -a e-nexus -w %s\\n' "$tok" | /usr/bin/security -i`)), 'stored through stdin of security -i');
+  assert.ok(!code.some((l) => /echo[^|]*\$tok/.test(l)), 'never echoes the token');
+  assert.ok(!code.some((l) => /security add-generic-password[^|]*\$tok/.test(l)), 'never puts the token on a command line');
+  assert.match(s, /^tok=$/m, 'the variable is cleared after use');
+  assert.ok(s.includes('E-NEXUS/edl/gateway-token-staging -a e-nexus'), 'same service/account as scripts/lib/env-file.mjs readCredential');
 });

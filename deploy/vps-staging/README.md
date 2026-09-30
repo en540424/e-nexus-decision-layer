@@ -57,3 +57,17 @@ Mac mini / Hermes / PC ──Tailnet HTTPS──▶ Tailscale Serve https:<serve
 - Node 24（2026-09-30 に確認）は **script の後ろの `--env-file <path>` も存在確認する**（中身は読み込まない）。
   path が無いと script より前に exit 9 で止まる。gateway の env file が消えた場合は exit 9＝`RestartPreventExitStatus=2` の外なので、
   `StartLimitBurst`（300 秒に 5 回）で止まる。vps-tool.mjs の引数名が `--env-path` なのはこのため。
+
+## Mac mini（Hermes 等）から使う（2026-09-30 準備・実機は後日＝DEVICE_DEPENDENT）
+
+経路：Mac mini／Hermes → Tailnet HTTPS → staging Gateway（→ Jev は Human GO の後）。
+
+1. Mac で（Human・SSH を開始するのは Human）：`bash deploy/vps-staging/mac-fetch-token.sh --tailscale-name <VPS>`
+   - VPS から staging token を取り、login Keychain の `E-NEXUS/edl/gateway-token-staging`（account `e-nexus`）へ入れる（値は表示しない・`security -i` の標準入力）。
+   - 表示するのは stored／failed と staging URL（`https://<vps>.<tailnet>.ts.net:<serve port>`）だけ。
+2. consumer（Hermes は `consumer-kit/python/enexus_http_transport.py`）は `HttpTransport(<staging URL>, <Keychain の token>, "staging")`。
+   https 必須のまま（Tailscale Serve が TLS 終端）。`gateway.environment` が staging でないと `ENVIRONMENT_MISMATCH`（fail-closed）。
+3. Windows の PC では run.mjs が同じ名前で資格情報マネージャーへ入れてある（`credential:E-NEXUS/edl/gateway-token-staging`）。
+
+VPS の root へ Mac から SSH できること（鍵の登録か password）は Human の準備。token を回す（rotation）ときは VPS の env file の
+`EDL_GATEWAY_TOKEN` を変えて run.mjs を流し直し、PC（自動）と Mac（このスクリプト）を入れ直す。
