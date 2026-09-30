@@ -36,16 +36,33 @@ test('engine: deterministic rule resolves before any probabilistic adapter', asy
   assert.equal(r.outcome.recommended_route, 'remotion');
 });
 
-test('engine: model-route rules encode Sonnet First and Advisor conditions', async () => {
+test('engine: model-route rules encode the 2-axis rule (work_center × effort) and Advisor conditions', async () => {
   const { engine } = makeEngine();
   const base = { decision_type: 'model-route', application_id: 'claude-code', project_id: 'en-knowledge-vault' };
+  // 旧入力（task_size だけ）＝実装が中心：従来どおり sonnet
   const s = await engine.decide({ ...base, input: { task_size: 'S' } });
-  assert.deepEqual([s.outcome.executor_model, s.outcome.consult_advisor], ['sonnet', false]);
+  assert.deepEqual([s.outcome.executor_model, s.outcome.consult_advisor, s.outcome.effort], ['sonnet', false, 'medium']);
   const harness = await engine.decide({ ...base, input: { task_size: 'S', touches_harness: true } });
   assert.equal(harness.outcome.consult_advisor, true);
   assert.equal(harness.tier, 'human');
   assert.ok(!['fable'].includes(s.outcome.executor_model));
   assert.ok(s.candidates_considered.includes('sonnet') && s.candidates_considered.includes('fable') === true);
+  // 2026-10-01 Advisor正本§0：設計・判断が中心 → opus／high（Advisor 相談ではなく実行役）
+  const design = await engine.decide({ ...base, input: { task_size: 'L', work_center: 'design-judgment' } });
+  assert.deepEqual([design.outcome.executor_model, design.outcome.consult_advisor, design.outcome.effort], ['opus', false, 'high']);
+  assert.notEqual(design.tier, 'human');
+  // 設計・判断が中心でハーネスに触る → opus のまま Human review
+  const designHarness = await engine.decide({ ...base, input: { task_size: 'M', work_center: 'design-judgment', touches_harness: true } });
+  assert.equal(designHarness.outcome.executor_model, 'opus');
+  assert.equal(designHarness.tier, 'human');
+  // 読解・比較・横断監査が中心 → xhigh・Human がモデルを選ぶ（Fable は enum に無い＝auto にならない）
+  const audit = await engine.decide({ ...base, input: { task_size: 'L', work_center: 'reading-comparison-audit' } });
+  assert.equal(audit.outcome.effort, 'xhigh');
+  assert.equal(audit.tier, 'human');
+  assert.ok(['sonnet', 'opus'].includes(audit.outcome.executor_model));
+  // 実装が中心を明示 → 旧入力と同じ
+  const impl = await engine.decide({ ...base, input: { task_size: 'M', work_center: 'implementation' } });
+  assert.deepEqual([impl.outcome.executor_model, impl.outcome.effort], ['sonnet', 'high']);
 });
 
 test('engine: cost gate removes paid LLM adapters unless allow_paid_adapters=true; jev (low-cost gate) is not cost-gated', async () => {

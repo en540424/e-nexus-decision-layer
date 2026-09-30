@@ -1,7 +1,7 @@
 {
   "$id": "edl/claude-code/model-route",
   "title": "ModelRoute",
-  "description": "schema-only + rules。Claude Code Harness の Model / Effort Router。Advisor正本§2-2（13条件）・Sonnet First・Fable特別承認制を rules ファイルへ写した。Fable は決して auto にならない。",
+  "description": "rules-reference。Claude Code Harness の Model / Effort Router（参考値・採否を決めない）。Advisor正本§0（2026-10-01：モデル×Effort の 2 軸＝作業の中心で選ぶ。Sonnet＝実装／Opus＝設計・判断／Fable 5.1＝読解・比較・横断監査〈Human 指定時のみ〉）と §2-2（Advisor 13条件）を rules ファイルへ写した。Fable は決して auto にならない（executor_model の enum に無い）。",
   "type": "object",
   "properties": {
     "input": {
@@ -9,6 +9,7 @@
       "required": ["task_size"],
       "properties": {
         "task_size": { "type": "string", "enum": ["S", "M", "L"] },
+        "work_center": { "type": "string", "enum": ["implementation", "design-judgment", "reading-comparison-audit"], "description": "作業の中心（Advisor正本§0-1）。省略時は implementation 扱い" },
         "touches_harness": { "type": "boolean", "description": ".claude/ や 01_harness/ 等ハーネス自体の変更か" },
         "touches_billing_or_auth_or_db": { "type": "boolean" },
         "cross_repo": { "type": "boolean" },
@@ -25,7 +26,7 @@
       "properties": {
         "executor_model": { "type": "string", "enum": ["sonnet", "opus"] },
         "consult_advisor": { "type": "boolean" },
-        "effort": { "type": "string", "enum": ["low", "medium", "high"] },
+        "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max"] },
         "human_review_required": { "type": "boolean" },
         "note": { "type": "string" }
       }

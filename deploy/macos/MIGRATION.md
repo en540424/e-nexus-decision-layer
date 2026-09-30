@@ -33,6 +33,7 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 - [ ] 0. [AI済み] Windows で `sh deploy/macos/make-bundles.sh --out <運ぶフォルダ> <親フォルダ>/en-product-hub`（2026-09-29 に動作確認済み。運ぶ直前に作り直す）
 - [ ] 1. [Human] 初期設定・Apple ID・判断 1 の設定・電源（停電後の自動起動）・（任意）リモートログイン（SSH）・Tailscale（MA-24 の Q6 ACL・Q7 port を先に確認）
 - [ ] 2. [Human] Command Line Tools（最初の `git` で出るダイアログ）・node≥20・python≥3.10 の導入（方法は `〔実機で確定〕`）
+- [ ] 2b. [Human・任意] Claude Code の導入と認証（2026-10-01 Vault 正本化：Mac mini は Runtime Node で、Claude Code は **runtime repo の初期構築・保守用**に使ってよい＝ランブック §10）。Vault 編集ノードにはしない（Q2 は (i) のまま。macOS では Vault の Secret 保護 deny が効かないため、Vault クローンを作業ディレクトリにして起動しない）。使う前に手順 5（doctor）と手順 6（鍵境界 probe）を通す
 - [ ] 3. [Human] `gh auth login`（private repo の clone に必要）
 - [ ] 4. [AI可] `sh deploy/macos/bootstrap.sh --base 〔実機で確定〕 --owner <GitHub の owner> --bundle-dir <bundle を置いた場所>`（最初の decision-layer だけは手で clone する）
 - [ ] 5. [AI可] `sh deploy/macos/doctor.sh --base 〔実機で確定〕` が FAIL なし

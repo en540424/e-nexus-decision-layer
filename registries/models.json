@@ -1,35 +1,42 @@
 {
   "schema": "edl-registry-v1",
   "kind": "models",
-  "updated": "2026-09-19",
-  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Advisorモデル運用ルール_正本 と ~/.claude/settings.json（modelSettings）。role: executor / advisor / special-approval / decision-engine。Fable は Human の特別承認が無ければ候補に出さない（auto_selectable=false）。",
+  "updated": "2026-10-01",
+  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Advisorモデル運用ルール_正本（§0：2026-10-01 改訂・モデル×Effort の 2 軸＝作業の中心で選ぶ）と ~/.claude/settings.json（modelSettings）。role: executor / advisor / special-approval / decision-engine / reviewer。work_center は Advisor正本§0-1 の「作業の中心」。alias_target は 2026-10-01 時点のエイリアスの実体（永続固定しない・世代が変わったらここだけ直す）。Fable は Human がセッションのモデルとして指定した場合だけ使う（auto_selectable=false）。",
   "entries": [
     {
       "id": "sonnet",
       "scope": "global",
       "provider": "anthropic",
       "role": "executor",
+      "work_center": ["implementation"],
+      "alias_target": "Sonnet 5.5",
       "default_effort": "high",
       "auto_selectable": true,
-      "description": "通常実行（Sonnet First）"
+      "description": "実装が中心のセッション（仕様が確定した実装・修正・台帳更新・ログ・検収パック作成）。.claude/settings.json の model（再起動時の開始モデル）"
     },
     {
       "id": "opus",
       "scope": "global",
       "provider": "anthropic",
-      "role": "advisor",
-      "default_effort": "medium",
+      "role": "executor",
+      "work_center": ["design-judgment"],
+      "alias_target": "Opus 5.5",
+      "default_effort": "high",
       "auto_selectable": true,
-      "description": "Advisor（難所の判断・第二意見）。実行役にはしない"
+      "also": "advisor",
+      "description": "設計・判断が中心のセッション（設計しながら実装する自律構築・方針確定・矛盾解消・難所）の実行役。Sonnet 実行時は Advisor（.claude/settings.json の advisorModel）。旧記述「実行役にはしない」は 2026-10-01 に廃止"
     },
     {
       "id": "fable",
       "scope": "global",
       "provider": "anthropic",
       "role": "special-approval",
-      "default_effort": "high",
+      "work_center": ["reading-comparison-audit"],
+      "alias_target": "Fable 5.1",
+      "default_effort": "xhigh",
       "auto_selectable": false,
-      "description": "特別承認制の最終手段。自動選択・永続設定禁止"
+      "description": "読解・比較・横断監査が中心のセッション。Human が /model で指定した場合のみ（AI が自分の判断で起動しない・Sub Agent の model 指定を含む）。全新規セッションの固定 Default にしない。旧「最終手段」は 2026-10-01 に廃止"
     },
     {
       "id": "jev",

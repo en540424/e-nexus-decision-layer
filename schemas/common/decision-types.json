@@ -36,7 +36,7 @@
       "candidates": {
         "kind": "models"
       },
-      "description": "Claude Code Harness の Model / Effort Router。Advisor正本§2-2 の13条件をルール化した rules ファイルが先に評価される。"
+      "description": "Claude Code Harness の Model / Effort Router（参考値・採否を決めない）。Advisor正本§0（2026-10-01：モデル×Effort の 2 軸＝作業の中心 work_center で選ぶ）と §2-2 の13条件をルール化した rules ファイルが先に評価される。Fable は出力候補に無い（Human 指定時のみ）。"
     },
     "skill-route": {
       "domain": "claude-code",
@@ -113,6 +113,14 @@
     "next-best-action": {
       "domain": "growth",
       "description": "nurture vs sales / next_best_action / cross_sell_fit。AI Company V1 §8 Growth 手順の補助。実行は Human、improvement への記録は Claude Code 本体。同 §5"
+    },
+    "infra-change-triage": {
+      "domain": "platform",
+      "description": "AI Infrastructure Watcher（Vault MA-33・2026-10-01 名前予約）。外部 AI／開発基盤の変化（breaking／deprecation／price／new capability／policy／security）が E-NEXUS の何に繋がるか（Knowledge / Relationship Layer の impact）と置換・追加価値・PoC 価値を型付きで返す。Rules First。proposal を返すだけで承認・切替・deploy・契約は返せない（Watcher は発見→比較→影響分析→提案まで）。実装は MA-33-3"
+    },
+    "executor-route": {
+      "domain": "harness",
+      "description": "Executor selection（Vault 技術スタック正本§3-10-1・MA-32-5・2026-10-01 名前予約）。作業の中心・候補 Executor（Claude Code／Hermes／Codex／Cursor／Local 等）の静的能力（registries/agents.json・models.json）・Knowledge Layer の実測 state（availability・成功率・latency）から推奨 Executor を型付きで返す参考値。model-route を置換せず並置。承認・Human-only 境界・委任レベルを変えない（forbidden keys 対象）"
     }
   }
 }
