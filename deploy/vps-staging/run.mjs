@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { runE2E, minimalEnv } from './e2e.mjs';
 import { readCredential } from '../../scripts/lib/env-file.mjs';
@@ -33,6 +34,8 @@ export const INBOX = '/root/e-nexus-staging-inbox';
 export const KIT_FILES = Object.freeze(['audit.sh', 'stage.sh', 'vps-tool.mjs']);
 export const CREDENTIAL_TARGET = 'E-NEXUS/edl/gateway-token-staging';
 export const TOKEN_RE = /^[0-9a-f]{64}$/;
+/** 段ごとの上限（止まったまま待ち続けない）。超えたら ssh を止めてその段を失敗にする */
+export const PHASE_TIMEOUT_MS = Object.freeze({ audit: 180000, preflight: 240000, install: 420000, rollback: 420000, failure: 420000, digest: 300000, postflight: 240000, token: 60000, upload: 600000 });
 const SHA_RE = /^[0-9a-f]{40}$/;
 
 export function parseArgs(argv) {
@@ -148,9 +151,11 @@ function sshArgs(ctx, remoteCommand) {
   return ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4', `${ctx.sshUser}@${ctx.ip}`, remoteCommand];
 }
 
-function runSsh(ctx, remoteCommand, { input = null, onLine = null, capture = false } = {}) {
+function runSsh(ctx, remoteCommand, { input = null, onLine = null, capture = false, timeoutMs = 300000 } = {}) {
   return new Promise((resolve) => {
     const child = spawn('ssh', sshArgs(ctx, remoteCommand), { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; ctx.say(`FAIL  ssh step timed out after ${Math.round(timeoutMs / 1000)}s`); child.kill(); }, timeoutMs);
     const lines = [];
     let buf = '';
     const out = [];
@@ -168,8 +173,9 @@ function runSsh(ctx, remoteCommand, { input = null, onLine = null, capture = fal
     child.stderr.on('data', (c) => { if (!capture) ctx.record(`[ssh stderr] ${c.toString('utf8').trimEnd()}`); });
     child.on('error', (err) => { ctx.say(`FAIL  ssh could not start: ${err.message}`); resolve({ code: 255, lines, captured: '' }); });
     child.on('close', (code) => {
+      clearTimeout(timer);
       if (buf) { lines.push(buf); onLine?.(buf); }
-      resolve({ code: code ?? 255, lines, captured: capture ? Buffer.concat(out).toString('utf8') : '' });
+      resolve({ code: timedOut ? 124 : (code ?? 255), lines, captured: capture ? Buffer.concat(out).toString('utf8') : '' });
     });
     if (input !== null) child.stdin.end(input); else child.stdin.end();
   });
@@ -183,6 +189,7 @@ export function createRealDeps(ctx) {
       const script = phase === 'audit' ? 'audit.sh' : 'stage.sh';
       const cmd = `bash ${INBOX}/kit/${script}${phase === 'audit' ? '' : ` ${phase}`}${args.length ? ` ${args.join(' ')}` : ''}`;
       return runSsh(ctx, cmd, {
+        timeoutMs: PHASE_TIMEOUT_MS[phase] ?? 300000,
         onLine: (line) => {
           ctx.record(`[${phase}] ${line}`);
           if (phase !== 'audit' && consoleLine(line)) ctx.say(line);
@@ -190,7 +197,7 @@ export function createRealDeps(ctx) {
       });
     },
     async fetchToken() {
-      const r = await runSsh(ctx, `bash ${INBOX}/kit/stage.sh token`, { capture: true });
+      const r = await runSsh(ctx, `bash ${INBOX}/kit/stage.sh token`, { capture: true, timeoutMs: PHASE_TIMEOUT_MS.token });
       const t = r.code === 0 ? r.captured.trim() : '';
       return TOKEN_RE.test(t) ? t : null;
     },
@@ -314,13 +321,19 @@ async function main(argv) {
   git(['bundle', 'create', bundle, 'HEAD', branch]);
   const prep = await runSsh(ctx, `mkdir -p ${INBOX}/kit && chmod 700 ${INBOX}`);
   if (prep.code !== 0) { say(`ABORT ssh to the VPS failed (exit ${prep.code}); nothing was changed`); return 1; }
-  const up = await runSsh(ctx, `cat > ${INBOX}/edl.bundle`, { input: fs.readFileSync(bundle) });
-  if (up.code !== 0) { say('ABORT uploading the bundle failed; nothing was changed'); return 1; }
-  for (const f of KIT_FILES) {
-    const body = fs.readFileSync(path.join(KIT, f), 'utf8').replace(/\r\n/g, '\n');
-    const r = await runSsh(ctx, `cat > ${INBOX}/kit/${f}`, { input: body });
-    if (r.code !== 0) { say(`ABORT uploading ${f} failed; nothing was changed`); return 1; }
+  const uploads = [
+    [`${INBOX}/edl.bundle`, fs.readFileSync(bundle)],
+    ...KIT_FILES.map((f) => [`${INBOX}/kit/${f}`, Buffer.from(fs.readFileSync(path.join(KIT, f), 'utf8').replace(/\r\n/g, '\n'), 'utf8')]),
+  ];
+  for (const [dest, body] of uploads) {
+    const r = await runSsh(ctx, `cat > ${dest}`, { input: body, timeoutMs: PHASE_TIMEOUT_MS.upload });
+    if (r.code !== 0) { say(`ABORT uploading ${path.posix.basename(dest)} failed; nothing was changed`); return 1; }
   }
+  // 転送経路（Windows の ssh の標準入力）でバイナリが崩れていないことを確かめる
+  const sums = await runSsh(ctx, `sha256sum ${uploads.map(([d]) => d).join(' ')}`, { timeoutMs: 60000 });
+  const remoteSum = new Map(sums.lines.map((l) => l.trim().split(/\s+/)).filter((p) => p.length === 2).map(([h, p]) => [p, h]));
+  const broken = uploads.filter(([d, body]) => remoteSum.get(d) !== createHash('sha256').update(body).digest('hex'));
+  if (sums.code !== 0 || broken.length) { say(`ABORT upload integrity check failed (${broken.map(([d]) => path.posix.basename(d)).join(', ') || 'sha256sum'}); nothing was changed`); return 1; }
   const bundleKb = Math.round(fs.statSync(bundle).size / 1024);
   fs.rmSync(tmp, { recursive: true, force: true });
   say(`upload: bundle ${bundleKb} KiB + kit (${KIT_FILES.join(', ')})`);

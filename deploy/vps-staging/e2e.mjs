@@ -42,9 +42,9 @@ export function checkCase(envelope, expect) {
   return null;
 }
 
-async function raw(url, pathName, { method = 'GET', headers = {}, body } = {}) {
+async function raw(url, pathName, { method = 'GET', headers = {}, body, fetchImpl = globalThis.fetch } = {}) {
   try {
-    const r = await fetch(new URL(pathName, url).href, { method, headers, body });
+    const r = await fetchImpl(new URL(pathName, url).href, { method, headers, body, signal: AbortSignal.timeout(15000) });
     return r.status;
   } catch (err) {
     return `ERR:${err?.name ?? 'ERROR'}`;
@@ -83,27 +83,27 @@ export function minimalEnv(src = process.env) {
   return out;
 }
 
-export async function runE2E({ url, token, release, smokeOnly = false, python = null }) {
+export async function runE2E({ url, token, release, smokeOnly = false, python = null, fetchImpl = globalThis.fetch }) {
   const results = [];
   const add = (name, pass, detail = null, { warn = false } = {}) => results.push({ name, pass: Boolean(pass), ...(warn ? { warn: true } : {}), ...(detail ? { detail } : {}) });
-  const smoke = await runSmoke({ url, token, environment: 'staging', release });
+  const smoke = await runSmoke({ url, token, environment: 'staging', release, fetchImpl });
   for (const r of smoke.results) add(`smoke: ${r.name}`, r.pass, r.detail);
   if (smokeOnly) return { pass: results.every((r) => r.pass), results };
 
-  const t = createHttpTransport({ baseUrl: url, token, environment: 'staging' });
+  const t = createHttpTransport({ baseUrl: url, token, environment: 'staging', fetchImpl });
   for (const c of E2E_CASES) {
     const why = checkCase(await t.call({ ...c.request }), c.expect);
     add(`e2e: ${c.name}`, why === null, why);
   }
-  const wrong = await createHttpTransport({ baseUrl: url, token: 'wrong-token-for-staging-e2e-000000000000', environment: 'staging' }).call({ ...E2E_CASES[0].request });
+  const wrong = await createHttpTransport({ baseUrl: url, token: 'wrong-token-for-staging-e2e-000000000000', environment: 'staging', fetchImpl }).call({ ...E2E_CASES[0].request });
   add('failure: invalid token -> GATEWAY_UNAUTHORIZED (human-required)', wrong.error?.code === 'GATEWAY_UNAUTHORIZED' && wrong.failure?.proceed_automatically === false, wrong.error?.code);
-  const asDev = await createHttpTransport({ baseUrl: url, token, environment: 'production' }).call({ ...E2E_CASES[0].request });
+  const asDev = await createHttpTransport({ baseUrl: url, token, environment: 'production', fetchImpl }).call({ ...E2E_CASES[0].request });
   add('failure: a production consumer is refused by the staging Gateway', asDev.ok === false && asDev.failure?.proceed_automatically === false, asDev.error?.code);
-  const malformed = await raw(url, '/v1/decisions', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{"not json' });
+  const malformed = await raw(url, '/v1/decisions', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{"not json', fetchImpl });
   add('failure: malformed JSON -> 400', malformed === 400, `status=${malformed}`);
-  const wrongType = await raw(url, '/v1/decisions', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'text/plain' }, body: '{}' });
+  const wrongType = await raw(url, '/v1/decisions', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'text/plain' }, body: '{}', fetchImpl });
   add('failure: non-JSON content type -> 415', wrongType === 415, `status=${wrongType}`);
-  const plain = await raw(url.replace(/^https:/, 'http:'), '/health');
+  const plain = await raw(url.replace(/^https:/, 'http:'), '/health', { fetchImpl });
   add('transport: plain http on the serve port is not served', plain !== 200, `status=${plain}`);
   if (python) {
     // Hermes は Mac mini の Python で動く。PC の Python（証明書ストア等）の事情で落ちても staging の合否は止めない＝WARN

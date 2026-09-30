@@ -180,3 +180,25 @@ test('credential store: Windows only, value only through stdin, read back to ver
   const mismatch = await storeWindowsCredential('E-NEXUS/edl/gateway-token-staging', TOKEN, { platform: 'win32', spawnSyncImpl: () => ({ status: 0 }), readCredentialImpl: async () => 'other' });
   assert.equal(mismatch.ok, false);
 });
+
+test('runE2E end to end against a real staging Gateway server (https URL mapped to the local server; Jev off; release pinned)', async () => {
+  const { startGatewayServer } = await import('../src/gateway/http-server.mjs');
+  const { runE2E } = await import('../deploy/vps-staging/e2e.mjs');
+  const token = 'e2e-staging-token-0123456789abcdef-0123456789';
+  const release = { commit: 'c'.repeat(40), version: '0.1.0' };
+  const gateway = createGateway({ engine: createDecisionLayerEngine({ env: {}, meter: createMemoryMeter() }), env: { EDL_ENVIRONMENT: 'staging' } });
+  const server = await startGatewayServer({ gateway, port: 0, token, release });
+  const local = `http://127.0.0.1:${server.address().port}`;
+  const url = 'https://vps.tail.ts.net:8446';
+  // Tailscale Serve terminates TLS; plain http on the serve port is answered with 400 by the TLS listener
+  const fetchImpl = async (u, init) => (String(u).startsWith('http://vps.tail.ts.net') ? new Response('', { status: 400 }) : fetch(String(u).replace(url, local), init));
+  try {
+    const r = await runE2E({ url, token, release: release.commit, fetchImpl });
+    assert.equal(r.pass, true, JSON.stringify(r.results.filter((x) => !x.pass)));
+    assert.ok(r.results.length >= 20, 'smoke + 6 cases + failure checks');
+    const smokeOnly = await runE2E({ url, token, release: 'd'.repeat(40), smokeOnly: true, fetchImpl });
+    assert.equal(smokeOnly.pass, false, 'a wrong release pin fails the smoke');
+  } finally {
+    await new Promise((res) => server.close(res));
+  }
+});
