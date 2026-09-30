@@ -69,3 +69,17 @@ EDL_GATEWAY_RATE_LIMIT_PER_MIN=600
 - multi-tenant の切り分け・BYOK（採用設計が無い。`application_id`・`tenant` を request に持てる構造は既にある）
 - Worker から core を直接 import（2026-09-25 却下。Worker は HTTP Gateway を呼ぶ）
 - cloudflare Jev provider（API 仕様未確認・推測実装しない）
+
+## 7. VPS staging（2026-09-30・Human 承認・Deployment Completion Phase）
+
+- **実行先**：既存の E-NEXUS VPS（Human 決定 2026-09-30。canary は staging にしない）。道具は `deploy/vps-staging/`（README が正本）。
+- **TLS**：Tailscale Serve の HTTPS を前段に置く（方式 B・Tailnet 限定・Funnel なし）。Gateway は `127.0.0.1` だけで listen、token 必須。
+  consumer-kit の https 必須ルールは変えない（Mac mini／Hermes → Tailnet HTTPS → staging Gateway の経路をそのまま使う）。
+- **操作**：Human が PC で `node deploy/vps-staging/run.mjs --tailscale-name <VPS>` を 1 回実行する（SSH を開始するのは Human）。
+  audit → preflight → deploy（A→B→rollback A→B）→ failure 注入 → E2E → usage digest timer → 事後比較 → staging token を資格情報ストアへ。
+- **有料 0**：staging の env file に `EDL_ALLOW_NETWORK`・`JEV_API_KEY` 等があると stage.sh は止まる。Jev（TypeSafe Direct）へつなぐのは
+  staging 用 Jev key の投入と Human GO の後（§2 の値の置き方のまま・本節では扱わない）。
+- **§3〜§4 との関係**：§3 の 2〜4（checkout・stamp・env file・service 登録・smoke）と §4 の rollback を、VPS staging では stage.sh が同じ順で行う。
+  production は従来どおり Human-only（本節は staging だけの例外）。
+- **systemd の再起動**（2026-09-30）：起動拒否（exit 2）は再起動しない（`RestartPreventExitStatus=2`）。それ以外も `[Unit]` の
+  `StartLimitIntervalSec=300`・`StartLimitBurst=5` で打ち止め。意図した restart の前は `reset-failed` で数え直す（stage.sh）。

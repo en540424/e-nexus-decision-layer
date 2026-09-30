@@ -21,6 +21,8 @@
   一般販売・外部ユーザー向けの SaaS／App／API／Agent を**今の DEV Gateway（ローカル CLI / SDK）へつながない**。環境が不明なら Production へ推測接続しない。
   DEV の変更を Production へ自動反映しない。環境別のコード複製（`decision-layer-prod` 等）を作らない。`EDL_ENVIRONMENT` を AI が staging / production に設定しない
   （Production の deploy・Secret・Gateway 切替は Human-only）。engine の `mode: production` は実行環境の PRODUCTION ではない。
+  **例外（2026-09-30 Human 承認）**：VPS staging は `deploy/vps-staging/`（Human が run.mjs を 1 回実行＝SSH の開始は Human）が作る。
+  AI はその道具を作り・直し・結果を読む。production は Human-only のまま。
 - **Git**：Vault の CLAUDE.md「Git運用」「Human-only操作」に従う。force push / reset / rebase / stash / branch削除は禁止。
   remote 作成（`gh repo create`）と push 先の設定は Human-only。
 
