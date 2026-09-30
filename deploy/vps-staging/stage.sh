@@ -260,6 +260,22 @@ serve_ensure() {
   if echo "$cur" | grep -q " funnel=0"; then pass "no funnel on $SP (tailnet only)"; else fail "funnel is ON for $SP"; fi
 }
 
+# Clone (first time) and fetch from the bundle, then check out <sha> detached. tests/vps-staging-kit.test.mjs runs this with real git.
+checkout_release() {
+  local repo=$1 bundle=$2 sha=$3
+  if [ ! -d "$repo/.git" ]; then git clone --quiet --no-checkout "$bundle" "$repo" || abort "clone from bundle failed"; fi
+  git -C "$repo" fetch --quiet "$bundle" '+refs/heads/*:refs/remotes/bundle/*' || abort "fetch from bundle failed"
+  git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null || abort "commit ${sha:0:12} is not in the bundle"
+  if [ -z "$(git -C "$repo" ls-files | head -1)" ]; then
+    # never checked out: clone --no-checkout leaves an empty index, which 'status' reports as every file deleted.
+    # Nothing local to keep, so the first checkout uses --force (2026-09-30: the first VPS run stopped here).
+    git -C "$repo" -c advice.detachedHead=false checkout --quiet --force --detach "$sha" || abort "first checkout failed"
+  else
+    [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] || abort "staging checkout has tracked changes; not touching it"
+    git -C "$repo" -c advice.detachedHead=false checkout --quiet --detach "$sha" || abort "checkout failed"
+  fi
+}
+
 install_release() {
   local sha=${1:-} out
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || abort "install needs a full 40-char sha"
@@ -267,11 +283,7 @@ install_release() {
   paid_guard
   id "$SVC_USER" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$SVC_USER" || abort "useradd $SVC_USER failed"
   if [ ! -d "$BASE" ]; then install -d -m 0750 -o root -g "$SVC_USER" "$BASE"; fi
-  if [ ! -d "$REPO/.git" ]; then git clone --quiet --no-checkout "$BUNDLE" "$REPO" || abort "clone from bundle failed"; fi
-  git -C "$REPO" fetch --quiet "$BUNDLE" '+refs/heads/*:refs/remotes/bundle/*' || abort "fetch from bundle failed"
-  git -C "$REPO" cat-file -e "$sha^{commit}" 2>/dev/null || abort "commit ${sha:0:12} is not in the bundle"
-  [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ] || abort "staging checkout has tracked changes; not touching it"
-  git -C "$REPO" -c advice.detachedHead=false checkout --quiet --detach "$sha" || abort "checkout failed"
+  checkout_release "$REPO" "$BUNDLE" "$sha"
   chown -R root:"$SVC_USER" "$REPO"
   chmod -R g+rX,g-w,o-rwx "$REPO"
   install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$REPO/data" "$REPO/data/usage"
@@ -462,20 +474,28 @@ uninstall() {
   echo "RESULT uninstall PASS (repo, env file, data and backups kept)"
 }
 
-exec 9>/run/e-nexus-staging.lock
-flock -n 9 || abort "another staging run is in progress"
-cmd=${1:-}
-[ $# -gt 0 ] && shift
-case "$cmd" in
-  preflight) preflight ;;
-  install) install_release "${1:-}" ;;
-  rollback) rollback ;;
-  failure) failure_tests ;;
-  digest) digest_timer ;;
-  postflight) postflight "${1:-}" ;;
-  status) status ;;
-  token) token ;;
-  uninstall) uninstall "${1:-}" ;;
-  *) echo "usage: stage.sh <preflight|install <sha>|rollback|failure|digest|postflight <sha>|status|token|uninstall --yes>"; exit 2 ;;
-esac
-[ "$FAILED" = 0 ]
+main() {
+  local cmd=${1:-}
+  exec 9>/run/e-nexus-staging.lock
+  flock -n 9 || abort "another staging run is in progress"
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    preflight) preflight ;;
+    install) install_release "${1:-}" ;;
+    rollback) rollback ;;
+    failure) failure_tests ;;
+    digest) digest_timer ;;
+    postflight) postflight "${1:-}" ;;
+    status) status ;;
+    token) token ;;
+    uninstall) uninstall "${1:-}" ;;
+    *) echo "usage: stage.sh <preflight|install <sha>|rollback|failure|digest|postflight <sha>|status|token|uninstall --yes>"; exit 2 ;;
+  esac
+  [ "$FAILED" = 0 ]
+}
+
+# Run only when executed; tests source this file to call single functions.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+  exit $?
+fi

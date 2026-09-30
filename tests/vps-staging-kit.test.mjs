@@ -204,3 +204,38 @@ test('runE2E end to end against a real staging Gateway server (https URL mapped 
     await new Promise((res) => server.close(res));
   }
 });
+
+test('stage.sh checkout_release with real git: fresh clone, a never-checked-out clone (the first VPS run), switching releases, refusing local changes', async (t) => {
+  const uname = spawnSync('bash', ['-c', 'uname -s'], { encoding: 'utf8' });
+  const kind = (uname.stdout || '').trim();
+  if (uname.status !== 0 || (process.platform === 'win32' && !/MINGW|MSYS|CYGWIN/.test(kind))) { t.skip(`no usable bash for file paths (${kind || 'none'})`); return; }
+  const { mkdtempSync, rmSync, writeFileSync, appendFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const slash = (p) => p.split('\\').join('/');
+  const dir = slash(mkdtempSync(join(tmpdir(), 'edl-checkout-')));
+  const git = (...a) => spawnSync('git', a, { encoding: 'utf8' });
+  const branch = git('-C', ROOT, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+  const shaB = git('-C', ROOT, 'rev-parse', 'HEAD').stdout.trim();
+  const shaA = git('-C', ROOT, 'rev-parse', 'HEAD~1').stdout.trim();
+  const bundle = `${dir}/t.bundle`;
+  assert.equal(git('-C', ROOT, 'bundle', 'create', bundle, 'HEAD', ...(branch === 'HEAD' ? [] : [branch])).status, 0);
+  const stage = slash(join(KIT, 'stage.sh'));
+  const clean = (sha) => new RegExp(`HEAD=${sha} DIRTY=[ \\t]*0`);
+  const run = (repo, sha) => spawnSync('bash', ['-c', `source "${stage}"; checkout_release "${repo}" "${bundle}" "${sha}" && echo "HEAD=$(git -C "${repo}" rev-parse HEAD) DIRTY=$(git -C "${repo}" status --porcelain --untracked-files=no | wc -l)"`], { encoding: 'utf8' });
+  try {
+    const fresh = run(`${dir}/repo`, shaB);
+    assert.match(fresh.stdout, clean(shaB), fresh.stdout + fresh.stderr);
+    const switched = run(`${dir}/repo`, shaA);
+    assert.match(switched.stdout, clean(shaA), 'switch to another release');
+    assert.equal(git('clone', '--quiet', '--no-checkout', bundle, `${dir}/left`).status, 0);
+    const leftover = run(`${dir}/left`, shaB);
+    assert.match(leftover.stdout, clean(shaB), 'the state the first VPS run left behind continues');
+    appendFileSync(`${dir}/repo/README.md`, '\nlocal edit\n');
+    const refused = run(`${dir}/repo`, shaB);
+    assert.equal(refused.status, 3);
+    assert.match(refused.stdout, /ABORT staging checkout has tracked changes/);
+    writeFileSync(`${dir}/.done`, '');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
