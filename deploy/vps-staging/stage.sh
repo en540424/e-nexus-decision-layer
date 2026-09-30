@@ -420,8 +420,21 @@ postflight() {
   fi
   if diff <(grep -v "^PORT $SP " "$ST/serve.before") <(grep -v "^PORT $SP " "$ST/serve.after") >/dev/null; then pass "other tailscale serve entries unchanged"; else fail "other tailscale serve entries changed"; fi
   if grep -q "^PORT $SP https=1 proxy=http://127.0.0.1:$GP funnel=0\$" "$ST/serve.after"; then pass "staging serve https:$SP -> 127.0.0.1:$GP, no funnel"; else fail "staging serve mapping is not as expected"; fi
-  newports=$(comm -13 "$ST/ports.before" "$ST/ports.after" | grep -vx "$GP" | tr '\n' ' ')
-  if [ -z "${newports// /}" ]; then pass "no new listening ports except 127.0.0.1:$GP"; else fail "unexpected new listening ports: $newports"; fi
+  newports=$(comm -13 "$ST/ports.before" "$ST/ports.after" | grep -vx -e "$GP" -e "$SP" | tr '\n' ' ')
+  if [ -z "${newports// /}" ]; then pass "no new listening ports except 127.0.0.1:$GP and the serve port $SP"; else fail "unexpected new listening ports: $newports"; fi
+  # The serve port is tailscaled's own listener (like the existing 443/8444): it must sit on tailnet addresses only.
+  local sp_addrs sp_procs
+  sp_addrs=$(ss -H -tln "( sport = :$SP )" 2>/dev/null | awk '{print $4}' | sed 's/:[0-9]*$//; s/%.*//; s/^\[//; s/\]$//')
+  sp_procs=$(ss -H -tlnp "( sport = :$SP )" 2>/dev/null | sed -n 's/.*(("\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ')
+  if [ -z "$sp_addrs" ]; then
+    info "serve port $SP is not a kernel listener (served inside tailscaled)"
+  elif echo "$sp_addrs" | grep -Evq '^(100\.|fd7a:115c:a1e0:)'; then
+    fail "serve port $SP listens beyond the tailnet: $(echo "$sp_addrs" | tr '\n' ' ')"
+  elif [ "${sp_procs// /}" != tailscaled ]; then
+    fail "serve port $SP is held by: $sp_procs"
+  else
+    pass "serve port $SP listens on tailnet addresses only (tailscaled)"
+  fi
   gone=$(comm -23 "$ST/ports.before" "$ST/ports.after" | tr '\n' ' ')
   if [ -z "${gone// /}" ]; then pass "no listening port disappeared"; else fail "listening ports disappeared: $gone"; fi
   if ss -H -tln "( sport = :$GP )" | awk '{print $4}' | grep -qv '^127\.0\.0\.1:'; then fail "gateway listens beyond 127.0.0.1"; else pass "gateway listens on 127.0.0.1 only"; fi

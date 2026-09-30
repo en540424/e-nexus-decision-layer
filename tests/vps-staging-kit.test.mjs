@@ -54,6 +54,9 @@ test('stage.sh: changes only staging (systemctl through the staging-only wrapper
   assert.match(s, /trap 'restore_after_failure "\$bk"' EXIT/, 'failure tests restore the env file even when interrupted');
   assert.match(s, /trap 'restore_after_failure "\$bk"; trap - EXIT; exit 130' HUP INT TERM/, 'a dropped ssh session or Ctrl+C during the failure tests still restores staging');
   assert.match(s, /^trap '' PIPE$/m, 'a closed ssh pipe does not kill a phase half-way');
+  assert.match(s, /grep -vx -e "\$GP" -e "\$SP"/, 'the only new listeners allowed are the gateway port and the serve port (2026-09-30 second run: 8446 was counted as unexpected)');
+  assert.match(s, /grep -Evq '\^\(100\\\.\|fd7a:115c:a1e0:\)'/, 'the serve port must sit on tailnet addresses only');
+  assert.match(s, /\[ "\$\{sp_procs\/\/ \/\}" != tailscaled \]/, 'and be held by tailscaled');
   assert.ok(/printf '%s\\n' "\$tok"/.test(s) && /token\(\) \{/.test(s), 'the token leaves the host only through the token phase (stdout, captured by run.mjs)');
 });
 
