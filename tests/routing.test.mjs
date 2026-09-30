@@ -55,11 +55,15 @@ test('engine: model-route rules encode the 2-axis rule (work_center × effort) a
   const designHarness = await engine.decide({ ...base, input: { task_size: 'M', work_center: 'design-judgment', touches_harness: true } });
   assert.equal(designHarness.outcome.executor_model, 'opus');
   assert.equal(designHarness.tier, 'human');
-  // 読解・比較・横断監査が中心 → xhigh・Human がモデルを選ぶ（Fable は enum に無い＝auto にならない）
+  // 読解・比較・横断監査が中心 → fable（2026-10-01 整合修正：旧「Human 指定時のみ」を廃止。Advisor正本§0-2・§0-3）
   const audit = await engine.decide({ ...base, input: { task_size: 'L', work_center: 'reading-comparison-audit' } });
-  assert.equal(audit.outcome.effort, 'xhigh');
-  assert.equal(audit.tier, 'human');
-  assert.ok(['sonnet', 'opus'].includes(audit.outcome.executor_model));
+  assert.deepEqual([audit.outcome.executor_model, audit.outcome.effort], ['fable', 'high']);
+  assert.notEqual(audit.tier, 'human');
+  // SSOT 衝突・重大監査 → fable／xhigh（資料量だけでは上げない）
+  const auditConflict = await engine.decide({ ...base, input: { task_size: 'L', work_center: 'reading-comparison-audit', ssot_conflict: true } });
+  assert.deepEqual([auditConflict.outcome.executor_model, auditConflict.outcome.effort], ['fable', 'xhigh']);
+  // 旧入力（work_center 無し）では fable を返さない（実装が中心とみなす）
+  assert.ok(!['fable'].includes((await engine.decide({ ...base, input: { task_size: 'L' } })).outcome.executor_model));
   // 実装が中心を明示 → 旧入力と同じ
   const impl = await engine.decide({ ...base, input: { task_size: 'M', work_center: 'implementation' } });
   assert.deepEqual([impl.outcome.executor_model, impl.outcome.effort], ['sonnet', 'high']);

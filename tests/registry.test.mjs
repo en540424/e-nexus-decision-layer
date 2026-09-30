@@ -27,8 +27,12 @@ test('resolveProject accepts aliases', () => {
   assert.throws(() => resolveProject('en-volt'), RegistryError);
 });
 
-test('models registry: fable is never auto-selectable', () => {
-  assert.equal(getEntry('models', 'fable').auto_selectable, false);
+test('models registry: fable is selectable by work center (reading-comparison-audit), not a fixed default', () => {
+  // 2026-10-01 整合修正：Vault Advisor正本§0-2（旧「Human 指定時のみ」を廃止）。課金は§0-6
+  const fable = getEntry('models', 'fable');
+  assert.equal(fable.auto_selectable, true);
+  assert.deepEqual(fable.work_center, ['reading-comparison-audit']);
+  assert.equal(fable.role, 'executor');
   assert.ok(loadRegistry('models').some((m) => m.id === 'jev' && m.role === 'decision-engine'));
 });
 
