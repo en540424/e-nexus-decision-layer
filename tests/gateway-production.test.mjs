@@ -226,6 +226,11 @@ test('service definitions: systemd / launchd / windows run run-gateway.mjs with 
   assert.match(sd.content, /ExecStart=\/usr\/bin\/env node scripts\/run-gateway\.mjs --env-file \/etc\/e-nexus\/gateway-production\.env --host 127\.0\.0\.1 --port 8787/);
   assert.match(sd.content, /KillSignal=SIGTERM/);
   assert.match(sd.content, /User=edl/);
+  assert.ok(sd.content.indexOf('StartLimitBurst=5') < sd.content.indexOf('[Service]') && sd.content.includes('StartLimitIntervalSec=300\nStartLimitBurst=5\n'), 'StartLimit* live in [Unit] (systemd ignores them in [Service])');
+  assert.match(sd.content, /RestartPreventExitStatus=2/, 'a refusal to start (exit 2) is not restarted forever');
+  assert.ok(!/MemoryMax=/.test(sd.content), 'no memory cap unless asked');
+  assert.match(renderService({ ...a, memoryMax: '256M' }).content, /MemoryMax=256M/);
+  assert.ok(validateServiceArgs({ ...a, memoryMax: '256MB; rm' }).some((e) => e.includes('--memory-max')));
   const ld = renderService({ ...a, target: 'launchd', node: '/opt/homebrew/bin/node' });
   assert.match(ld.content, /<string>scripts\/run-gateway\.mjs<\/string>/);
   assert.match(ld.content, /<key>StandardErrorPath<\/key>/);

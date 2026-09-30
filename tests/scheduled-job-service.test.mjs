@@ -43,7 +43,7 @@ test('rotate-logs：Mac mini（launchd）だけ・--base 必須・sh で rotate-
 test('拒否：URL の webhook・一覧外の job／target・相対パス・危険な文字・時刻の範囲外・launchd で node の場所が無い', () => {
   assert.ok(validateJobArgs({ ...MAC, webhook: 'https://hooks.example/abc' }).some((e) => e.includes('--webhook')));
   assert.ok(validateJobArgs({ ...MAC, job: 'send-line' }).length > 0);
-  assert.ok(validateJobArgs({ ...MAC, target: 'systemd' }).length > 0);
+  assert.ok(validateJobArgs({ ...MAC, target: 'systemd' }).some((e) => e.includes('--environment')), 'systemd needs --environment / --user');
   assert.ok(validateJobArgs({ ...MAC, dir: 'relative/dir' }).length > 0);
   assert.ok(validateJobArgs({ ...MAC, dir: '/x; rm -rf /' }).length > 0);
   assert.ok(validateJobArgs({ ...MAC, hour: 24 }).length > 0);
@@ -51,4 +51,26 @@ test('拒否：URL の webhook・一覧外の job／target・相対パス・危�
   assert.ok(validateJobArgs({ ...MAC, node: undefined }).some((e) => e.includes('--node')));
   assert.deepEqual(validateJobArgs({ ...MAC, node: undefined, path: '/opt/homebrew/bin:/usr/bin:/bin' }), []);
   assert.ok(validateJobArgs({ ...MAC, environment: 'prod' }).length > 0);
+});
+
+test('usage-digest（systemd・2026-09-30 VPS staging）：oneshot の .service と毎日・Persistent の .timer・専用ユーザー・環境名入りの unit・report なら --fail-on-anomaly を付けない', () => {
+  const a = { job: 'usage-digest', target: 'systemd', dir: '/opt/e-nexus-staging/e-nexus-decision-layer', node: '/usr/bin/node', environment: 'staging', user: 'edl-staging', onAnomaly: 'report', hour: 6, minute: 5 };
+  assert.deepEqual(validateJobArgs(a), []);
+  const r = renderJob(a);
+  assert.deepEqual(r.files.map((f) => f.filename), ['e-nexus-usage-digest-staging.service', 'e-nexus-usage-digest-staging.timer']);
+  const [service, timer] = r.files.map((f) => f.content);
+  assert.match(service, /Type=oneshot/);
+  assert.match(service, /User=edl-staging/);
+  assert.match(service, /ExecStart=\/usr\/bin\/node scripts\/usage-digest\.mjs --hours 24 --environment staging/);
+  assert.ok(!/--fail-on-anomaly/.test(service), 'report mode: anomalies are printed, the unit does not fail every day while Jev is off');
+  assert.match(service, /ProtectSystem=strict/);
+  assert.match(timer, /OnCalendar=\*-\*-\* 06:05:00/);
+  assert.match(timer, /Persistent=true/);
+  assert.match(timer, /Unit=e-nexus-usage-digest-staging\.service/);
+  assert.match(renderJob({ ...a, onAnomaly: undefined }).files[0].content, /--fail-on-anomaly/, 'default stays fail');
+  assert.ok(!/TOKEN=|KEY=|Bearer/.test(service + timer));
+  assert.ok(validateJobArgs({ ...a, user: undefined }).some((e) => e.includes('--user')), 'never as root by default');
+  assert.ok(validateJobArgs({ ...a, node: undefined }).some((e) => e.includes('--node')));
+  assert.ok(validateJobArgs({ ...a, webhook: 'credential:E-NEXUS/edl/digest-webhook' }).some((e) => e.includes('--webhook')), 'no credential store on Linux');
+  assert.ok(validateJobArgs({ ...a, onAnomaly: 'ignore' }).some((e) => e.includes('--on-anomaly')));
 });

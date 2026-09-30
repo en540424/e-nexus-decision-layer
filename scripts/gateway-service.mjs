@@ -4,10 +4,12 @@
  *
  *   node scripts/gateway-service.mjs --target <systemd|launchd|windows> --environment <staging|production>
  *        --dir <deploy先の repo の絶対パス> --env-file <env file の絶対パス> [--host 127.0.0.1] [--port 8787] [--node <node の絶対パス>] [--user <実行ユーザー>]
- *        [--path <launchd の PATH（コロン区切りの絶対パス）>]
+ *        [--path <launchd の PATH（コロン区切りの絶対パス）>] [--memory-max <例 256M（systemd のみ）>]
  *
  * どの定義も `node scripts/run-gateway.mjs --env-file …` を起動する（Secret は env file の `credential:` 参照か、root だけが読める env file。
  * 定義ファイル自体に Secret を書かない）。停止は SIGTERM（Windows は Stop-ScheduledTask）→ graceful shutdown。再起動は失敗時のみ。
+ * systemd の再起動（2026-09-30・VPS staging）：起動拒否（exit 2＝token・release の不一致・env file の誤り）は再起動しても直らないので
+ * RestartPreventExitStatus=2 で止める。それ以外の失敗（port 衝突の exit 1 等）も StartLimit（300 秒に 5 回）で打ち止め＝crash loop にしない。
  * 実機依存の値（パス・ユーザー・node の場所・PATH）は引数で受け取り、推測で埋めない。launchd は `--node`（node の絶対パス）か `--path` が要る
  * （LaunchAgent の既定 PATH は /usr/bin:/bin:/usr/sbin:/sbin で node が見つからない。Homebrew の場所は機械で違う＝2026-09-29 固定値をやめた）。
  */
@@ -36,6 +38,7 @@ export function validateServiceArgs(a) {
   if (a.target === 'launchd' && !a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定：`command -v node` の結果）');
   if (!/^(127\.0\.0\.1|::1|0\.0\.0\.0|localhost|[0-9.]{7,15})$/.test(a.host)) errors.push('--host must be an IP address or localhost');
   if (!Number.isInteger(Number(a.port)) || Number(a.port) < 1 || Number(a.port) > 65535) errors.push('--port must be 1-65535');
+  if (a.memoryMax !== undefined && !/^[1-9][0-9]{0,5}[KMG]$/.test(String(a.memoryMax))) errors.push('--memory-max must look like 256M');
   return errors;
 }
 
@@ -51,6 +54,8 @@ export function renderService(a) {
         `Description=E-NEXUS Common Decision Gateway (${a.environment})`,
         'After=network-online.target',
         'Wants=network-online.target',
+        'StartLimitIntervalSec=300',
+        'StartLimitBurst=5',
         '',
         '[Service]',
         'Type=simple',
@@ -59,6 +64,8 @@ export function renderService(a) {
         ...(a.user ? [`User=${a.user}`] : []),
         'Restart=on-failure',
         'RestartSec=5',
+        'RestartPreventExitStatus=2',
+        ...(a.memoryMax ? [`MemoryMax=${a.memoryMax}`] : []),
         'KillSignal=SIGTERM',
         'TimeoutStopSec=20',
         'NoNewPrivileges=true',
@@ -123,7 +130,7 @@ export function renderService(a) {
 
 function parse(argv) {
   const a = { host: '127.0.0.1', port: 8787 };
-  const map = { '--target': 'target', '--environment': 'environment', '--dir': 'dir', '--env-file': 'envFile', '--host': 'host', '--port': 'port', '--node': 'node', '--user': 'user', '--path': 'path' };
+  const map = { '--target': 'target', '--environment': 'environment', '--dir': 'dir', '--env-file': 'envFile', '--host': 'host', '--port': 'port', '--node': 'node', '--user': 'user', '--path': 'path', '--memory-max': 'memoryMax' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];
