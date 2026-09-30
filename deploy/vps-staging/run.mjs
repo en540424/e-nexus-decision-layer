@@ -321,12 +321,13 @@ async function main(argv) {
   git(['bundle', 'create', bundle, 'HEAD', branch]);
   const prep = await runSsh(ctx, `mkdir -p ${INBOX}/kit && chmod 700 ${INBOX}`);
   if (prep.code !== 0) { say(`ABORT ssh to the VPS failed (exit ${prep.code}); nothing was changed`); return 1; }
+  // 小さい kit を先に短い上限で送る：ssh の標準入力の終わりが届かない環境なら、ここで数十秒で分かる（bundle の 10 分を待たない）
   const uploads = [
-    [`${INBOX}/edl.bundle`, fs.readFileSync(bundle)],
-    ...KIT_FILES.map((f) => [`${INBOX}/kit/${f}`, Buffer.from(fs.readFileSync(path.join(KIT, f), 'utf8').replace(/\r\n/g, '\n'), 'utf8')]),
+    ...KIT_FILES.map((f) => [`${INBOX}/kit/${f}`, Buffer.from(fs.readFileSync(path.join(KIT, f), 'utf8').replace(/\r\n/g, '\n'), 'utf8'), 30000]),
+    [`${INBOX}/edl.bundle`, fs.readFileSync(bundle), PHASE_TIMEOUT_MS.upload],
   ];
-  for (const [dest, body] of uploads) {
-    const r = await runSsh(ctx, `cat > ${dest}`, { input: body, timeoutMs: PHASE_TIMEOUT_MS.upload });
+  for (const [dest, body, timeoutMs] of uploads) {
+    const r = await runSsh(ctx, `cat > ${dest}`, { input: body, timeoutMs });
     if (r.code !== 0) { say(`ABORT uploading ${path.posix.basename(dest)} failed; nothing was changed`); return 1; }
   }
   // 転送経路（Windows の ssh の標準入力）でバイナリが崩れていないことを確かめる

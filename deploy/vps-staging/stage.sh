@@ -13,6 +13,8 @@
 set -u
 umask 027
 export LC_ALL=C
+# If the ssh client goes away, finish the phase instead of dying half-way on a write to a closed pipe.
+trap '' PIPE
 
 INBOX=/root/e-nexus-staging-inbox
 KIT=$INBOX/kit
@@ -324,6 +326,7 @@ failure_tests() {
   install -d -m 0700 "$bk"
   cp -p "$ENV_FILE" "$bk/"
   trap 'restore_after_failure "$bk"' EXIT
+  trap 'restore_after_failure "$bk"; trap - EXIT; exit 130' HUP INT TERM
 
   # F1 bad config: release pin mismatch -> refused_to_start (exit 2) -> no restart loop
   sed -i 's/^EDL_EXPECTED_RELEASE=.*/EDL_EXPECTED_RELEASE=0000000000000000000000000000000000000000/' "$ENV_FILE"
@@ -369,7 +372,7 @@ failure_tests() {
   # F5 boot persistence (no host reboot: other services run here)
   if [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = enabled ]; then pass "boot: unit enabled"; else fail "boot: unit not enabled"; fi
 
-  trap - EXIT
+  trap - EXIT HUP INT TERM
   restore_after_failure "$bk"
   if [ "$FAILED" = 0 ]; then echo "RESULT failure PASS"; else echo "RESULT failure FAIL"; fi
 }
