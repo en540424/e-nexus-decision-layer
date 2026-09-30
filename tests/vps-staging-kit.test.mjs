@@ -104,8 +104,8 @@ test('run.mjs: arguments, plan order (audit -> preflight -> A -> B -> rollback A
   assert.throws(() => parseArgs([]), /--tailscale-name/);
   assert.throws(() => parseArgs(['--tailscale-name', 'bad name;rm']), /--tailscale-name/);
   assert.throws(() => parseArgs(['--tailscale-name', 'vm-1', '--ssh-user', 'root;x']), /--ssh-user/);
-  const a = parseArgs(['--tailscale-name', 'vm-e91671a7-18', '--dry-run']);
-  assert.deepEqual([a.tailscaleName, a.sshUser, a.drill, a.dryRun, a.storeToken], ['vm-e91671a7-18', 'root', true, true, true]);
+  const a = parseArgs(['--tailscale-name', 'vps-example-1', '--dry-run']);
+  assert.deepEqual([a.tailscaleName, a.sshUser, a.drill, a.dryRun, a.storeToken], ['vps-example-1', 'root', true, true, true]);
   const steps = buildPlan({ drill: true, shaA: SHA_A, shaB: SHA_B }).map((s) => (s.kind === 'remote' ? `${s.phase}${s.sha ? `:${s.sha[0]}` : ''}` : s.kind === 'check' ? `check:${s.release[0]}${s.smokeOnly ? '' : ':e2e'}` : s.kind));
   assert.deepEqual(steps, ['audit', 'preflight', 'install:a', 'check:a', 'install:b', 'check:b', 'rollback', 'check:a', 'install:b', 'check:b', 'failure', 'check:b', 'check:b:e2e', 'digest', 'postflight:b', 'store-token']);
   assert.ok(consoleLine('FAIL  x') && consoleLine('RESULT preflight PASS') && !consoleLine('PASS  x') && !consoleLine('INFO  x'));
