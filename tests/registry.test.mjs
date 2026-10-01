@@ -36,6 +36,21 @@ test('models registry: fable is selectable by work center (reading-comparison-au
   assert.ok(loadRegistry('models').some((m) => m.id === 'jev' && m.role === 'decision-engine'));
 });
 
+test('agents／models の静的能力タグ：宣言済みの語だけ・点数を持たない（Vault 構想正本 MA-32 §4-3・MA-32-2）', async () => {
+  const { readJson } = await import('../src/schemas/loader.mjs');
+  for (const kind of ['agents', 'models']) {
+    const doc = readJson(`registries/${kind}.json`);
+    const tags = new Set(doc.capability_tags);
+    assert.ok(tags.size > 0, `${kind}: capability_tags`);
+    for (const t of tags) assert.match(t, /^[a-z][a-z0-9-]*$/, `${kind}: ${t}`);
+    for (const e of doc.entries) {
+      assert.ok(Array.isArray(e.capabilities) && e.capabilities.length > 0, `${kind}/${e.id}: capabilities`);
+      for (const t of e.capabilities) assert.ok(tags.has(t), `${kind}/${e.id}: 未宣言のタグ ${t}`);
+      for (const k of Object.keys(e)) assert.ok(!/score|rating|success_rate|latency|availability/i.test(k), `${kind}/${e.id}: 実測・点数は Knowledge Layer 側（${k}）`);
+    }
+  }
+});
+
 test('unknown registry kind throws', () => {
   assert.throws(() => loadRegistry('widgets'), RegistryError);
 });

@@ -2,11 +2,13 @@
   "schema": "edl-registry-v1",
   "kind": "models",
   "updated": "2026-10-01",
-  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Advisorモデル運用ルール_正本§0（モデル運用の唯一の正本。2026-09-17 の原典「4段階2軸方式」を 2026-10-01 に統合。モデル×Effort の 2 軸＝作業の中心で選ぶ）と ~/.claude/settings.json（modelSettings）。role: executor / advisor / special-approval / decision-engine / reviewer。work_center は Advisor正本§0-2 の「作業の中心」。alias_target は 2026-10-01 時点のエイリアスの実体（永続固定しない・世代が変わったらここだけ直す）。Fable は読解・比較・横断監査が中心なら AI も選べる（auto_selectable=true。2026-10-01 整合修正で旧「Human 指定時のみ」を廃止）。課金は Advisor正本§0-6（Max プランは週間上限の 50% までプラン内。利用クレジット課金時は Claude Code の同意プロンプト＝Human）。",
+  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Advisorモデル運用ルール_正本§0（モデル運用の唯一の正本。2026-09-17 の原典「4段階2軸方式」を 2026-10-01 に統合。モデル×Effort の 2 軸＝作業の中心で選ぶ）と ~/.claude/settings.json（modelSettings）。role: executor / advisor / special-approval / decision-engine / reviewer。work_center は Advisor正本§0-2 の「作業の中心」。alias_target は 2026-10-01 時点のエイリアスの実体（永続固定しない・世代が変わったらここだけ直す）。Fable は読解・比較・横断監査が中心なら AI も選べる（auto_selectable=true。2026-10-01 整合修正で旧「Human 指定時のみ」を廃止）。課金は Advisor正本§0-6（Max プランは週間上限の 50% までプラン内。利用クレジット課金時は Claude Code の同意プロンプト＝Human）。capabilities は静的能力タグ（Vault 構想正本 MA-32 §4-3・2026-10-01 MA-32-2 で追加）：capability_tags の語だけを使う・点数は持たない（subscription＝プラン内／api-cost＝従量。codex は課金形態を確認していないため付けない）。availability・成功率・latency 等の実測は Knowledge Layer の Current State が持ち、ここへは書かない。",
+  "capability_tags": ["coding", "design", "research", "audit", "review", "typed-decision", "read-only", "local-execution", "subscription", "api-cost"],
   "entries": [
     {
       "id": "sonnet",
       "scope": "global",
+      "capabilities": ["coding", "research", "review", "subscription"],
       "provider": "anthropic",
       "role": "executor",
       "work_center": ["implementation"],
@@ -18,6 +20,7 @@
     {
       "id": "opus",
       "scope": "global",
+      "capabilities": ["coding", "design", "research", "audit", "review", "subscription"],
       "provider": "anthropic",
       "role": "executor",
       "work_center": ["design-judgment"],
@@ -30,6 +33,7 @@
     {
       "id": "fable",
       "scope": "global",
+      "capabilities": ["research", "audit", "review", "subscription"],
       "provider": "anthropic",
       "role": "executor",
       "work_center": ["reading-comparison-audit"],
@@ -42,6 +46,7 @@
     {
       "id": "jev",
       "scope": "global",
+      "capabilities": ["typed-decision", "api-cost"],
       "provider": "typesafe-ai",
       "role": "decision-engine",
       "auto_selectable": true,
@@ -60,6 +65,7 @@
     {
       "id": "mock-jev",
       "scope": "global",
+      "capabilities": ["typed-decision", "local-execution"],
       "provider": "mock",
       "role": "decision-engine",
       "auto_selectable": true,
@@ -68,6 +74,7 @@
     {
       "id": "codex",
       "scope": "global",
+      "capabilities": ["review", "audit", "read-only"],
       "provider": "openai",
       "role": "reviewer",
       "auto_selectable": false,
