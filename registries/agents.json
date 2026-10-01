@@ -1,14 +1,17 @@
 {
   "schema": "edl-registry-v1",
   "kind": "agents",
-  "updated": "2026-09-19",
-  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Agent_SubAgent委任ルール §3-9（常設カスタムAgent 4体）と .claude/agents/*.md。すべて read-only（ファイル変更・Git・外部接続はしない）。Agent Router はここから候補を渡す。capabilities は静的能力タグ（Vault 構想正本 MA-32 §4-3・2026-10-01 MA-32-2 で追加）：capability_tags の語だけを使う・点数は持たない。稼働・成功率等の実測は Knowledge Layer（e-nexus-knowledge-layer）の Current State が持ち、ここへは書かない。",
-  "capability_tags": ["read-only", "audit", "review", "planning", "long-running", "scheduled", "local-execution"],
+  "updated": "2026-10-02",
+  "$comment": "上位正本は Vault の AI-Workflow-System/01_harness/Agent_SubAgent委任ルール §3-9（常設カスタムAgent 4体）と .claude/agents/*.md。type=read-only の4体（current-state-auditor 等）はファイル変更・Git・外部接続をしない。2026-10-02（Vault MA-32-5）：Executor（作業を実際に行う主体＝Claude Code 本体・Codex・Cursor・Hermes）を type=executor として同じ registry に足した（新しい Capability Registry は作らない：Vault 構想正本 Part C）。上位正本は Vault AI役割分担・検収体制_正本 §2・マルチエージェント共通開発ハーネス_正本 §10／§14・技術スタック正本 §3-10-1。executor-route（policies/routing/rules/executor-route.json）が静的能力の参考にする。Agent Router はここから候補を渡す。capabilities は静的能力タグ（Vault 構想正本 MA-32 §4-3・2026-10-01 MA-32-2 で追加）：capability_tags の語だけを使う・点数は持たない。稼働・成功率等の実測は Knowledge Layer（e-nexus-knowledge-layer）の Current State が持ち、ここへは書かない。",
+  "capability_tags": ["read-only", "audit", "review", "planning", "long-running", "scheduled", "local-execution", "coding", "vault-write", "browser", "human-driven"],
   "entries": [
     { "id": "current-state-auditor", "scope": "global", "location": ".claude/agents/current-state-auditor.md", "type": "read-only", "trigger": "明示指名 または L作業開始前", "capabilities": ["read-only", "audit"], "description": "現在地だけを確定する監査役" },
     { "id": "decision-organizer", "scope": "global", "location": ".claude/agents/decision-organizer.md", "type": "read-only", "trigger": "明示指名のみ", "capabilities": ["read-only", "planning"], "description": "方向性未確定時の選択肢整理" },
     { "id": "implementation-planner", "scope": "global", "location": ".claude/agents/implementation-planner.md", "type": "read-only", "trigger": "明示指名のみ", "capabilities": ["read-only", "planning"], "description": "M/L作業の計画分解" },
     { "id": "independent-inspector", "scope": "global", "location": ".claude/agents/independent-inspector.md", "type": "read-only", "trigger": "明示指名 または L作業の初回実運用前", "capabilities": ["read-only", "audit", "review"], "description": "完了報告の独立検品" },
-    { "id": "hermes", "scope": "global", "location": "AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_Hermes常駐Agent導入設計_2026-08-30.md", "type": "design-only", "trigger": "未導入", "status": "planned", "capabilities": ["long-running", "scheduled", "local-execution"], "description": "Mac mini常駐Agent（設計のみ・未導入）。capabilities は設計上の能力（未導入のため実測は無い）" }
+    { "id": "cursor", "scope": "global", "location": "integrations/cursor/enexus-decision.mdc", "type": "executor", "trigger": "Human が IDE で操作するとき", "status": "active", "capabilities": ["coding", "human-driven"], "description": "Cursor（IDE）。Human が直接操作する。自動で作業を振る先ではない" },
+    { "id": "codex", "scope": "global", "location": "AI-Workflow-System/01_harness/scripts/codex-review.ps1", "type": "executor", "trigger": "codex-review Skill 経由のみ（read-only 強制）", "status": "active", "capabilities": ["review", "audit", "read-only"], "description": "OpenAI Codex。別モデル系統による独立 read-only レビュー（Claude Code が codex-review.ps1 で呼ぶ。直接は呼ばない）" },
+    { "id": "claude-code", "scope": "global", "location": "CLAUDE.md", "type": "executor", "trigger": "Human のセッション（常時）", "status": "active", "capabilities": ["coding", "planning", "review", "audit", "vault-write", "browser", "local-execution"], "description": "Claude Code 本体。Vault への書き込み（作業ログ・正本追記・commit）を行える唯一の Executor（Vault 構想正本 MA-32 §4-3）。実行は Human のセッション中だけ（常駐しない）" },
+    { "id": "hermes", "scope": "global", "location": "AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_Hermes常駐Agent導入設計_2026-08-30.md", "type": "executor", "trigger": "未導入", "status": "planned", "capabilities": ["long-running", "scheduled", "local-execution"], "description": "Mac mini常駐Agent（設計のみ・未導入）。capabilities は設計上の能力（未導入のため実測は無い）。type は 2026-10-02 に design-only→executor（status=planned のまま。executor-route は planned を推奨しない）" }
   ]
 }

@@ -334,11 +334,37 @@ multi-tenant 識別は `application_id`・`tenant`（opaque ID）・`environment
 
 - **責務**：Knowledge は「何が分かっているか」（事実・経路・鮮度・出所）、判断は Rules／Jev。Decision Layer は Knowledge から判断を作らず、事実を input に添えるだけ
 - **経路**：consumer は従来どおりの request を送る（Entity ID・query・保存形式を知らない）→ engine（`createDecisionLayerEngine`）が、`policies/knowledge/context-requirements.json` に載った decision_type だけ Knowledge Context を `input.knowledge_context` に置く → core（schema → safety → rules → Jev …）。**core（`src/core/`）は Knowledge を知らない**
-- **provider は注入**：`createDecisionLayerEngine({ knowledge: { provider, timeoutMs? } })`。provider port は `{ id, version, getContext(request, {signal}) }`、実装は Knowledge Layer repo の `createKnowledgeContextProvider`。注入しなければ従来と同一（`decision.knowledge` も付かない）。CLI・HTTP Gateway（`run-gateway`・`serve-config`・`deploy/`）はまだ注入しない
+- **provider は注入**：`createDecisionLayerEngine({ knowledge: { provider, timeoutMs? } })`。provider port は `{ id, version, getContext(request, {signal}) }`。注入しなければ従来と同一（`decision.knowledge` も付かない）
+- **CLI への配線（2026-10-02・Vault MA-32-5）**：`gateway decide`／`gateway health` は、runtime 環境が dev のときだけ、Knowledge Context contract を stdin／stdout の JSON で話す子 process（`src/knowledge/process-provider.mjs`）を provider として注入する。起動するコマンドの場所は `policies/knowledge/provider.json`（`EDL_KNOWLEDGE=off`＝使わない／`EDL_KNOWLEDGE_HOME`＝そこ。使えなければ毎回 `unavailable(source_unavailable)`＝黙って Knowledge 無しへ戻さない／どちらも無ければ兄弟フォルダ。無ければ未設定＝従来と同一）。子 process の env は OS の最低限だけ（Jev の鍵等を Knowledge 側へ継がせない）。exit code は見ず stdout の context を読み、検査は enricher が行う。`gateway health` の `knowledge_runtime` に status（configured／not_found／misconfigured／disabled）と source を出す（path は出さない）。**HTTP Gateway（`serve`・`run-gateway`・`serve-config`・`deploy/`）と MCP は注入しない（LATER）**＝VPS staging は従来と同一（`tests/knowledge-process-provider.test.mjs` が構造で固定）
+- **usage の要約**：Knowledge を注入した engine は usage 行に `knowledge`（requested・status・reason・rule_id・provider・environment・warnings・latency_ms）を足す（meter を engine が包む。core は無変更・envelope の `decision.usage` は従来の形）。`not_requested` も残るので Rules First の効き具合が usage から分かる
 - **Rules First**：knowledge_context を見ない rule を input だけで先に評価し、一致すれば Knowledge を問い合わせない（`decision.knowledge.status = not_requested`・`reason = rules_decided`・`rule_id`）。Knowledge を見る rule は rules ファイルの末尾に置く（loader が検査）
 - **失敗の意味を丸めない**：context の `status`（`ok`／`partial`／`subject_not_found`／`unavailable`）・`reason`（`source_unavailable`・`data_integrity_error`・`timeout`・`provider_error`・`malformed_response` 等）・state の `unknown`／`stale`・環境ごとの `coverage` をそのまま input に載せる。`automation-safety-gate` は production で `subject_not_found`／`unavailable`／impact の失敗なら rules（`knowledge-*`）が human-review へ上げる。dev／staging は止めずに Jev へ事実ごと渡す
 - **受け取る側の検査**：`schemas/common/knowledge-context.schema.json`＋id の形・判断 key・Secret／PII 風の値・16KB 上限・authority 番号。通らなければ `unavailable(malformed_response)`（部分的に使わない）。provider の例外・timeout（既定 2s）も `unavailable`
 - **explainability**：`decision.knowledge`（任意）＝ contract・requirement・provider・requested・status・reason・as_of・environment・subject・warnings・`refs`（entity id・relation key・state key だけ）・latency_ms。判断の根拠になった rule は `rationale` の `rule:<id>`。Knowledge の中身は返さない
 - **Contract**：Gateway Contract version は `1` のまま（envelope の key は不変。`decision.knowledge` は任意 field）。Jev の段で knowledge_context を使った判定は未較正（`x-jev-brief` は不変）
-- **確認**：`tests/knowledge-integration.test.mjs`（fake provider）・`node scripts/knowledge-integration-e2e.mjs --knowledge-layer <dir> --map <project-integration-map.json>`（実データ・dev 専用・課金なし）
+- **確認**：`tests/knowledge-integration.test.mjs`（fake provider）・`tests/knowledge-process-provider.test.mjs`（子 process・CLI 配線）・`node scripts/knowledge-integration-e2e.mjs --knowledge-layer <dir> --map <project-integration-map.json>`（SDK・実データ・dev 専用・課金なし）・`node scripts/agent-integration-e2e.mjs --knowledge-layer <dir> --map <…>`（**実 CLI を Claude Code と同じ形で子 process 起動**・failure injection・課金なし）
+- **実測の隔離（2026-10-02）**：Knowledge Layer は data/state の壊れた・契約外の実測だけを除外して開き、context の warnings に `state_records_quarantined` を付ける（schema の enum に追加）。data/knowledge 側の問題は従来どおり `unavailable(data_integrity_error)`
 
+
+## 14. Agent Integration Contract（2026-10-02・Vault MA-32-5）
+
+上位正本は Vault の MA-32 構想正本 §10（Agent／Executor 接続）。どの Agent（Claude Code・Hermes・Cursor・Codex・OpenAI 系）でも同じ形でつなぐ。Agent 専用の Knowledge 実装・Decision 実装は作らない。
+
+```
+Agent ─ consumer adapter（Skill／rule／HTTP transport：request を組み envelope を読む薄い層）
+      ─ Gateway（Contract v1：envelope 検証・環境・大きさ・Secret・knowledge_context 偽造の拒否）
+      ─ engine の組み立て（CLI composition root：Knowledge provider を注入）─ Knowledge Context provider（子 process・事実だけ）
+      ─ Decision Layer core（schema → safety → rules → Jev → … → Human）
+      ─ envelope ─ consumer adapter（interpretEnvelope：次の行動へ写す。緩めない）─ Agent
+```
+
+| Agent が送ってよい | Agent が送れない／名乗れない |
+|---|---|
+| `application_id`（自分の識別子）・`project_id`（対象）・`decision_type`・`input`（その type の schema の構造情報＝作業の種類・対象環境・副作用の区分・費用の区分）・`context`（参照用 ID）・`expected_environment`・`correlation_id` | `input.knowledge_context`（Knowledge は Decision Layer が取る＝`INVALID_ENVELOPE`）・承認済み／Human 確認済みの主張（schema に field が無い＝`SCHEMA_INVALID`）・出所や鮮度（authority・provenance・current）・`environment`／`via`（Gateway が上書き）・鍵・token の形の値（input／context のどこでも `INVALID_ENVELOPE`）・64KiB を超える request |
+
+- **Agent が知らなくてよいもの**：Knowledge の保存形式・置き場・Entity ID の規則・engine・Decision Engine（Jev 等）の名前と env・provider。Agent が持つのは request／response の契約だけ
+- **identity は権限ではない**：`application_id` は usage の集計と表示のためで、同じ input なら誰が名乗っても同じ判定（`tests/executor-route.test.mjs`）。consumer の中央 registry は作らない（§9-1）。作業を実際に行う Executor の静的能力は `registries/agents.json` の `type: executor`
+- **外部の文字列はデータ**：tool result・Web 本文等を input に入れても system instruction にならない。判断に使うのは schema の構造 field で、`summary` 等の自由文で rules の判定は変わらない（同 test）。鍵の形の値は Gateway で止まる
+- **結果の扱い**（`consumer-kit/conformance/interpretation-cases.json`・Node `consumer-kit/node/interpret.mjs`・Python `consumer-kit/python/enexus_interpret.py`）：`candidate`（tier auto＝次の段階の候補。許可ではない）／`review`（Advisor 相談か Human 確認）／`human`（Human へ返す）／`stop`（failure policy deny）。approval は常に false。tier auto でも `human_gate.required`・decision の欠落・環境の不一致・不明な tier・承認風の outcome key・壊れた envelope は `human`。**Knowledge の unavailable／partial／stale／unknown を Agent が補完・格上げしない**（decision をそのまま読む。「とりあえず実行」はしない）
+- **executor-route**（rules-reference）：作業1件をどの Executor に振るかの参考値。Human-only 境界は `human`、Vault 書き込みは `claude-code`、planned の Hermes は推奨しない、稼働状態は未実測（`availability_checked: false`。producer は MA-33 Watcher・Runtime Node）。rules が catch-all まで答える＝Jev へ流さない
+- **接続状態**（2026-10-02）：Claude Code＝CONNECTED_LOCAL（Skill → CLI → Knowledge 注入・dev）／Hermes＝CONTRACT_READY（HTTP transport と interpret の Python 版・未導入。HTTP Gateway への Knowledge 配線は LATER のため、HTTP 経由では Knowledge 無しの従来判定）／Cursor＝rule 配置済み（CLI。Skill と同じ契約）／HTTP Gateway（VPS staging）・MCP＝LATER

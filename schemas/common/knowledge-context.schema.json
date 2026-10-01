@@ -62,7 +62,7 @@
         }
       }
     },
-    "warnings": { "type": "array", "items": { "type": "string", "enum": ["stale_state", "source_unavailable_at_last_sync", "sync_metadata_missing", "truncated", "source_unavailable"] } },
+    "warnings": { "type": "array", "items": { "type": "string", "enum": ["stale_state", "source_unavailable_at_last_sync", "sync_metadata_missing", "truncated", "source_unavailable", "state_records_quarantined"] } },
     "omitted": {
       "type": "object",
       "required": ["unsafe_ids", "unsafe_values"],

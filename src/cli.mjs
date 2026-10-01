@@ -23,6 +23,9 @@
  *   node src/cli.mjs gateway mcp                          MCP stdio 入口（接続設定は Human-only）
  *   --verification（または EDL_GATEWAY_MODE=verification）：実 Jev が使えないとき mock-jev を入れる配管検証モード。既定は production（mock 無し）
  *
+ * Knowledge Context（Vault MA-32-5）：gateway decide／health は、dev のとき policies/knowledge/provider.json の場所（EDL_KNOWLEDGE_HOME／兄弟フォルダ）にある
+ *   Knowledge Context provider を子 process として engine へ注入する（EDL_KNOWLEDGE=off で使わない）。serve・mcp は注入しない。
+ *
  * 出力は常に JSON（機械可読）。終了コード: 0=成功 / 2=入力・schema エラー / 3=Human Gate 違反 / 1=その他。
  * gateway decide は envelope.ok=false でも stdout に envelope を出す（consumer は終了コードではなく envelope を読む）。
  */
@@ -34,6 +37,8 @@ import { createDecisionLayerEngine } from './gateway/engine.mjs';
 import { startGatewayServer } from './gateway/http-server.mjs';
 import { resolveServeConfig } from './gateway/serve-config.mjs';
 import { runMcpStdio } from './gateway/mcp-server.mjs';
+import { resolveKnowledgeProvider } from './knowledge/process-provider.mjs';
+import { resolveRuntimeEnvironment } from './core/environment.mjs';
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -48,7 +53,12 @@ const GATEWAY_EXIT = { invalid_request: 2, human_gate_violation: 3 };
 
 async function gatewayCommand(sub, opts) {
   const mode = opts.verification || process.env.EDL_GATEWAY_MODE === 'verification' ? 'verification' : 'production';
-  const gateway = createGateway({ engine: createDecisionLayerEngine({ mode }) });
+  // Knowledge Context（Vault MA-32-5・2026-10-02）：CLI の decide／health だけ、dev のときだけ provider を注入する（policies/knowledge/provider.json）。
+  // serve（HTTP）・mcp は注入しない（LATER）。見つからない兄弟フォルダ＝未設定（従来と同一）／EDL_KNOWLEDGE_HOME が使えない＝unavailable を返す provider
+  const knowledge = sub === 'decide' || sub === 'health'
+    ? resolveKnowledgeProvider({ env: process.env, environment: resolveRuntimeEnvironment(process.env) })
+    : { status: 'disabled', source: null, reason: 'entrypoint_not_wired', provider: null };
+  const gateway = createGateway({ engine: createDecisionLayerEngine({ mode, ...(knowledge.provider ? { knowledge: { provider: knowledge.provider } } : {}) }) });
   switch (sub) {
     case 'decide': {
       const raw = opts.stdin ? await readStdin() : (opts.json ?? (opts.file ? readFileSync(opts.file, 'utf8') : null));
@@ -61,7 +71,8 @@ async function gatewayCommand(sub, opts) {
       return;
     }
     case 'health':
-      out(gateway.health());
+      // knowledge_runtime：CLI がどう provider を決めたか（場所の path は出さない）
+      out({ ...gateway.health(), knowledge_runtime: { status: knowledge.status, source: knowledge.source, reason: knowledge.reason } });
       return;
     case 'types':
       out({ decision_types: gateway.decisionTypes() });

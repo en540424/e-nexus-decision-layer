@@ -1,0 +1,14 @@
+{
+  "$comment": "Knowledge Context provider の実行時の場所（Vault MA-32-5・2026-10-02）。CLI の composition root（src/cli.mjs の gateway decide／health）がこの設定で、Knowledge Context contract（enexus-knowledge-context-request-v1 → enexus-knowledge-context-v1）を stdin／stdout の JSON で話す子 process を provider として engine へ注入する。Decision Layer の src は Knowledge Layer を import しない・保存形式を読まない（tests/knowledge-integration.test.mjs）：repo の名前と入口はこのファイル（データ）にだけ置き、src は『設定されたコマンドを JSON で呼ぶ』汎用の provider（src/knowledge/process-provider.mjs）だけを持つ。 場所の決め方：EDL_KNOWLEDGE=off なら使わない（明示 opt-out）／EDL_KNOWLEDGE_HOME があればそこ（無い・入口が無い＝設定したのに使えない＝unavailable(source_unavailable) を返す provider。黙って Knowledge 無しへ戻さない）／無ければこの repo の兄弟フォルダ locate.sibling_dir（Cursor rule と同じ兄弟フォルダ前提。無ければ未設定＝従来どおり。VPS staging の bundle には Knowledge Layer が無いので従来と同一）。 配線するのは CLI の gateway decide／health だけで、runtime 環境が dev のときだけ（CLI／SDK の同居実行は DEV 扱い：docs/gateway.md §12）。HTTP Gateway（gateway serve・scripts/run-gateway.mjs・deploy/）と MCP はまだ配線しない（Vault 構想正本§12 MA-32-5：LATER）。子 process の env は OS の最低限だけ（Jev 等の Secret を Knowledge 側へ継がせない）。",
+  "version": "1",
+  "locate": {
+    "env_home": "EDL_KNOWLEDGE_HOME",
+    "env_switch": "EDL_KNOWLEDGE",
+    "sibling_dir": "e-nexus-knowledge-layer",
+    "entry": "src/cli.mjs",
+    "args": ["context"]
+  },
+  "wired_entrypoints": ["cli:gateway decide", "cli:gateway health"],
+  "environments": ["dev"],
+  "max_stdout_bytes": 262144
+}

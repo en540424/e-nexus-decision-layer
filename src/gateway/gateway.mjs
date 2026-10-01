@@ -44,6 +44,18 @@ const DEFAULT_MAX_CONCURRENT = 4;
 // 実 Jev の fetch は abort で即座に止まるので通常は数 ms。signal を無視する engine でも枠が永久に塞がらないよう、ここで打ち切る
 // （打ち切った件数は stats.abandoned）。timer は unref する（1回きりの CLI が grace の間 process を生かさない）
 const DEFAULT_ABORT_GRACE_MS = 5000;
+// 入口共通の request 上限（2026-10-02・Vault MA-32-5 Agent Integration）。HTTP の body 上限（64KiB）と同じ値を SDK／CLI／MCP にも掛ける
+export const MAX_REQUEST_BYTES = 65536;
+// input／context に入っていたら受け取らない値の形（API key・token・秘密鍵。input は engine＝Jev へ送られる）。値・場所は error に出さない。
+// PII（メール等）は decision_type ごとの schema・rules が扱う（ここでは鍵・token の形だけを見る＝既存 consumer の正当な入力を誤って止めない）
+const SECRET_SHAPES = Object.freeze([/\bsk-[A-Za-z0-9_-]{16,}/, /\bgh[pousr]_[A-Za-z0-9]{20,}/, /\bgithub_pat_[A-Za-z0-9_]{20,}/, /\bAKIA[0-9A-Z]{16}\b/, /\bxox[baprs]-[A-Za-z0-9-]{10,}/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./, /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i]);
+function hasSecretShape(v, depth = 0) {
+  if (depth > 32) return false;
+  if (typeof v === 'string') return SECRET_SHAPES.some((re) => re.test(v));
+  if (Array.isArray(v)) return v.some((x) => hasSecretShape(x, depth + 1));
+  if (v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasSecretShape(k, depth + 1) || hasSecretShape(x, depth + 1));
+  return false;
+}
 
 /** error.code → 分類。HTTP status は http-server が envelope から決める（Decision 結果と HTTP status を混同しない） */
 const ERROR_KINDS = Object.freeze({
@@ -164,6 +176,13 @@ export function createGateway({
     // 持ち込めるので受け取らない（via・environment と同じく consumer の自由入力を信頼しない。上書きではなく拒否：黙って捨てると consumer が気付けない）
     if (request.input && typeof request.input === 'object' && !Array.isArray(request.input) && Object.hasOwn(request.input, 'knowledge_context')) {
       throw envelopeError('INVALID_ENVELOPE', 'input.knowledge_context is set by the Decision Layer from the Knowledge Layer; consumers must not send it');
+    }
+    // 大きさと Secret（2026-10-02・Vault MA-32-5）：Agent が外部の文字列（tool result・web 本文等）をそのまま入れても、鍵・token を engine へ送らない
+    let size;
+    try { size = Buffer.byteLength(JSON.stringify(raw), 'utf8'); } catch { throw envelopeError('INVALID_ENVELOPE', 'request must be JSON-serializable'); }
+    if (size > MAX_REQUEST_BYTES) throw envelopeError('INVALID_ENVELOPE', `request is too large (> ${MAX_REQUEST_BYTES} bytes)`);
+    if (hasSecretShape(request.input) || hasSecretShape(request.context)) {
+      throw envelopeError('INVALID_ENVELOPE', 'input/context contains a secret-like value (API key / token / private key). Do not send secrets to the Decision Gateway');
     }
     request.request_id ??= `req_${randomUUID()}`;
     request.via = via; // consumer 指定値は上書き（入口は Gateway が知っている）

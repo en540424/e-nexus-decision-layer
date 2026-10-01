@@ -1,5 +1,5 @@
 {
-  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）・content-publish-gate（MA-31 G3・2026-09-23）・channel-selection（MA-31 G3後半・2026-09-23）・automation-safety-gate／customer-reply-gate／lead-triage（MA-31 予約→2026-09-29 実働化・FB-04）・model-route（rules-reference：Advisor正本§2-2の条件をrules化した参考値。Claude Code本体のModel選定の正は settings.json／Advisor正本で、この判定は採否を決めない。2026-09-29 status を schema-only から訂正）。status 語彙：poc／gate／rules-reference／schema-only（schema だけで rules 無し＝probabilistic Adapter → human）。engine は status を読まない（gateway types の表示用）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
+  "$comment": "decision_type の索引。schema は input / outcome の型、candidates は Registry から Adapter へ渡す候補の種類。実装済みは paid-generation-gate（PoC）・content-publish-gate（MA-31 G3・2026-09-23）・channel-selection（MA-31 G3後半・2026-09-23）・automation-safety-gate／customer-reply-gate／lead-triage（MA-31 予約→2026-09-29 実働化・FB-04）・executor-route（rules-reference・2026-10-02 Vault MA-32-5：Executor 選定の参考値）・model-route（rules-reference：Advisor正本§2-2の条件をrules化した参考値。Claude Code本体のModel選定の正は settings.json／Advisor正本で、この判定は採否を決めない。2026-09-29 status を schema-only から訂正）。status 語彙：poc／gate／rules-reference／schema-only（schema だけで rules 無し＝probabilistic Adapter → human）。engine は status を読まない（gateway types の表示用）。final_action: human-only は「後続の実行（公開等）は常に Human で、この判定は承認ではない」ことの宣言（engine は読まない。docs / tests 用）。他は型定義（将来展開の受け皿）で、Rules ファイルが無ければ probabilistic Adapter → human へ流れる。 reserved_decision_types は「将来ユースケースとして名前だけ予約」した decision_type。schema が無いため decide() では UNKNOWN_DECISION_TYPE になる（実装時に decision_types へ移し schema を作る）。",
   "decision_types": {
     "paid-generation-gate": {
       "domain": "openmontage",
@@ -37,6 +37,13 @@
         "kind": "models"
       },
       "description": "Claude Code Harness の Model / Effort Router（参考値・採否を決めない）。Advisor正本§0（2026-10-01：モデル×Effort の 2 軸＝作業の中心 work_center で選ぶ）と §2-2 の13条件をルール化した rules ファイルが先に評価される。読解・比較・横断監査が中心なら fable を返す（2026-10-01 整合修正で旧「Human 指定時のみ」を廃止。課金は Advisor正本§0-6）。"
+    },
+    "executor-route": {
+      "domain": "harness",
+      "schema": "schemas/harness/executor-route.schema.json",
+      "status": "rules-reference",
+      "candidates": null,
+      "description": "Executor selection（Vault 技術スタック正本§3-10-1・MA-32-5。2026-10-01 名前予約→2026-10-02 実装）。作業1件を Claude Code 本体／Codex／Cursor／Hermes のどれに振るのが妥当かの参考値。静的能力は registries/agents.json（type=executor）、rules は catch-all まで決定的に答える（Jev へ流さない）。Human-only 境界の作業は human を返す。稼働の実測は未取得（availability_checked=false・producer は MA-33）。model-route を置換せず並置。承認・委任レベルを変えない（forbidden keys）"
     },
     "skill-route": {
       "domain": "claude-code",
@@ -117,10 +124,6 @@
     "infra-change-triage": {
       "domain": "platform",
       "description": "AI Infrastructure Watcher（Vault MA-33・2026-10-01 名前予約）。外部 AI／開発基盤の変化（breaking／deprecation／price／new capability／policy／security）が E-NEXUS の何に繋がるか（Knowledge / Relationship Layer の impact）と置換・追加価値・PoC 価値を型付きで返す。Rules First。proposal を返すだけで承認・切替・deploy・契約は返せない（Watcher は発見→比較→影響分析→提案まで）。実装は MA-33-3"
-    },
-    "executor-route": {
-      "domain": "harness",
-      "description": "Executor selection（Vault 技術スタック正本§3-10-1・MA-32-5・2026-10-01 名前予約）。作業の中心・候補 Executor（Claude Code／Hermes／Codex／Cursor／Local 等）の静的能力（registries/agents.json・models.json）・Knowledge Layer の実測 state（availability・成功率・latency）から推奨 Executor を型付きで返す参考値。model-route を置換せず並置。承認・Human-only 境界・委任レベルを変えない（forbidden keys 対象）"
     }
   }
 }

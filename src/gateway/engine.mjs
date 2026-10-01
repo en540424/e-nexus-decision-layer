@@ -39,6 +39,7 @@ import { createHumanAdapter } from '../adapters/human/human-adapter.mjs';
 import { resolveJevProvider } from '../adapters/jev/jev-provider-interface.mjs';
 import { createFileMeter, defaultUsagePath } from '../usage/metering.mjs';
 import { readJson } from '../schemas/loader.mjs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createKnowledgeEnricher } from '../knowledge/knowledge-enricher.mjs';
 
 export const ENGINE_MODES = Object.freeze(['production', 'verification']);
@@ -90,20 +91,40 @@ export function gatewayAdapters({ env = process.env, mode = 'production' } = {})
   ];
 }
 
+/** usage 行に残す Knowledge の要約（観測用。Knowledge の中身・refs・自由文は持たない） */
+export function usageKnowledgeSummary(meta) {
+  return {
+    requested: meta.requested === true,
+    status: meta.status ?? null,
+    reason: meta.reason ?? null,
+    rule_id: meta.rule_id ?? null,
+    provider: meta.provider?.id ?? null,
+    environment: meta.environment ?? null,
+    warnings: Array.isArray(meta.warnings) ? [...meta.warnings] : [],
+    latency_ms: Number.isFinite(meta.latency_ms) ? meta.latency_ms : null,
+  };
+}
+
 /** 既定 engine：この repo の Decision Layer core */
 export function createDecisionLayerEngine({ env = process.env, mode = 'production', meter, adapters, knowledge, ...rest } = {}) {
   if (!ENGINE_MODES.includes(mode)) throw new Error(`engine mode must be one of ${ENGINE_MODES.join('|')}`);
-  const core = createDecisionEngine({
-    adapters: adapters ?? gatewayAdapters({ env, mode }),
-    meter: meter ?? createFileMeter({ path: defaultUsagePath(env) }),
-    ...rest,
-  });
   // knowledge：{ provider, policy?, timeoutMs? }。provider が無ければ enricher を作らない（従来と同一）
   const enricher = knowledge?.provider ? createKnowledgeEnricher(knowledge) : null;
+  const baseMeter = meter ?? createFileMeter({ path: defaultUsagePath(env) });
+  // usage 行への Knowledge の要約（Vault MA-32-5・観測用）：core は Knowledge を知らないので、engine が meter を包んで付ける。
+  // 同時実行の decide を取り違えないよう AsyncLocalStorage で decide ごとに持つ。中身（facts・refs）は書かない（status・reason・latency・rule だけ）。
+  // core へ返す record（＝envelope の decision.usage）は従来どおり（Contract v1 の形を変えない）
+  const perDecide = enricher ? new AsyncLocalStorage() : null;
+  const meterForCore = enricher ? { ...baseMeter, path: baseMeter.path, record(rec) { const k = perDecide.getStore()?.knowledge; if (!k) return baseMeter.record(rec); baseMeter.record({ ...rec, knowledge: usageKnowledgeSummary(k) }); return rec; }, readAll: baseMeter.readAll?.bind(baseMeter) } : baseMeter;
+  const core = createDecisionEngine({
+    adapters: adapters ?? gatewayAdapters({ env, mode }),
+    meter: meterForCore,
+    ...rest,
+  });
   async function decide(request, opts) {
     if (!enricher) return core.decide(request, opts);
     const { request: enriched, knowledge: meta } = await enricher.enrich(request, opts);
-    const result = await core.decide(enriched, opts);
+    const result = await perDecide.run({ knowledge: meta }, () => core.decide(enriched, opts));
     return meta ? { ...result, knowledge: meta } : result;
   }
   return assertEngineShape({
