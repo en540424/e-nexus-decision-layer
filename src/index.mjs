@@ -65,3 +65,5 @@ export { createGateway, loadFailurePolicy, failureFor, GATEWAY_CONTRACT_VERSION,
 export { createDecisionLayerEngine, assertEngineShape, gatewayAdapters, jevRouteStatus, ENGINE_MODES, DECISION_LAYER_ENGINE_ID } from './gateway/engine.mjs';
 export { createGatewayHttpHandler, startGatewayServer, isLoopbackHost } from './gateway/http-server.mjs';
 export { createMcpHandler, runMcpStdio, TOOLS as MCP_TOOLS, SUPPORTED_PROTOCOL_VERSIONS as MCP_PROTOCOL_VERSIONS } from './gateway/mcp-server.mjs';
+// Knowledge Context（2026-10-01・Vault MA-32-4）：provider port と enricher。Knowledge Layer 本体は import しない（provider は呼び出し側が注入する）
+export { createKnowledgeEnricher, loadKnowledgeRequirements, assertKnowledgeContextProviderShape, checkKnowledgeContext, unavailableKnowledgeContext, KNOWLEDGE_CONTEXT_FIELD, KNOWLEDGE_CONTEXT_CONTRACT, KNOWLEDGE_CONTEXT_REQUEST_CONTRACT, KNOWLEDGE_REQUIREMENTS } from './knowledge/knowledge-enricher.mjs';

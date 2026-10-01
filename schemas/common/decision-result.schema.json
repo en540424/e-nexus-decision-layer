@@ -43,6 +43,10 @@
     "candidates_considered": { "type": "array", "items": { "type": "string" } },
     "thresholds": { "type": "object" },
     "timestamp": { "type": "string" },
+    "knowledge": {
+      "description": "Knowledge Context の explainability（2026-10-01・Vault MA-32-4・任意）。engine に Knowledge provider が注入され、decision_type が policies/knowledge/context-requirements.json に載っているときだけ付く。contract・requirement・provider・requested（false＝rules で決まり問い合わせなかった：status=not_requested・reason=rules_decided・rule_id）・status／reason（Knowledge Context の status をそのまま）・as_of・environment・subject・warnings・refs（使った entity id・relation key・state key だけ。Knowledge の中身は返さない）・latency_ms。判断の根拠になった rule は rationale の rule:<id>",
+      "type": "object"
+    },
     "usage": {
       "description": "metering record（schema 検証後に付与される）。top-level の provider/model/tokens/cost は final resolver の usage、attempts[] は全 attempt、usage_total は attempts の合計（final 分を含む。top-level と足すと二重計上）。src/usage/metering.mjs 参照",
       "type": "object"

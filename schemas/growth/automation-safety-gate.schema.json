@@ -53,7 +53,11 @@
         },
         "rollback_available": { "type": "boolean", "description": "戻す手段があるか（旧版への rollback・取り消し操作）" },
         "rate_or_cap_limited": { "type": "boolean", "description": "回数上限・頻度上限（frequency cap 等）で縛られているか" },
-        "summary": { "type": "string", "minLength": 1, "maxLength": 600, "description": "何を自動化するかの短い説明（PII・本文・Secret を入れない）" }
+        "summary": { "type": "string", "minLength": 1, "maxLength": 600, "description": "何を自動化するかの短い説明（PII・本文・Secret を入れない）" },
+        "knowledge_context": {
+          "type": "object",
+          "description": "Knowledge Context Contract v1（schemas/common/knowledge-context.schema.json・Vault MA-32-4・2026-10-01）。consumer は送れない（Gateway が INVALID_ENVELOPE で拒否）。engine に Knowledge provider が注入されていて、knowledge_context を見ない rules で決まらなかったときだけ、Decision Layer の Knowledge enricher が project_id の project について impact（提供 capability とそれを consume する project の audience）・depends_on・対象環境の観測の有無を添える。事実・経路・鮮度・出所だけで、判断ではない。status（ok／partial／subject_not_found／unavailable）と state の unknown／stale はそのまま（正常へ丸めない）。production で status が subject_not_found／unavailable、または impact を取れなかったときは rules（knowledge-*）が human-review へ上げる。Jev の段で knowledge_context を使った判定は未較正（実 Jev の calibration は有料・Human の go が要る）"
+        }
       }
     },
     "outcome": {

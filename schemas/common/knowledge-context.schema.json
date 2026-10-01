@@ -1,0 +1,73 @@
+{
+  "$id": "edl/common/knowledge-context",
+  "title": "KnowledgeContext",
+  "description": "Knowledge Context Contract v1（Vault MA-32-4・2026-10-01）。Knowledge / Relationship Layer（repo e-nexus-knowledge-layer の src/knowledge-context.mjs）が request（enexus-knowledge-context-request-v1）に答えて返す『事実だけの束』を、Decision Layer が受け入れるときの形。Decision Layer の Knowledge enricher（src/knowledge/）がこの schema と追加検査（id の形・判断 key・Secret 風の値・大きさ・authority 番号の範囲）に通したものだけを input.knowledge_context に置く。通らなければ status=unavailable・reason=malformed_response に置き換え、部分的に使わない。判断・推奨・承認・重大度を表す field は無い（Knowledge は『何が分かっているか』、判断は Rules／Jev）。unknown≠false・stale≠current・source_unavailable≠not found・sync_metadata_missing≠healthy をそのまま運ぶ。consumer はこの field を送れない（Gateway が INVALID_ENVELOPE で拒否）。",
+  "type": "object",
+  "required": ["contract", "status", "reason", "as_of", "environment", "subject", "facts", "authorities", "warnings", "omitted"],
+  "additionalProperties": false,
+  "properties": {
+    "contract": { "type": "string", "const": "enexus-knowledge-context-v1" },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "partial", "subject_not_found", "unavailable"],
+      "description": "ok＝要求した query がすべて答えられた（個々の state が unknown／stale のことはある）。partial＝対象は分かったが一部の query が失敗。subject_not_found＝対象が Knowledge に無い。unavailable＝Knowledge を使えなかった（reason）"
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "enum": [null, "source_unavailable", "data_integrity_error", "invalid_request", "ambiguous_subject", "unsafe_subject", "aborted", "provider_error", "timeout", "malformed_response"]
+    },
+    "as_of": { "type": ["string", "null"], "maxLength": 40 },
+    "environment": { "type": ["string", "null"], "enum": [null, "dev", "staging", "production"] },
+    "subject": {
+      "type": ["object", "null"],
+      "required": ["ref", "id", "type", "lifecycle", "attrs", "authority"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "object",
+          "required": ["type", "match", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "const": "project" },
+            "match": { "type": "string", "const": "edlRegistryId" },
+            "value": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        },
+        "id": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "type": { "type": "string", "maxLength": 40 },
+        "lifecycle": { "type": ["string", "null"], "maxLength": 40 },
+        "attrs": { "$comment": "project の audience／category／class だけ（knowledge-layer の SAFE_ATTRS）", "type": "object", "additionalProperties": false, "properties": { "audience": { "type": "string", "maxLength": 64 }, "category": { "type": "string", "maxLength": 64 }, "class": { "type": "string", "maxLength": 64 } } },
+        "authority": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "impact": { "$comment": "traversal fact。nodes の形は enricher のコードが検査する（validator は $ref を持たない）", "type": "object" },
+        "depends_on": { "type": "object" },
+        "states": { "type": "object" }
+      }
+    },
+    "authorities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["origins", "validation", "min_confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "origins": { "type": "array", "items": { "type": "string", "enum": ["human_decision", "deterministic_extraction", "runtime_observation", "agent_observation", "ai_inference"] } },
+          "validation": { "type": "array", "items": { "type": "string", "enum": ["unverified", "verified", "disputed"] } },
+          "min_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string", "enum": ["stale_state", "source_unavailable_at_last_sync", "sync_metadata_missing", "truncated", "source_unavailable"] } },
+    "omitted": {
+      "type": "object",
+      "required": ["unsafe_ids", "unsafe_values"],
+      "additionalProperties": false,
+      "properties": { "unsafe_ids": { "type": "integer", "minimum": 0 }, "unsafe_values": { "type": "integer", "minimum": 0 } }
+    }
+  }
+}

@@ -160,6 +160,11 @@ export function createGateway({
         throw envelopeError('INVALID_ENVELOPE', `${f} must match ${ID_PATTERN}`);
       }
     }
+    // Knowledge Context（2026-10-01・Vault MA-32-4）は engine が Knowledge Layer から添える。consumer が名乗ると偽の出所（Human 決定・current 等）を
+    // 持ち込めるので受け取らない（via・environment と同じく consumer の自由入力を信頼しない。上書きではなく拒否：黙って捨てると consumer が気付けない）
+    if (request.input && typeof request.input === 'object' && !Array.isArray(request.input) && Object.hasOwn(request.input, 'knowledge_context')) {
+      throw envelopeError('INVALID_ENVELOPE', 'input.knowledge_context is set by the Decision Layer from the Knowledge Layer; consumers must not send it');
+    }
     request.request_id ??= `req_${randomUUID()}`;
     request.via = via; // consumer 指定値は上書き（入口は Gateway が知っている）
     request.environment = environment; // 同上（環境は runtime が知っている。consumer の自由入力を信頼しない）

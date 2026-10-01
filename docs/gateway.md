@@ -40,7 +40,7 @@ Claude Code ─┐ Cursor/IDE ─┐ Hermes ─┐ OpenAI/他LLM Agent ─┐ E-
 | `decision_type` | 必須 | `gateway types` の一覧 |
 | `application_id` | 必須 | **consumer ID**（`claude-code` / `cursor` / `hermes` / `openai-agent` / `en-generate-hub` / `line-crm` 等） |
 | `project_id` | 必須 | `registries/projects.json` の id |
-| `input` | 必須 | decision_type 固有 schema で検証。**engine（Jev）へ送られる**。Secret・PII・prompt 全文・ローカルパスを入れない |
+| `input` | 必須 | decision_type 固有 schema で検証。**engine（Jev）へ送られる**。Secret・PII・prompt 全文・ローカルパスを入れない。`input.knowledge_context` は Decision Layer が Knowledge Layer から添える field で、**consumer は送れない**（`INVALID_ENVELOPE`・§13） |
 | `context` | 任意 | 参照用 ID。engine へは送られない |
 | `tenant` / `options` | 任意 | 既存どおり（`options.allow_paid_adapters` で高コスト LLM Adapter を opt-in） |
 | `via` | — | **Gateway が設定**（consumer 指定値は上書き）。`sdk` / `cli` / `http` / `mcp` |
@@ -327,3 +327,18 @@ Production を作るとき（Human-only）の要件：環境ごとに別の Secr
 PRODUCTION は pinned version（`master` / latest を無条件に追従しない）と安定版への rollback、DEV → STAGING → PRODUCTION の昇格、
 一般販売 SaaS の client（iOS / Android / browser）は Gateway を直接呼ばず E-NEXUS Backend 経由（client に Secret を置かない）、
 multi-tenant 識別は `application_id`・`tenant`（opaque ID）・`environment`、Production PII を Calibration / 開発試験に使わない。
+
+## 13. Knowledge Context（2026-10-02・Vault MA-32-4）
+
+上位正本は Vault の MA-32 構想正本 §9（Knowledge / Relationship Layer との接続）。ここには repo 側の実装事実だけを書く。
+
+- **責務**：Knowledge は「何が分かっているか」（事実・経路・鮮度・出所）、判断は Rules／Jev。Decision Layer は Knowledge から判断を作らず、事実を input に添えるだけ
+- **経路**：consumer は従来どおりの request を送る（Entity ID・query・保存形式を知らない）→ engine（`createDecisionLayerEngine`）が、`policies/knowledge/context-requirements.json` に載った decision_type だけ Knowledge Context を `input.knowledge_context` に置く → core（schema → safety → rules → Jev …）。**core（`src/core/`）は Knowledge を知らない**
+- **provider は注入**：`createDecisionLayerEngine({ knowledge: { provider, timeoutMs? } })`。provider port は `{ id, version, getContext(request, {signal}) }`、実装は Knowledge Layer repo の `createKnowledgeContextProvider`。注入しなければ従来と同一（`decision.knowledge` も付かない）。CLI・HTTP Gateway（`run-gateway`・`serve-config`・`deploy/`）はまだ注入しない
+- **Rules First**：knowledge_context を見ない rule を input だけで先に評価し、一致すれば Knowledge を問い合わせない（`decision.knowledge.status = not_requested`・`reason = rules_decided`・`rule_id`）。Knowledge を見る rule は rules ファイルの末尾に置く（loader が検査）
+- **失敗の意味を丸めない**：context の `status`（`ok`／`partial`／`subject_not_found`／`unavailable`）・`reason`（`source_unavailable`・`data_integrity_error`・`timeout`・`provider_error`・`malformed_response` 等）・state の `unknown`／`stale`・環境ごとの `coverage` をそのまま input に載せる。`automation-safety-gate` は production で `subject_not_found`／`unavailable`／impact の失敗なら rules（`knowledge-*`）が human-review へ上げる。dev／staging は止めずに Jev へ事実ごと渡す
+- **受け取る側の検査**：`schemas/common/knowledge-context.schema.json`＋id の形・判断 key・Secret／PII 風の値・16KB 上限・authority 番号。通らなければ `unavailable(malformed_response)`（部分的に使わない）。provider の例外・timeout（既定 2s）も `unavailable`
+- **explainability**：`decision.knowledge`（任意）＝ contract・requirement・provider・requested・status・reason・as_of・environment・subject・warnings・`refs`（entity id・relation key・state key だけ）・latency_ms。判断の根拠になった rule は `rationale` の `rule:<id>`。Knowledge の中身は返さない
+- **Contract**：Gateway Contract version は `1` のまま（envelope の key は不変。`decision.knowledge` は任意 field）。Jev の段で knowledge_context を使った判定は未較正（`x-jev-brief` は不変）
+- **確認**：`tests/knowledge-integration.test.mjs`（fake provider）・`node scripts/knowledge-integration-e2e.mjs --knowledge-layer <dir> --map <project-integration-map.json>`（実データ・dev 専用・課金なし）
+

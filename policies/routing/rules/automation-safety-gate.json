@@ -1,5 +1,5 @@
 {
-  "$comment": "automation-safety-gate（MA-31 予約→2026-09-29 実働化・FB-04）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定（Rules First）。『止める・上げる』だけを決定的に扱い、解除・承認・実行許可は返さない（forbidden_outcome_keys）。Human-only 境界（Secret・有料API・外部送信・一括送信）は Jev に判断させない。最後の crm-line-push-gated だけが low（G5 executor の形：単一contact・署名付きHuman承認・frequency cap あり）。どれにも一致しなければ Jev へ。",
+  "$comment": "automation-safety-gate（MA-31 予約→2026-09-29 実働化・FB-04）の deterministic rules。上から評価し最初に一致したものを confidence 1.0 で確定（Rules First）。『止める・上げる』だけを決定的に扱い、解除・承認・実行許可は返さない（forbidden_outcome_keys）。Human-only 境界（Secret・有料API・外部送信・一括送信）は Jev に判断させない。最後の crm-line-push-gated だけが low（G5 executor の形：単一contact・署名付きHuman承認・frequency cap あり）。どれにも一致しなければ Jev へ。 2026-10-01（Vault MA-32-4）：末尾の knowledge-* は Knowledge Context（engine が Knowledge Layer から添える事実）を見る rule。input だけの rule の後ろに置く（Rules First：input だけで決まるなら Knowledge を問い合わせない。loader が順序を検査）。どれも「止める・上げる」だけで、Knowledge で緩めることはない（tests の単調性検査）。Knowledge provider が注入されていない engine では knowledge_context が無いので一致しない（従来と同一）。",
   "rules": [
     {
       "id": "touches-secrets",
@@ -159,6 +159,37 @@
         "automation_route": "existing-gates"
       },
       "rationale": "G5 executor の形（単一contact・毎回の署名付きHuman承認・frequency cap・consent／snapshot のgate）。既存ゲートで足りる。これは送信の承認ではない（承認は approval_ref）"
+    },
+    {
+      "id": "knowledge-subject-unconfirmed-production",
+      "when": {
+        "environment": "production",
+        "knowledge_context.status": {
+          "in": [
+            "subject_not_found",
+            "unavailable"
+          ]
+        }
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "production の自動化で、Knowledge Layer から対象 project を確認できなかった（unavailable・対象が Knowledge に無い）。確認できないことを問題なしとして Jev に任せない（Knowledge は事実の提供で、この rule は止める・上げるだけ）"
+    },
+    {
+      "id": "knowledge-impact-unconfirmed-production",
+      "when": {
+        "environment": "production",
+        "knowledge_context.facts.impact.status": "error"
+      },
+      "outcome": {
+        "safety_class": "escalate",
+        "human_review_required": true,
+        "automation_route": "human-review"
+      },
+      "rationale": "production の自動化で、変えたときに何へ届くか（impact）を Knowledge Layer から取れなかった"
     }
   ]
 }

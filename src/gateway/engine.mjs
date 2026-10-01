@@ -19,6 +19,11 @@
  *     health() -> object           // Secret を含まない状態（キーの値は読まない・返さない）
  *   }
  *
+ * Knowledge（2026-10-01・Vault MA-32-4）：knowledge.provider（Knowledge Layer の read-only client を使う provider。port は src/knowledge/）を
+ * 渡したときだけ、policies/knowledge/context-requirements.json に載った decision_type の input へ Knowledge Context を添える（Rules First で
+ * rule が決まるなら問い合わせない）。core（src/core/）は Knowledge Layer を知らない。渡さなければ従来と同一（engine の返り値も変わらない）。
+ * 添えたときは decision.knowledge（explainability：contract・status・reason・refs・latency）を返り値に付ける。
+ *
  * mode（2026-09-25 決定・decision-log）：
  *   production   = rules → jev → local → llm → human。mock-jev は入れない。Jev が使えない環境（キー無し／Network Gate OFF）では
  *                  rules で解けなければ human へ上がる。mock のヒューリスティックを Jev の判断として consumer へ返さない。
@@ -34,6 +39,7 @@ import { createHumanAdapter } from '../adapters/human/human-adapter.mjs';
 import { resolveJevProvider } from '../adapters/jev/jev-provider-interface.mjs';
 import { createFileMeter, defaultUsagePath } from '../usage/metering.mjs';
 import { readJson } from '../schemas/loader.mjs';
+import { createKnowledgeEnricher } from '../knowledge/knowledge-enricher.mjs';
 
 export const ENGINE_MODES = Object.freeze(['production', 'verification']);
 export const DECISION_LAYER_ENGINE_ID = 'e-nexus-decision-layer';
@@ -85,21 +91,30 @@ export function gatewayAdapters({ env = process.env, mode = 'production' } = {})
 }
 
 /** 既定 engine：この repo の Decision Layer core */
-export function createDecisionLayerEngine({ env = process.env, mode = 'production', meter, adapters, ...rest } = {}) {
+export function createDecisionLayerEngine({ env = process.env, mode = 'production', meter, adapters, knowledge, ...rest } = {}) {
   if (!ENGINE_MODES.includes(mode)) throw new Error(`engine mode must be one of ${ENGINE_MODES.join('|')}`);
   const core = createDecisionEngine({
     adapters: adapters ?? gatewayAdapters({ env, mode }),
     meter: meter ?? createFileMeter({ path: defaultUsagePath(env) }),
     ...rest,
   });
+  // knowledge：{ provider, policy?, timeoutMs? }。provider が無ければ enricher を作らない（従来と同一）
+  const enricher = knowledge?.provider ? createKnowledgeEnricher(knowledge) : null;
+  async function decide(request, opts) {
+    if (!enricher) return core.decide(request, opts);
+    const { request: enriched, knowledge: meta } = await enricher.enrich(request, opts);
+    const result = await core.decide(enriched, opts);
+    return meta ? { ...result, knowledge: meta } : result;
+  }
   return assertEngineShape({
     id: DECISION_LAYER_ENGINE_ID,
     version: readJson('package.json').version,
     mode,
-    decide: (request, opts) => core.decide(request, opts),
+    decide,
     health: () => ({
       adapters: core.adapters.map((a) => a.id),
       jev: jevRouteStatus(env),
+      knowledge: enricher ? enricher.health() : { configured: false },
     }),
   });
 }

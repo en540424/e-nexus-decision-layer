@@ -1,0 +1,17 @@
+{
+  "$comment": "Knowledge Context の選択（Vault MA-32-4・2026-10-01）。decision_type ごとに『Knowledge のどの事実を判断材料として添えるか』を宣言する（Context Selection）。ここに無い decision_type は Knowledge を一切使わない（従来どおり・Knowledge を全 Decision の必須依存にしない）。Knowledge enricher（src/knowledge/）は Decision Layer core の外（engine の組み立て側）で動き、core は Knowledge Layer を import しない。provider（Knowledge Layer の read-only client を使う実装）は呼び出し側が注入し、注入が無ければ何もしない。 Rules First：まず input だけで評価できる rule（knowledge_context を見ない rule）を評価し、一致すれば Knowledge を問い合わせない（knowledge.status=not_requested・reason=rules_decided）。Knowledge を見る rule は rules ファイルの末尾（input だけの rule の後）に置く（loader が検査）。 requirement：optional＝取れなくても判断を続ける（status・reason を input にそのまま載せ、正常へ丸めない）。required＝取れないときの扱いを rules が決定的に持つこと（knowledge_context.status を見る rule が必須・loader が検査）。どちらも Human-only・MA-17・Budget Gate・forbidden keys を迂回しない（Knowledge は事実で、承認ではない）。 subject：project_id（registries/projects.json の id）を Knowledge の project.attrs.edlRegistryId で引く。consumer は Entity ID・query 文法・保存形式を知らない。 environment_from：Knowledge の環境（dev／staging／production）をどの input field から取るか（Gateway の runtime 環境ではなく、判断対象が動く環境）。 queries：Knowledge Context request（enexus-knowledge-context-request-v1）の queries。depth・max_nodes は小さく保つ（context は Jev へ送られる input の一部）。",
+  "version": "1",
+  "decision_types": {
+    "automation-safety-gate": {
+      "requirement": "optional",
+      "subject": { "type": "project", "match": "edlRegistryId", "from": "project_id" },
+      "environment_from": "environment",
+      "queries": [
+        { "kind": "impact", "depth": 2, "max_nodes": 20, "node_types": ["project", "capability"] },
+        { "kind": "depends_on", "depth": 1, "max_nodes": 20, "node_types": ["project", "capability", "provider", "service"] },
+        { "kind": "states", "environments": ["target", "local"], "groups": ["guard"] }
+      ],
+      "rationale": "自動化の対象 project を変えると何に届くか（impact：提供 capability と、それを consume する project の audience）・何に依存しているか・対象環境に観測があるか（無ければ unknown）。production で対象や影響範囲を確認できないときは rules（knowledge-*）が human-review へ上げる。判断（安全区分）は rules／Jev。"
+    }
+  }
+}
