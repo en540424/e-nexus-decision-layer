@@ -36,5 +36,5 @@ for repo in "$@"; do
   git -C "$repo" bundle create "$(cd "$OUT" && pwd)/$name.bundle" --all
   git -C "$repo" bundle verify "$(cd "$OUT" && pwd)/$name.bundle" >/dev/null
   sha "$b" > "$b.sha256"
-  echo "bundle: $b（HEAD $(git -C "$repo" rev-parse --short HEAD)・sha256 $(cat "$b.sha256")）"
+  echo "bundle: ${b}（HEAD $(git -C "$repo" rev-parse --short HEAD)・sha256 $(cat "$b.sha256")）"
 done

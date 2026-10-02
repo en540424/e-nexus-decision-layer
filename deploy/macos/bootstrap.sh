@@ -41,11 +41,11 @@ for line in $(grep -v '^[[:space:]]*#' "$HERE/repos.conf" | grep -v '^[[:space:]
   d="$BASE/$name"
   if [ -d "$d/.git" ]; then
     dirty=$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$dirty" -gt 0 ]; then echo "exists: $name（触らない・未commit／未checkout が $dirty 件。clone が途中で失敗した可能性：doctor.sh で確認）"; else echo "exists: $name（触らない）"; fi
+    if [ "$dirty" -gt 0 ]; then echo "exists: ${name}（触らない・未commit／未checkout が $dirty 件。clone が途中で失敗した可能性：doctor.sh で確認）"; else echo "exists: ${name}（触らない）"; fi
   else
     case "$source" in
       github)
-        run git clone "https://github.com/$OWNER/$name.git" "$d" || { echo "clone failed: $name（認証〈gh auth login は Human〉・network・path の長さを確認。途中まで作られた $d は確認してから Human が消す）" >&2; status=1; continue; }
+        run git clone "https://github.com/$OWNER/$name.git" "$d" || { echo "clone failed: ${name}（認証〈gh auth login は Human〉・network・path の長さを確認。途中まで作られた $d は確認してから Human が消す）" >&2; status=1; continue; }
         ;;
       bundle)
         b="$BUNDLE_DIR/$name.bundle"

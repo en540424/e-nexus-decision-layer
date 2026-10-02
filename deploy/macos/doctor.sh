@@ -80,7 +80,7 @@ if [ "$IS_MAC" -eq 1 ]; then
   done
   for n in jev-key-staging jev-key-production gateway-token-staging gateway-token-production llm-anthropic digest-webhook; do
     t="E-NEXUS/edl/$n"
-    if security find-generic-password -s "$t" -a e-nexus >/dev/null 2>&1; then say INFO "keychain $t: present"; else say INFO "keychain $t: absent（使うときだけ：bash deploy/macos/keychain-edl.sh set $n）"; fi
+    if security find-generic-password -s "$t" -a e-nexus >/dev/null 2>&1; then say INFO "keychain $t: present"; else say INFO "keychain $t: absent（使うときだけ：bash deploy/macos/keychain-edl.sh set ${n}）"; fi
   done
 fi
 
@@ -93,7 +93,7 @@ else
   grep -v '^[[:space:]]*#' "$HERE/repos.conf" | grep -v '^[[:space:]]*$' | while IFS='|' read -r name source test; do
     d="$BASE/$name"
     if [ ! -d "$d/.git" ]; then
-      say FAIL "repo $name: missing（bootstrap.sh・source=$source）"
+      say FAIL "repo $name: missing（bootstrap.sh・source=${source}）"
       continue
     fi
     br=$(git -C "$d" branch --show-current 2>/dev/null || echo '?')
@@ -123,10 +123,10 @@ if [ "$IS_MAC" -eq 1 ]; then
   for label in com.enexus.openmontage-watcher com.e-nexus.decision-gateway.staging com.e-nexus.decision-gateway.production; do
     if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then say INFO "launchagent $label: loaded"; else say INFO "launchagent $label: not loaded"; fi
   done
-  fv=$(fdesetup isactive 2>/dev/null || echo unknown)
-  say INFO "filevault: $fv（true なら停電・再起動の後、誰かがログインするまで LaunchAgent は起動しない＝Human の判断：MIGRATION.md §判断）"
+  fv=$(fdesetup isactive 2>/dev/null); [ -n "$fv" ] || fv=unknown  # fdesetup isactive exits 1 when false
+  say INFO "filevault: ${fv}（true なら停電・再起動の後、誰かがログインするまで LaunchAgent は起動しない＝Human の判断：MIGRATION.md §判断）"
   if defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1; then say INFO "auto-login: enabled"; else say INFO "auto-login: disabled"; fi
-  ar=$(pmset -g 2>/dev/null | awk '/autorestart/ {print $2}')
+  ar=$(pmset -g 2>/dev/null | awk '$1 == "autorestart" {print $2}')
   say INFO "power: autorestart=${ar:-unknown}（1＝停電復旧後に自動起動）"
 fi
 

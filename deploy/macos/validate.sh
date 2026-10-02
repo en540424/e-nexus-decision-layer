@@ -44,7 +44,7 @@ for line in $(grep -v '^[[:space:]]*#' "$HERE/repos.conf" | grep -v '^[[:space:]
   if (cd "$d" && npm test >"$log" 2>&1); then
     result PASS "$name: npm test（$(grep -E '^(ℹ|#) (pass|tests)' "$log" | tr '\n' ' ' | sed 's/  */ /g')）"
   else
-    result FAIL "$name: npm test（log: $log）"
+    result FAIL "$name: npm test（log: ${log}）"
   fi
   if [ "$test" = npm+py ]; then
     if [ -z "$PY" ]; then result FAIL "$name: python not found"; continue; fi
@@ -53,7 +53,7 @@ for line in $(grep -v '^[[:space:]]*#' "$HERE/repos.conf" | grep -v '^[[:space:]
     if (cd "$d/integrations/openmontage" && env -u EDL_ALLOW_NETWORK -u EDL_HOME -u JEV_API_KEY "$PY" -m unittest discover -s . -p 'test_*.py' >"$log" 2>&1); then
       result PASS "$name: openmontage unittest（$(grep -E '^(Ran [0-9]+ tests|OK)' "$log" | tr '\n' ' ' | sed 's/  */ /g')）"
     else
-      result FAIL "$name: openmontage unittest（log: $log）"
+      result FAIL "$name: openmontage unittest（log: ${log}）"
     fi
   fi
 done
