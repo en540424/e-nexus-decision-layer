@@ -1,0 +1,110 @@
+{
+  "schema": "enexus-watcher-comparison-record-v1",
+  "id": "cmp_9359be9e60a3ccbdecbc599f",
+  "created_at": "2026-10-02T12:00:00Z",
+  "task": {
+    "id": "paid-generation-gate-calibration-cases",
+    "description": "decision-layer docs/poc/calibration の代表ケース 10 件を同じ Engine 構成（Rules First）に流す dry-run",
+    "cases": [
+      "A1-subtitle-rules",
+      "A2-local-flat-rules",
+      "A3-motion-lower-third",
+      "B1-photoreal-scene-baseline",
+      "B2-photoreal-image",
+      "C1-boundary-scene-unspecified",
+      "D1-motion-with-photoreal-rules",
+      "D2-motion-with-photoreal-jev",
+      "E1-product-shot-reference",
+      "F1-underspecified"
+    ]
+  },
+  "current": {
+    "id": "questions:improved",
+    "description": "poc-calibration --questions improved"
+  },
+  "candidate": {
+    "id": "questions:baseline",
+    "description": "poc-calibration --questions baseline"
+  },
+  "runner": {
+    "id": "decision-layer/poc-calibration",
+    "mode": "dry-run",
+    "offline": true,
+    "paid": false,
+    "invocation": "node scripts/poc-calibration.mjs dry-run --questions <variant>"
+  },
+  "metrics": [
+    {
+      "name": "rules_first_cases",
+      "current": 3,
+      "candidate": 3,
+      "unit": "cases",
+      "direction": "informational"
+    },
+    {
+      "name": "jev_candidate_cases",
+      "current": 7,
+      "candidate": 7,
+      "unit": "cases",
+      "direction": "informational"
+    },
+    {
+      "name": "would_send_questions_total",
+      "current": 35,
+      "candidate": 35,
+      "unit": "questions",
+      "direction": "informational"
+    },
+    {
+      "name": "instruction_chars_avg",
+      "current": 2130,
+      "candidate": 345,
+      "unit": "chars",
+      "direction": "lower_is_better"
+    },
+    {
+      "name": "brief_chars_avg",
+      "current": 1253,
+      "candidate": 0,
+      "unit": "chars",
+      "direction": "lower_is_better"
+    },
+    {
+      "name": "expectation_mismatches",
+      "current": 0,
+      "candidate": 0,
+      "unit": "cases",
+      "direction": "lower_is_better"
+    }
+  ],
+  "failure_modes": {
+    "current": [],
+    "candidate": []
+  },
+  "human_interventions": {
+    "current": 0,
+    "candidate": 0
+  },
+  "reproducibility": {
+    "deterministic": true,
+    "repeats": 1,
+    "notes": "dry-run は Rules と schema だけで決まる（ネットワーク・Jev 無し）。実 Jev の confidence 分布は poc-calibration run（Human がキーを設定した時だけ）"
+  },
+  "maintenance_burden": {
+    "current": "not_assessed",
+    "candidate": "not_assessed"
+  },
+  "evidence": [
+    {
+      "kind": "runner_output",
+      "side": "current",
+      "sha256": "bb1ee5eff4d7cdaa9ea35125c1a1c71ea8b297d7888701ea656c8ab12d4ab456"
+    },
+    {
+      "kind": "runner_output",
+      "side": "candidate",
+      "sha256": "70e7aea18bbd401c26212a3cf15720902ed5d1a27cd3f5287585a587e239e604"
+    }
+  ],
+  "facts_only": true
+}
