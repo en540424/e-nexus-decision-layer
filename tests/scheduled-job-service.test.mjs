@@ -96,3 +96,60 @@ test('watcher-cycle（MA-33-6・2026-10-02）：3 target で同じ scripts/watch
   assert.ok(validateJobArgs({ ...mac, webhook: 'credential:E-NEXUS/edl/x' }).some((e) => /webhook/.test(e)));
   assert.ok(validateJobArgs({ ...mac, node: undefined }).some((e) => /launchd needs --node/.test(e)));
 });
+
+// knowledge-refresh（2026-10-03）：Knowledge Layer の実測（executor の local availability 等・ttl 1 日）の鮮度を保つ定期 refresh。
+// 新しい scheduler を作らず、この生成器に job を 1 つ足す（Vault MA-32 構想正本 §12）。登録は Human 1 操作のまま
+test('knowledge-refresh：3 target とも refresh-state だけ・既定 6 時間ごと・止まっていた分は起動後に 1 回・Secret／URL なし', () => {
+  const win = { job: 'knowledge-refresh', target: 'windows', dir: 'C:\\Users\\x\\e-nexus-knowledge-layer', node: 'C:\\Program Files\\nodejs\\node.exe', hour: 7, minute: 30 };
+  assert.deepEqual(validateJobArgs(win), []);
+  const w = renderJob(win);
+  assert.equal(w.filename, 'register-knowledge-refresh.ps1');
+  assert.match(w.content, /-Argument "sync\/cli\.mjs refresh-state" -WorkingDirectory 'C:\\Users\\x\\e-nexus-knowledge-layer'/);
+  assert.match(w.content, /New-ScheduledTaskTrigger -Once -At '01:30' -RepetitionInterval \(New-TimeSpan -Hours 6\)/, '7:30 起点の 6 時間ごと＝01:30 から');
+  assert.match(w.content, /-StartWhenAvailable/, 'PC が止まっていた間の分は起動後に 1 回');
+  assert.ok(!/-RepetitionDuration/.test(w.content), '期間なし＝無期限');
+
+  const sd = { job: 'knowledge-refresh', target: 'systemd', dir: '/home/en/e-nexus-knowledge-layer', environment: 'staging', user: 'en', node: '/usr/bin/node', path: '/home/en/.npm-global/bin:/usr/bin:/bin', hour: 7, minute: 30 };
+  assert.deepEqual(validateJobArgs(sd), []);
+  const s = renderJob(sd);
+  const [service, timer] = s.files.map((f) => f.content);
+  assert.match(service, /ExecStart=\/usr\/bin\/node sync\/cli\.mjs refresh-state/);
+  assert.match(service, /ProtectHome=read-only/, 'Vault・repo は読むだけ');
+  assert.match(service, /ReadWritePaths=\/home\/en\/e-nexus-knowledge-layer\/data\/state/, '書けるのは実測（gitignore）だけ');
+  assert.ok(!/ReadWritePaths=\/home\/en\/e-nexus-knowledge-layer\n/.test(service), 'repo 全体（canonical）は書けない');
+  assert.match(service, /Environment=PATH=\/home\/en\/\.npm-global\/bin:\/usr\/bin:\/bin/);
+  assert.match(timer, /OnCalendar=\*-\*-\* 01\/6:30:00/);
+  assert.match(timer, /Persistent=true/);
+  assert.match(timer, /Description=Every 6h E-NEXUS knowledge-refresh/);
+
+  const mac = { job: 'knowledge-refresh', target: 'launchd', dir: '/Users/x/e-nexus-knowledge-layer', node: '/opt/homebrew/bin/node', path: '/opt/homebrew/bin:/usr/bin:/bin', everyHours: '4', hour: 7, minute: 30 };
+  assert.deepEqual(validateJobArgs(mac), []);
+  const m = renderJob(mac);
+  assert.match(m.content, /<string>sync\/cli\.mjs<\/string>\s*<string>refresh-state<\/string>/);
+  assert.match(m.content, /<key>StartInterval<\/key><integer>14400<\/integer>/);
+  assert.match(m.content, /<key>RunAtLoad<\/key><true\/>/);
+  assert.ok(!/StartCalendarInterval/.test(m.content));
+
+  for (const c of [w.content, service, timer, m.content]) {
+    assert.ok(!/https?:\/\/(?!www\.apple\.com)/.test(c), 'no URL');
+    assert.ok(!/TOKEN=|KEY=|Bearer|--webhook/.test(c), 'no Secret');
+    assert.ok(!/\bsync\b(?!\/cli\.mjs)[^\n]*--dry-run|cli\.mjs sync\b/.test(c), 'canonical を書く sync は呼ばない');
+  }
+});
+
+test('knowledge-refresh：--every-hours は 24 の約数（1〜12）だけ・launchd／systemd は --path 必須（推測しない）・--vault は絶対パス・他の job には付けられない', () => {
+  const base = { job: 'knowledge-refresh', target: 'windows', dir: 'C:\\kl', hour: 7, minute: 30 };
+  for (const n of ['1', '2', '3', '4', '6', '8', '12']) assert.deepEqual(validateJobArgs({ ...base, everyHours: n }), [], n);
+  for (const n of ['0', '5', '7', '24', '-6', 'x']) assert.ok(validateJobArgs({ ...base, everyHours: n }).length > 0, n);
+  assert.ok(validateJobArgs({ ...base, target: 'launchd', node: '/n' }).some((e) => /--path/.test(e)), 'launchd の既定 PATH では executor が見つからない');
+  assert.ok(validateJobArgs({ ...base, target: 'systemd', dir: '/kl', environment: 'dev', user: 'en', node: '/n' }).some((e) => /--path/.test(e)));
+  assert.deepEqual(validateJobArgs({ ...base, vault: 'C:\\Obsidian\\Vault' }), []);
+  assert.match(renderJob({ ...base, vault: 'C:\\Obsidian\\Vault' }).content, /refresh-state --vault C:\\Obsidian\\Vault/);
+  assert.ok(validateJobArgs({ ...base, vault: 'relative' }).length > 0);
+  assert.ok(validateJobArgs({ ...base, vault: 'C:\\a;b' }).length > 0);
+  assert.ok(validateJobArgs({ ...base, webhook: 'credential:E-NEXUS/edl/x' }).length > 0);
+  assert.ok(validateJobArgs({ job: 'usage-digest', target: 'windows', dir: 'C:\\edl', hour: 6, minute: 5, everyHours: '6' }).length > 0, '従来の毎日 job の挙動は変えない');
+  assert.ok(validateJobArgs({ job: 'watcher-cycle', target: 'windows', dir: 'C:\\edl', watcherDir: 'C:\\kl', hour: 6, minute: 5, vault: 'C:\\v' }).length > 0);
+  // 従来の job は毎日 1 回のまま
+  assert.match(renderJob({ job: 'usage-digest', target: 'windows', dir: 'C:\\edl', hour: 6, minute: 5 }).content, /-Daily -At '06:05'/);
+});
