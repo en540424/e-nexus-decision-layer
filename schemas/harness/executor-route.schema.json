@@ -1,38 +1,130 @@
 {
   "$id": "edl/harness/executor-route",
   "title": "ExecutorRoute",
-  "description": "rules-reference（Vault MA-32-5・2026-10-02 予約→実装）。作業 1 件をどの Executor（Claude Code 本体／Codex／Cursor／Hermes）に振るのが妥当かの参考値。上位正本は Vault 技術スタック正本 §3-10-1（Executor は交換可能）・AI役割分担・検収体制_正本 §2・Agent_SubAgent委任ルール。静的能力は registries/agents.json（type=executor）で、rules は全 input に答える（catch-all の既定 rule で終わる＝Jev へ流さない）。稼働状態（availability）は Knowledge Layer にまだ実測が無い（producer は MA-33 Watcher・Runtime Node）ので availability_checked は常に false。承認・委任レベルの変更・Human-only 境界の解除は返さない（forbidden keys）。Human-only 境界（Secret・有料API・外部送信・Production 変更・不可逆）に当たる作業は executor へ振らず human を返す。model-route（どのモデル・Effort）を置換せず並置する。",
+  "description": "rules-reference（Vault MA-32-5・2026-10-02 予約→実装）。作業 1 件をどの Executor（Claude Code 本体／Codex／Cursor／Hermes）に振るのが妥当かの参考値。上位正本は Vault 技術スタック正本 §3-10-1（Executor は交換可能）・AI役割分担・検収体制_正本 §2・Agent_SubAgent委任ルール。静的能力は registries/agents.json（type=executor）で、rules は全 input に答える（catch-all の既定 rule で終わる＝Jev へ流さない）。稼働状態（2026-10-03〜）：Knowledge Layer の executors fact（このノードでの実行可否＝health.local・ベンダー公式 status＝health.external）を見る rule が分類ごとにある。local が使える（effective）と確認できた時だけ availability_checked=true。観測なし・stale・Knowledge 無しは false（not_checked）。承認・委任レベルの変更・Human-only 境界の解除は返さない（forbidden keys）。Human-only 境界（Secret・有料API・外部送信・Production 変更・不可逆）に当たる作業は executor へ振らず human を返す。model-route（どのモデル・Effort）を置換せず並置する。",
   "type": "object",
   "properties": {
     "input": {
       "type": "object",
-      "required": ["work_center", "execution_mode", "environment"],
+      "required": [
+        "work_center",
+        "execution_mode",
+        "environment"
+      ],
       "additionalProperties": false,
       "properties": {
-        "work_center": { "type": "string", "enum": ["implementation", "design-judgment", "reading-comparison-audit", "operations"], "description": "作業の中心（Advisor正本§0-2 の3つ＋常駐・定期の運用）" },
-        "execution_mode": { "type": "string", "enum": ["interactive", "long-running", "scheduled"], "description": "Human のセッション中に終わるか・長時間か・定期実行か" },
-        "environment": { "type": "string", "enum": ["dev", "staging", "production"], "description": "作業が影響する実行環境（Gateway の runtime 環境ではない）" },
-        "needs_vault_write": { "type": "boolean", "description": "Vault（作業ログ・正本・台帳）へ書くか" },
-        "needs_repo_write": { "type": "boolean", "description": "repo のファイルを変更するか" },
-        "needs_browser": { "type": "boolean", "description": "ブラウザ操作が要るか" },
-        "independent_review": { "type": "boolean", "description": "実装した系統と別の系統による独立レビューか" },
-        "touches_secrets": { "type": "boolean" },
-        "paid_api": { "type": "boolean" },
-        "external_send": { "type": "boolean" },
-        "production_change": { "type": "boolean" },
-        "irreversible": { "type": "boolean" },
-        "summary": { "type": "string", "maxLength": 200, "description": "作業の短い説明（Secret・PII・本文の全文・ローカルパスを入れない）" }
+        "work_center": {
+          "type": "string",
+          "enum": [
+            "implementation",
+            "design-judgment",
+            "reading-comparison-audit",
+            "operations"
+          ],
+          "description": "作業の中心（Advisor正本§0-2 の3つ＋常駐・定期の運用）"
+        },
+        "execution_mode": {
+          "type": "string",
+          "enum": [
+            "interactive",
+            "long-running",
+            "scheduled"
+          ],
+          "description": "Human のセッション中に終わるか・長時間か・定期実行か"
+        },
+        "environment": {
+          "type": "string",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ],
+          "description": "作業が影響する実行環境（Gateway の runtime 環境ではない）"
+        },
+        "needs_vault_write": {
+          "type": "boolean",
+          "description": "Vault（作業ログ・正本・台帳）へ書くか"
+        },
+        "needs_repo_write": {
+          "type": "boolean",
+          "description": "repo のファイルを変更するか"
+        },
+        "needs_browser": {
+          "type": "boolean",
+          "description": "ブラウザ操作が要るか"
+        },
+        "independent_review": {
+          "type": "boolean",
+          "description": "実装した系統と別の系統による独立レビューか"
+        },
+        "touches_secrets": {
+          "type": "boolean"
+        },
+        "paid_api": {
+          "type": "boolean"
+        },
+        "external_send": {
+          "type": "boolean"
+        },
+        "production_change": {
+          "type": "boolean"
+        },
+        "irreversible": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "作業の短い説明（Secret・PII・本文の全文・ローカルパスを入れない）"
+        },
+        "knowledge_context": {
+          "type": "object",
+          "description": "Knowledge Context Contract v1（schemas/common/knowledge-context.schema.json・2026-10-03）。consumer は送れない（Gateway が INVALID_ENVELOPE で拒否）。Human-only の rule で決まらなかった時だけ、Decision Layer の Knowledge enricher が executors fact（作業主体ごとの local／external の実測・鮮度・出所）を添える。事実であって判断ではない"
+        }
       }
     },
     "outcome": {
       "type": "object",
-      "required": ["recommended_executor", "human_review_required", "availability_checked"],
+      "required": [
+        "recommended_executor",
+        "human_review_required",
+        "availability_checked",
+        "availability"
+      ],
       "additionalProperties": false,
       "properties": {
-        "recommended_executor": { "type": "string", "enum": ["claude-code", "codex", "cursor", "hermes", "human"], "description": "registries/agents.json の type=executor の id、または human（AI の executor へ振らない）" },
-        "human_review_required": { "type": "boolean" },
-        "availability_checked": { "type": "boolean", "description": "推奨先の稼働状態を実測で確かめたか（現在は常に false：Knowledge Layer に executor の health 実測が無い）" },
-        "note": { "type": "string" }
+        "recommended_executor": {
+          "type": "string",
+          "enum": [
+            "claude-code",
+            "codex",
+            "cursor",
+            "hermes",
+            "human"
+          ],
+          "description": "registries/agents.json の type=executor の id、または human（AI の executor へ振らない）"
+        },
+        "human_review_required": {
+          "type": "boolean"
+        },
+        "availability_checked": {
+          "type": "boolean",
+          "description": "推奨先の実行可否を、このノードの実測（Knowledge の health.local・effective）で確かめたか。ベンダー公式 status だけでは true にしない"
+        },
+        "note": {
+          "type": "string"
+        },
+        "availability": {
+          "type": "string",
+          "enum": [
+            "available",
+            "local_unavailable",
+            "local_setup_unconfirmed",
+            "vendor_outage",
+            "not_checked"
+          ],
+          "description": "推奨先の実行可否の事実の要約（rules が書く）。available＝このノードで実行できると確認（effective）／local_unavailable＝このノードに無い（→ human）／local_setup_unconfirmed＝導入済みだが設定未確認／vendor_outage＝ローカルは使えるがベンダー公式 status が障害／not_checked＝確認していない（観測なし・stale・Knowledge 無し・Human-only）"
+        }
       }
     }
   }

@@ -1,16 +1,538 @@
 {
-  "$comment": "executor-route（Vault MA-32-5・2026-10-02 予約→実装）の rules。上から評価し最初に一致したものを confidence 1.0 で確定。最後の default-claude-code が catch-all（全 input に rules が答える＝未較正の Jev へ流さない・課金なし）。参考値で、承認・委任レベル・Human-only 境界を変えない。① Human-only 境界（Vault CLAUDE.md『Human-only操作』）に当たる作業は executor へ振らず human ② Vault への書き込みは Claude Code 本体だけ（Vault 構想正本 MA-32 §4-3 vault-write）③ 定期・長時間の実行：Hermes（registries/agents.json の status=planned・未導入）は推奨しない。常駐の定義は Claude Code が既存の生成器（scripts/scheduled-job-service.mjs）で作り、登録は Human（human_review_required）④ 独立レビュー：Codex（codex-review Skill 経由・read-only 強制）⑤ それ以外は Claude Code 本体（Human のセッション中に実行）。Cursor は Human が直接操作する IDE なので推奨先にしない（enum には残す）。availability_checked は常に false（executor の稼働実測は Knowledge Layer にまだ無い。producer は MA-33 Watcher・Runtime Node）。Hermes 導入後（MA-24・Mac mini）にこの rules と tests を更新する。",
+  "$comment": "executor-route（Vault MA-32-5・2026-10-02 予約→実装）の rules。上から評価し最初に一致したものを confidence 1.0 で確定。最後の default-claude-code が catch-all（全 input に rules が答える＝未較正の Jev へ流さない・課金なし）。参考値で、承認・委任レベル・Human-only 境界を変えない。① Human-only 境界（Vault CLAUDE.md『Human-only操作』）に当たる作業は executor へ振らず human ② Vault への書き込みは Claude Code 本体だけ（Vault 構想正本 MA-32 §4-3 vault-write）③ 定期・長時間の実行：Hermes（registries/agents.json の status=planned・未導入）は推奨しない。常駐の定義は Claude Code が既存の生成器（scripts/scheduled-job-service.mjs）で作り、登録は Human（human_review_required）④ 独立レビュー：Codex（codex-review Skill 経由・read-only 強制）⑤ それ以外は Claude Code 本体（Human のセッション中に実行）。Cursor は Human が直接操作する IDE なので推奨先にしない（enum には残す）。Hermes 導入後（MA-24・Mac mini）にこの rules と tests を更新する。 【2026-10-03 Knowledge 接続（Vault MA-32 LATER executor の稼働実測）】Human-only の 6 rule は input だけで決まる（Knowledge を問い合わせない＝Rules First）。それ以外は分類（vault-write／scheduled／long-running／independent-review／default）ごとに Knowledge を見る 6 行の block：①local unavailable（effective）→ human（未導入。導入・ログインは Human）②local degraded（設定未確認）→ 同じ executor＋human_review ③local healthy＋ベンダー公式 status unavailable（effective）→ 同じ executor＋human_review（vendor_outage・切替はしない）④local healthy（effective）→ 同じ executor・availability_checked=true ⑤Knowledge はあるが観測なし・stale・unavailable → availability_checked=false（not_checked）⑥Knowledge 無し（provider 未注入・HTTP 経路）→ not_checked。⑤⑥で各分類の全 input に rules が答える（Jev へ流さない）。優先順位：local（このノードで使えるか）が先、ベンダー status は local が使える時の注意だけ。Knowledge は判断を緩めない（human を非 human にしない・review を外さない：単調性 test）。この JSON は block 構造を保つため手で崩さない。",
   "rules": [
-    { "id": "human-only-secrets", "when": { "touches_secrets": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "Secret に触れる作業は Human-only（CLAUDE.md）。executor へ振らない" } },
-    { "id": "human-only-paid-api", "when": { "paid_api": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "有料 API の実行は Human 承認の後（MA-17 等の既存 Gate）。executor の選定で代替しない" } },
-    { "id": "human-only-external-send", "when": { "external_send": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "外部送信・公開は Human-only（Safety台帳）" } },
-    { "id": "human-only-production", "when": { "production_change": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "Production の変更・deploy は Human-only" } },
-    { "id": "human-only-production-env", "when": { "environment": "production", "needs_repo_write": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "production を対象にした書き込みは Human 確認を通す（環境分離：技術スタック正本§3-8）" } },
-    { "id": "human-only-irreversible", "when": { "irreversible": true }, "outcome": { "recommended_executor": "human", "human_review_required": true, "availability_checked": false, "note": "不可逆操作は Human-only" } },
-    { "id": "vault-write-claude-code", "when": { "needs_vault_write": true }, "outcome": { "recommended_executor": "claude-code", "human_review_required": false, "availability_checked": false, "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）" } },
-    { "id": "scheduled-no-resident-executor", "when": { "execution_mode": "scheduled" }, "outcome": { "recommended_executor": "claude-code", "human_review_required": true, "availability_checked": false, "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human" } },
-    { "id": "long-running-no-resident-executor", "when": { "execution_mode": "long-running" }, "outcome": { "recommended_executor": "claude-code", "human_review_required": true, "availability_checked": false, "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う" } },
-    { "id": "independent-review-codex", "when": { "independent_review": true }, "outcome": { "recommended_executor": "codex", "human_review_required": false, "availability_checked": false, "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）" } },
-    { "id": "default-claude-code", "when": {}, "outcome": { "recommended_executor": "claude-code", "human_review_required": false, "availability_checked": false, "note": "Human のセッション中に Claude Code 本体が行う（既定）" } }
+    {
+      "id": "human-only-secrets",
+      "when": {
+        "touches_secrets": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "Secret に触れる作業は Human-only（CLAUDE.md）。executor へ振らない",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "human-only-paid-api",
+      "when": {
+        "paid_api": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "有料 API の実行は Human 承認の後（MA-17 等の既存 Gate）。executor の選定で代替しない",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "human-only-external-send",
+      "when": {
+        "external_send": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "外部送信・公開は Human-only（Safety台帳）",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "human-only-production",
+      "when": {
+        "production_change": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "Production の変更・deploy は Human-only",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "human-only-production-env",
+      "when": {
+        "environment": "production",
+        "needs_repo_write": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "production を対象にした書き込みは Human 確認を通す（環境分離：技術スタック正本§3-8）",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "human-only-irreversible",
+      "when": {
+        "irreversible": true
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": false,
+        "note": "不可逆操作は Human-only",
+        "availability": "not_checked"
+      }
+    },
+    {
+      "id": "vault-write-local-unavailable",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_unavailable",
+        "note": "claude-code がこのノードで見つからない（Knowledge の health.local＝unavailable・effective）。導入・ログインは Human。Decision Layer は導入しない"
+      }
+    },
+    {
+      "id": "vault-write-local-setup-unconfirmed",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "degraded"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_setup_unconfirmed",
+        "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）。claude-code は導入済みだが設定（ログイン等）を確認できない（health.local＝degraded）。動かなければ Human が設定する"
+      }
+    },
+    {
+      "id": "vault-write-vendor-outage",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy",
+        "knowledge_context.facts.executors.items.claude-code.external.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.external.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "vendor_outage",
+        "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）。このノードでは使えるが、ベンダー公式 status が障害（health.external＝unavailable）。executor の切替はしない"
+      }
+    },
+    {
+      "id": "vault-write-available",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": true,
+        "availability": "available",
+        "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）（このノードで実行できることを Knowledge の実測で確認）"
+      }
+    },
+    {
+      "id": "vault-write-not-checked",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context.contract": "enexus-knowledge-context-v1"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）（実行可否は確認できていない：観測なし・古い・Knowledge 不可）"
+      }
+    },
+    {
+      "id": "vault-write-no-knowledge",
+      "when": {
+        "needs_vault_write": true,
+        "knowledge_context": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "Vault への書き込みは Claude Code 本体だけ（構想正本 MA-32 §4-3）（Knowledge を接続していない経路）"
+      }
+    },
+    {
+      "id": "scheduled-local-unavailable",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_unavailable",
+        "note": "claude-code がこのノードで見つからない（Knowledge の health.local＝unavailable・effective）。導入・ログインは Human。Decision Layer は導入しない"
+      }
+    },
+    {
+      "id": "scheduled-local-setup-unconfirmed",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "degraded"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_setup_unconfirmed",
+        "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human。claude-code は導入済みだが設定（ログイン等）を確認できない（health.local＝degraded）。動かなければ Human が設定する"
+      }
+    },
+    {
+      "id": "scheduled-vendor-outage",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy",
+        "knowledge_context.facts.executors.items.claude-code.external.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.external.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "vendor_outage",
+        "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human。このノードでは使えるが、ベンダー公式 status が障害（health.external＝unavailable）。executor の切替はしない"
+      }
+    },
+    {
+      "id": "scheduled-available",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "available",
+        "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human（このノードで実行できることを Knowledge の実測で確認）"
+      }
+    },
+    {
+      "id": "scheduled-not-checked",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context.contract": "enexus-knowledge-context-v1"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human（実行可否は確認できていない：観測なし・古い・Knowledge 不可）"
+      }
+    },
+    {
+      "id": "scheduled-no-knowledge",
+      "when": {
+        "execution_mode": "scheduled",
+        "knowledge_context": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "常駐 executor（Hermes）は未導入（planned）。定義は Claude Code が既存の生成器で作り、登録は Human（Knowledge を接続していない経路）"
+      }
+    },
+    {
+      "id": "long-running-local-unavailable",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_unavailable",
+        "note": "claude-code がこのノードで見つからない（Knowledge の health.local＝unavailable・effective）。導入・ログインは Human。Decision Layer は導入しない"
+      }
+    },
+    {
+      "id": "long-running-local-setup-unconfirmed",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "degraded"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_setup_unconfirmed",
+        "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う。claude-code は導入済みだが設定（ログイン等）を確認できない（health.local＝degraded）。動かなければ Human が設定する"
+      }
+    },
+    {
+      "id": "long-running-vendor-outage",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy",
+        "knowledge_context.facts.executors.items.claude-code.external.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.external.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "vendor_outage",
+        "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う。このノードでは使えるが、ベンダー公式 status が障害（health.external＝unavailable）。executor の切替はしない"
+      }
+    },
+    {
+      "id": "long-running-available",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "available",
+        "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う（このノードで実行できることを Knowledge の実測で確認）"
+      }
+    },
+    {
+      "id": "long-running-not-checked",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context.contract": "enexus-knowledge-context-v1"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う（実行可否は確認できていない：観測なし・古い・Knowledge 不可）"
+      }
+    },
+    {
+      "id": "long-running-no-knowledge",
+      "when": {
+        "execution_mode": "long-running",
+        "knowledge_context": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "長時間の無人実行の主体（Hermes）は未導入（planned）。Human のセッション内で区切って行う（Knowledge を接続していない経路）"
+      }
+    },
+    {
+      "id": "independent-review-local-unavailable",
+      "when": {
+        "independent_review": true,
+        "knowledge_context.facts.executors.items.codex.local.status": "effective",
+        "knowledge_context.facts.executors.items.codex.local.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_unavailable",
+        "note": "codex がこのノードで見つからない（Knowledge の health.local＝unavailable・effective）。導入・ログインは Human。Decision Layer は導入しない"
+      }
+    },
+    {
+      "id": "independent-review-local-setup-unconfirmed",
+      "when": {
+        "independent_review": true,
+        "knowledge_context.facts.executors.items.codex.local.status": "effective",
+        "knowledge_context.facts.executors.items.codex.local.value": "degraded"
+      },
+      "outcome": {
+        "recommended_executor": "codex",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_setup_unconfirmed",
+        "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）。codex は導入済みだが設定（ログイン等）を確認できない（health.local＝degraded）。動かなければ Human が設定する"
+      }
+    },
+    {
+      "id": "independent-review-vendor-outage",
+      "when": {
+        "independent_review": true,
+        "knowledge_context.facts.executors.items.codex.local.status": "effective",
+        "knowledge_context.facts.executors.items.codex.local.value": "healthy",
+        "knowledge_context.facts.executors.items.codex.external.status": "effective",
+        "knowledge_context.facts.executors.items.codex.external.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "codex",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "vendor_outage",
+        "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）。このノードでは使えるが、ベンダー公式 status が障害（health.external＝unavailable）。executor の切替はしない"
+      }
+    },
+    {
+      "id": "independent-review-available",
+      "when": {
+        "independent_review": true,
+        "knowledge_context.facts.executors.items.codex.local.status": "effective",
+        "knowledge_context.facts.executors.items.codex.local.value": "healthy"
+      },
+      "outcome": {
+        "recommended_executor": "codex",
+        "human_review_required": false,
+        "availability_checked": true,
+        "availability": "available",
+        "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）（このノードで実行できることを Knowledge の実測で確認）"
+      }
+    },
+    {
+      "id": "independent-review-not-checked",
+      "when": {
+        "independent_review": true,
+        "knowledge_context.contract": "enexus-knowledge-context-v1"
+      },
+      "outcome": {
+        "recommended_executor": "codex",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）（実行可否は確認できていない：観測なし・古い・Knowledge 不可）"
+      }
+    },
+    {
+      "id": "independent-review-no-knowledge",
+      "when": {
+        "independent_review": true,
+        "knowledge_context": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "recommended_executor": "codex",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "別モデル系統の独立 read-only レビュー（codex-review Skill 経由。Claude Code が呼ぶ）（Knowledge を接続していない経路）"
+      }
+    },
+    {
+      "id": "default-local-unavailable",
+      "when": {
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "human",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_unavailable",
+        "note": "claude-code がこのノードで見つからない（Knowledge の health.local＝unavailable・effective）。導入・ログインは Human。Decision Layer は導入しない"
+      }
+    },
+    {
+      "id": "default-local-setup-unconfirmed",
+      "when": {
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "degraded"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "local_setup_unconfirmed",
+        "note": "Human のセッション中に Claude Code 本体が行う（既定）。claude-code は導入済みだが設定（ログイン等）を確認できない（health.local＝degraded）。動かなければ Human が設定する"
+      }
+    },
+    {
+      "id": "default-vendor-outage",
+      "when": {
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy",
+        "knowledge_context.facts.executors.items.claude-code.external.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.external.value": "unavailable"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": true,
+        "availability_checked": true,
+        "availability": "vendor_outage",
+        "note": "Human のセッション中に Claude Code 本体が行う（既定）。このノードでは使えるが、ベンダー公式 status が障害（health.external＝unavailable）。executor の切替はしない"
+      }
+    },
+    {
+      "id": "default-available",
+      "when": {
+        "knowledge_context.facts.executors.items.claude-code.local.status": "effective",
+        "knowledge_context.facts.executors.items.claude-code.local.value": "healthy"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": true,
+        "availability": "available",
+        "note": "Human のセッション中に Claude Code 本体が行う（既定）（このノードで実行できることを Knowledge の実測で確認）"
+      }
+    },
+    {
+      "id": "default-not-checked",
+      "when": {
+        "knowledge_context.contract": "enexus-knowledge-context-v1"
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "Human のセッション中に Claude Code 本体が行う（既定）（実行可否は確認できていない：観測なし・古い・Knowledge 不可）"
+      }
+    },
+    {
+      "id": "default-no-knowledge",
+      "when": {
+        "knowledge_context": {
+          "exists": false
+        }
+      },
+      "outcome": {
+        "recommended_executor": "claude-code",
+        "human_review_required": false,
+        "availability_checked": false,
+        "availability": "not_checked",
+        "note": "Human のセッション中に Claude Code 本体が行う（既定）（Knowledge を接続していない経路）"
+      }
+    }
   ]
 }

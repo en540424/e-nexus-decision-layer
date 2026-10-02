@@ -203,10 +203,13 @@ for (const projectId of ['e-nexus-decision-layer', 'e-nexus-crm-core']) {
   check('input に鍵の形の値＝INVALID_ENVELOPE（Knowledge にも Jev にも届かない）', secret.envelope?.ok === false && secret.envelope.error.code === 'INVALID_ENVELOPE' && !JSON.stringify(secret.envelope).includes('CCCCCCCC'), secret.envelope?.error);
 }
 
-// 14. executor-route（Knowledge 要件の無い decision_type）：rules だけで答え、Knowledge を問い合わせない
+// 14. executor-route（2026-10-03〜 Knowledge の executors fact を見る）：rules だけで答え（Jev なし）、Human-only 以外は Knowledge を問い合わせる。
+//     availability は実データ次第（このノードで claude-code が使えれば available・観測が古ければ not_checked）なので、両方を正しい組として受ける
 {
   const r = decide({ contract_version: '1', expected_environment: 'dev', decision_type: 'executor-route', application_id: 'claude-code', project_id: 'e-nexus-decision-layer', input: { work_center: 'implementation', execution_mode: 'interactive', environment: 'dev', needs_vault_write: true } });
-  check('executor-route（実 CLI）：rules が claude-code を返す・Knowledge 要件が無いので knowledge を付けない', r.envelope?.ok && r.envelope.decision.resolved_by === 'rules' && r.envelope.decision.outcome.recommended_executor === 'claude-code' && !('knowledge' in r.envelope.decision), r.envelope?.decision);
+  const o = r.envelope?.decision?.outcome;
+  const consistent = o && ((o.availability === 'available' && o.availability_checked === true && o.recommended_executor === 'claude-code') || (o.availability === 'not_checked' && o.availability_checked === false && o.recommended_executor === 'claude-code') || (o.availability === 'local_unavailable' && o.recommended_executor === 'human'));
+  check('executor-route（実 CLI）：rules が答える・Knowledge（executors）を問い合わせる・availability と availability_checked が矛盾しない', r.envelope?.ok && r.envelope.decision.resolved_by === 'rules' && r.envelope.decision.knowledge?.requested === true && consistent, r.envelope?.decision);
   const p = decide({ contract_version: '1', expected_environment: 'dev', decision_type: 'executor-route', application_id: 'claude-code', project_id: 'e-nexus-decision-layer', input: { work_center: 'operations', execution_mode: 'scheduled', environment: 'production', production_change: true } });
   check('executor-route（実 CLI）：Production 変更は human・tier human', p.envelope?.decision?.outcome?.recommended_executor === 'human' && p.envelope.decision.tier === 'human', p.envelope?.decision?.outcome);
 }

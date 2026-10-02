@@ -4,14 +4,60 @@
   "decision_types": {
     "automation-safety-gate": {
       "requirement": "optional",
-      "subject": { "type": "project", "match": "edlRegistryId", "from": "project_id" },
+      "subject": {
+        "type": "project",
+        "match": "edlRegistryId",
+        "from": "project_id"
+      },
       "environment_from": "environment",
       "queries": [
-        { "kind": "impact", "depth": 2, "max_nodes": 20, "node_types": ["project", "capability"] },
-        { "kind": "depends_on", "depth": 1, "max_nodes": 20, "node_types": ["project", "capability", "provider", "service"] },
-        { "kind": "states", "environments": ["target", "local"], "groups": ["guard"] }
+        {
+          "kind": "impact",
+          "depth": 2,
+          "max_nodes": 20,
+          "node_types": [
+            "project",
+            "capability"
+          ]
+        },
+        {
+          "kind": "depends_on",
+          "depth": 1,
+          "max_nodes": 20,
+          "node_types": [
+            "project",
+            "capability",
+            "provider",
+            "service"
+          ]
+        },
+        {
+          "kind": "states",
+          "environments": [
+            "target",
+            "local"
+          ],
+          "groups": [
+            "guard"
+          ]
+        }
       ],
       "rationale": "自動化の対象 project を変えると何に届くか（impact：提供 capability と、それを consume する project の audience）・何に依存しているか・対象環境に観測があるか（無ければ unknown）。production で対象や影響範囲を確認できないときは rules（knowledge-*）が human-review へ上げる。判断（安全区分）は rules／Jev。"
+    },
+    "executor-route": {
+      "requirement": "optional",
+      "subject": {
+        "type": "project",
+        "match": "edlRegistryId",
+        "from": "project_id"
+      },
+      "environment_from": "environment",
+      "queries": [
+        {
+          "kind": "executors"
+        }
+      ],
+      "rationale": "推奨する executor がこのノードで実行できるか（health.local）とベンダー公式 status（health.external）。subject（呼び手の project）に依存しない事実なので、project が Knowledge に無くても executors は返る。Human-only は input だけの rules で決まり Knowledge を問い合わせない。取れない・古い・観測なしは not_checked（availability_checked=false）で、判断を緩めない（2026-10-03）"
     }
   }
 }

@@ -43,7 +43,7 @@
       "schema": "schemas/harness/executor-route.schema.json",
       "status": "rules-reference",
       "candidates": null,
-      "description": "Executor selection（Vault 技術スタック正本§3-10-1・MA-32-5。2026-10-01 名前予約→2026-10-02 実装）。作業1件を Claude Code 本体／Codex／Cursor／Hermes のどれに振るのが妥当かの参考値。静的能力は registries/agents.json（type=executor）、rules は catch-all まで決定的に答える（Jev へ流さない）。Human-only 境界の作業は human を返す。稼働の実測は未取得（availability_checked=false・producer は MA-33）。model-route を置換せず並置。承認・委任レベルを変えない（forbidden keys）"
+      "description": "Executor selection（Vault 技術スタック正本§3-10-1・MA-32-5。2026-10-01 名前予約→2026-10-02 実装）。作業1件を Claude Code 本体／Codex／Cursor／Hermes のどれに振るのが妥当かの参考値。静的能力は registries/agents.json（type=executor）、rules は catch-all まで決定的に答える（Jev へ流さない）。Human-only 境界の作業は human を返す。稼働は Knowledge の executors fact（このノードでの実行可否＝health.local・ベンダー公式 status＝health.external）を分類ごとの rule で見る。local が effective で確認できた時だけ availability_checked=true（2026-10-03）。model-route を置換せず並置。承認・委任レベルを変えない（forbidden keys）"
     },
     "skill-route": {
       "domain": "claude-code",

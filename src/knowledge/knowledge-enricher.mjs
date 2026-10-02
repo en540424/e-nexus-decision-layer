@@ -114,6 +114,26 @@ function checkTraversal(name, f, nAuth, errors) {
   }
 }
 
+// subject（project）に依存しない fact（2026-10-03）：subject_not_found／unavailable の context にも載ってよい
+const SUBJECT_INDEPENDENT_FACTS = Object.freeze(['executors']);
+const EXECUTOR_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const STATE_STATUSES = Object.freeze(['effective', 'stale', 'unknown']);
+function checkExecutors(f, errors) {
+  if (!isObj(f)) { errors.push('executors: shape'); return; }
+  if (f.status === 'error') { if (typeof f.error !== 'string' || !SAFE_TOKEN.test(f.error)) errors.push('executors.error'); return; }
+  if (f.status !== 'ok' || !isObj(f.items) || Object.keys(f.items).length > 32) { errors.push('executors: shape'); return; }
+  const tok = (v) => v === null || (typeof v === 'string' && SAFE_TOKEN.test(v));
+  const iso = (v) => v === null || (typeof v === 'string' && ISO.test(v));
+  for (const [slug, it] of Object.entries(f.items)) {
+    if (!EXECUTOR_SLUG.test(slug) || !isObj(it) || !tok(it.registry_status)) { errors.push(`executors.${slug}`); continue; }
+    for (const side of ['local', 'external']) {
+      const x = it[side];
+      if (!isObj(x) || !STATE_STATUSES.includes(x.status) || !tok(x.value) || !tok(x.reason) || !iso(x.observed_at) || !iso(x.expires_at) || !tok(x.origin)) errors.push(`executors.${slug}.${side}`);
+    }
+    if (Object.keys(it).some((k) => !['registry_status', 'local', 'external'].includes(k))) errors.push(`executors.${slug}: 未知の key`);
+  }
+}
+
 /**
  * provider の返り値の検査（受け取る側の二重確認）。schema＋形・id・判断 key・Secret／PII 風の値・大きさ。
  * @returns {string[]} 問題（空なら受け取ってよい）
@@ -139,7 +159,8 @@ export function checkKnowledgeContext(ctx, { environment } = {}) {
   if (ctx.status === 'ok' || ctx.status === 'partial') {
     if (!ctx.subject) errors.push(`${ctx.status} なのに subject が無い`);
     if (ctx.status === 'ok' && Object.values(ctx.facts).some((f) => f?.status !== 'ok')) errors.push('ok なのに失敗した fact がある');
-  } else if (Object.keys(ctx.facts).length) errors.push(`${ctx.status} なのに facts がある`);
+  } else if (Object.keys(ctx.facts).some((k) => !SUBJECT_INDEPENDENT_FACTS.includes(k))) errors.push(`${ctx.status} なのに subject に依存する facts がある`);
+  if (ctx.facts.executors) checkExecutors(ctx.facts.executors, errors);
   for (const name of ['impact', 'depends_on']) if (ctx.facts[name]) checkTraversal(name, ctx.facts[name], nAuth, errors);
   const st = ctx.facts.states;
   if (st) {
@@ -160,6 +181,9 @@ function refsOf(ctx) {
     for (const n of ctx.facts[name]?.nodes ?? []) { entities.add(n.id); relations.add(`${n.via.from} -[${n.via.type}]-> ${n.via.to}`); }
   }
   const states = (ctx.facts.states?.items ?? []).map((x) => `${ctx.subject?.id}#${x.key}`);
+  for (const [slug, it] of Object.entries(ctx.facts.executors?.items ?? {})) {
+    for (const side of ['local', 'external']) if (it[side]?.status && it[side].status !== 'unknown') states.push(`agent:${slug}#health.${side}.status`);
+  }
   return { entities: [...entities].sort(), relations: [...relations].sort(), states: [...states].sort() };
 }
 

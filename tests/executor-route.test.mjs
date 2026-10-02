@@ -52,7 +52,7 @@ test('executor-route：登録済み（rules-reference）・予約から外れた
   assert.ok(DT?.schema?.properties?.outcome);
 });
 
-test('executor-route rules：全 input（4×3×3×2^9）に rules が答える・Human-only 境界は human・planned の Hermes を推奨しない・vault 書き込みは Claude Code・availability は未確認のまま', () => {
+test('executor-route rules：全 input（4×3×3×2^9）に rules が答える・Human-only 境界は human・planned の Hermes を推奨しない・vault 書き込みは Claude Code・Knowledge 無しなら availability は未確認（not_checked）', () => {
   const outcomeSchema = DT.schema.properties.outcome;
   const executors = new Set(loadRegistry('agents').filter((e) => e.type === 'executor').map((e) => e.id));
   const planned = new Set(loadRegistry('agents').filter((e) => e.type === 'executor' && e.status === 'planned').map((e) => e.id));
@@ -65,7 +65,8 @@ test('executor-route rules：全 input（4×3×3×2^9）に rules が答える�
     assert.ok(rule, `rules が答えない input: ${JSON.stringify(input)}`);
     const o = rule.outcome;
     assert.deepEqual(validate(outcomeSchema, o), [], rule.id);
-    assert.equal(o.availability_checked, false, '稼働実測は無い（MA-33 まで）');
+    assert.equal(o.availability_checked, false, 'Knowledge が無ければ実行可否は確認していない');
+    assert.equal(o.availability, 'not_checked');
     assert.ok(o.recommended_executor === 'human' || executors.has(o.recommended_executor), `registry に無い executor: ${o.recommended_executor}`);
     assert.ok(!planned.has(o.recommended_executor), `planned（未導入）を推奨した: ${rule.id}`);
     assert.notEqual(o.recommended_executor, 'cursor', 'Human が操作する IDE を自動の推奨先にしない');
@@ -80,7 +81,8 @@ test('executor-route rules：全 input（4×3×3×2^9）に rules が答える�
     if (input.execution_mode !== 'interactive' && o.recommended_executor !== 'human' && !input.needs_vault_write) assert.equal(o.human_review_required, true, '常駐 executor が無いことを Human に見せる');
   }
   assert.equal(n, 4 * 3 * 3 * 2 ** BOOLS.length);
-  assert.ok(RULES.at(-1).id === 'default-claude-code' && Object.keys(RULES.at(-1).when).length === 0, '最後は catch-all');
+  // 2026-10-03：Knowledge 接続後、最後は「Knowledge 無しの既定」（Knowledge を見る rule の後ろ＝Rules First の順序。loader が検査）
+  assert.ok(RULES.at(-1).id === 'default-no-knowledge' && Object.keys(RULES.at(-1).when).length === 1 && RULES.at(-1).when.knowledge_context?.exists === false, '最後は Knowledge 無しの catch-all');
 });
 
 test('executor-route：承認・委任・解除を返さない（forbidden keys・承認の語）', () => {
@@ -91,7 +93,7 @@ test('executor-route：承認・委任・解除を返さない（forbidden keys�
   }
   assert.ok(!SAFETY.human_only_decision_types.includes('executor-route'));
   const props = Object.keys(DT.schema.properties.outcome.properties);
-  assert.deepEqual(props.sort(), ['availability_checked', 'human_review_required', 'note', 'recommended_executor']);
+  assert.deepEqual(props.sort(), ['availability', 'availability_checked', 'human_review_required', 'note', 'recommended_executor']);
 });
 
 test('executor-route via Gateway：Jev を呼ばない・Human-only は tier human・Agent の識別子は権限にならない（同じ input なら同じ答え）', async () => {
