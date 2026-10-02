@@ -74,3 +74,25 @@ test('usage-digest（systemd・2026-09-30 VPS staging）：oneshot の .service 
   assert.ok(validateJobArgs({ ...a, webhook: 'credential:E-NEXUS/edl/digest-webhook' }).some((e) => e.includes('--webhook')), 'no credential store on Linux');
   assert.ok(validateJobArgs({ ...a, onAnomaly: 'ignore' }).some((e) => e.includes('--on-anomaly')));
 });
+
+test('watcher-cycle（MA-33-6・2026-10-02）：3 target で同じ scripts/watcher-cycle.mjs --watcher-dir・systemd は ReadWritePaths に Watcher の置き場・webhook 不可・--watcher-dir 必須', () => {
+  const mac = { job: 'watcher-cycle', target: 'launchd', dir: MAC.dir, node: MAC.node, watcherDir: '/Users/x/e-nexus/e-nexus-knowledge-layer', hour: 6, minute: 15 };
+  assert.deepEqual(validateJobArgs(mac), []);
+  const r = renderJob(mac);
+  assert.equal(r.filename, 'com.e-nexus.watcher-cycle.plist');
+  assert.match(r.content, /<string>scripts\/watcher-cycle\.mjs<\/string>\s*<string>--watcher-dir<\/string>\s*<string>\/Users\/x\/e-nexus\/e-nexus-knowledge-layer<\/string>/);
+  assert.ok(!/credential:|token=|api[_-]?key|EDL_GATEWAY_TOKEN|JEV_API_KEY/i.test(r.content), 'Secret・資格情報の名前も値も定義に無い');
+  const win = renderJob({ job: 'watcher-cycle', target: 'windows', dir: 'C:\\edl', watcherDir: 'C:\\kl', hour: 6, minute: 15 });
+  assert.match(win.content, /node\.exe/);
+  assert.match(win.content, /scripts\/watcher-cycle\.mjs --watcher-dir C:\\kl/);
+  const sys = renderJob({ job: 'watcher-cycle', target: 'systemd', dir: '/opt/e-nexus-staging/e-nexus-decision-layer', node: '/usr/bin/node', environment: 'staging', user: 'edl-staging', watcherDir: '/opt/e-nexus-staging/e-nexus-knowledge-layer', hour: 6, minute: 15 });
+  const service = sys.files[0].content;
+  assert.match(service, /ExecStart=\/usr\/bin\/node scripts\/watcher-cycle\.mjs --watcher-dir \/opt\/e-nexus-staging\/e-nexus-knowledge-layer/);
+  assert.match(service, /ReadWritePaths=\/opt\/e-nexus-staging\/e-nexus-knowledge-layer/);
+  assert.match(service, /ProtectSystem=strict/);
+  assert.ok(validateJobArgs({ ...mac, watcherDir: undefined }).some((e) => /--watcher-dir/.test(e)));
+  assert.ok(validateJobArgs({ ...mac, watcherDir: 'relative' }).some((e) => /absolute/.test(e)));
+  assert.ok(validateJobArgs({ ...mac, watcherDir: '/x; rm -rf /' }).some((e) => /not allowed/.test(e)));
+  assert.ok(validateJobArgs({ ...mac, webhook: 'credential:E-NEXUS/edl/x' }).some((e) => /webhook/.test(e)));
+  assert.ok(validateJobArgs({ ...mac, node: undefined }).some((e) => /launchd needs --node/.test(e)));
+});

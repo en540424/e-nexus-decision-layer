@@ -20,7 +20,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const JOBS = ['usage-digest', 'rotate-logs'];
+const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle'];
 const TARGETS = ['launchd', 'windows', 'systemd'];
 const UNSAFE = /["'`$\n\r;&|<>]/;
 const WEBHOOK = /^credential:E-NEXUS\/edl\/[a-z0-9-]{1,64}$/;
@@ -34,7 +34,7 @@ export function validateJobArgs(a) {
   const errors = [];
   if (!JOBS.includes(a.job)) errors.push(`--job must be ${JOBS.join('|')}`);
   if (!TARGETS.includes(a.target)) errors.push(`--target must be ${TARGETS.join('|')}`);
-  for (const k of ['dir', 'base', 'node']) {
+  for (const k of ['dir', 'base', 'node', 'watcherDir']) {
     if (a[k] === undefined) continue;
     if (!isAbs(a[k])) errors.push(`--${k} must be an absolute path`);
     else if (UNSAFE.test(a[k])) errors.push(`--${k} contains characters that are not allowed`);
@@ -61,6 +61,12 @@ export function validateJobArgs(a) {
     if (a.target !== 'launchd') errors.push('rotate-logs is for the Mac mini (launchd) only');
     if (!a.base) errors.push('rotate-logs needs --base');
   }
+  if (a.job === 'watcher-cycle') {
+    // MA-33-6（2026-10-02）：AI Infrastructure Watcher の 1 サイクル（scripts/watcher-cycle.mjs）。Watcher の置き場（e-nexus-knowledge-layer）は実機の絶対パスで受ける
+    if (!a.watcherDir) errors.push('watcher-cycle needs --watcher-dir <absolute path to e-nexus-knowledge-layer>');
+    if (a.target === 'launchd' && !a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定）');
+    if (a.webhook !== undefined) errors.push('watcher-cycle has no webhook（通知は SessionStart の 1 行と proposals/）');
+  }
   return errors;
 }
 
@@ -69,6 +75,11 @@ function commandOf(a) {
     const args = ['scripts/usage-digest.mjs', '--hours', '24', ...(a.onAnomaly === 'report' ? [] : ['--fail-on-anomaly'])];
     if (a.environment) args.push('--environment', a.environment);
     if (a.webhook) args.push('--webhook', a.webhook);
+    const node = a.node ?? (a.target === 'windows' ? 'node.exe' : null);
+    return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
+  }
+  if (a.job === 'watcher-cycle') {
+    const args = ['scripts/watcher-cycle.mjs', '--watcher-dir', a.watcherDir];
     const node = a.node ?? (a.target === 'windows' ? 'node.exe' : null);
     return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
@@ -94,6 +105,7 @@ export function renderJob(a) {
       'PrivateTmp=true',
       'ProtectSystem=strict',
       'ProtectHome=true',
+      ...(a.job === 'watcher-cycle' ? [`ReadWritePaths=${a.watcherDir}`] : []), // Watcher の観測・proposal と Knowledge の実測（data/state）だけ書ける
       'TimeoutStartSec=600',
       '',
     ].join('\n');
@@ -165,7 +177,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];
