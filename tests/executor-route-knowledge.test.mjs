@@ -40,7 +40,8 @@ const ctx = (cc, cx, { status = 'ok' } = {}) => ({
   facts: status === 'unavailable' ? {} : { executors: { status: 'ok', items: { 'claude-code': { registry_status: 'active', ...cc }, codex: { registry_status: 'active', ...cx } } } },
   authorities: status === 'ok' ? [{ origins: ['deterministic_extraction'], validation: ['unverified'], min_confidence: 1 }] : [], warnings: [], omitted: { unsafe_ids: 0, unsafe_values: 0 },
 });
-const LOCALS = [['healthy', 'effective'], ['degraded', 'effective'], ['unavailable', 'effective'], [null, 'unknown'], ['healthy', 'stale'], ['unavailable', 'stale']];
+// ['unknown', 'effective']＝probe が timeout・error だった観測（status は effective・値が unknown）。実際に起こる失敗経路
+const LOCALS = [['healthy', 'effective'], ['degraded', 'effective'], ['unavailable', 'effective'], ['unknown', 'effective'], [null, 'unknown'], ['healthy', 'stale'], ['unavailable', 'stale']];
 const EXTERNALS = [['healthy', 'effective'], ['unavailable', 'effective'], [null, 'unknown']];
 function* contexts() {
   yield { name: 'none', ctx: undefined };
@@ -59,7 +60,7 @@ test('Rules First の順序：Knowledge を見る rule は input だけの rule 
   assert.ok(RULES.slice(firstK).every((r) => Object.keys(r.when).some((k) => k.startsWith('knowledge_context'))));
 });
 
-test('単調性（反証）：全 input × 全 Knowledge 状態で、Knowledge は判断を緩めない・Human-only は不変・checked は local effective の時だけ・全組み合わせに rules が答える', () => {
+test('単調性（反証）：全 input × 全 Knowledge 状態で、Knowledge は判断を緩めない・Human-only は不変・checked は local effective の時だけ・全組み合わせに rules が答える（両 executor は同じ状態。混在〈claude healthy・codex unavailable〉は下の個別 test）', () => {
   const outcomeSchema = DT.schema.properties.outcome;
   let n = 0;
   for (const input of allInputs()) {
@@ -76,7 +77,7 @@ test('単調性（反証）：全 input × 全 Knowledge 状態で、Knowledge �
       if (base.human_review_required) assert.equal(o.human_review_required, true, 'review を外さない');
       if (o.recommended_executor !== 'human') assert.equal(o.recommended_executor, base.recommended_executor, 'Knowledge で別の executor へ振り替えない');
       if (o.availability_checked) assert.equal(c.local?.status, 'effective', `checked は local が effective の時だけ: ${c.name} ${rule.id}`);
-      if (c.local?.status === 'stale' || c.local?.status === 'unknown' || !c.local) assert.equal(o.availability, 'not_checked', `${c.name}`);
+      if (c.local?.status === 'stale' || c.local?.status === 'unknown' || !c.local || c.local.value === 'unknown') assert.equal(o.availability, 'not_checked', `${c.name}`);
       if (c.local?.status === 'effective' && c.local.value === 'unavailable') assert.equal(o.recommended_executor, 'human', 'このノードに無い executor へ振らない');
       if (c.local?.status === 'effective' && c.local.value === 'degraded') { assert.notEqual(o.recommended_executor, 'human', '設定未確認は human にしない'); assert.equal(o.human_review_required, true); }
     }
