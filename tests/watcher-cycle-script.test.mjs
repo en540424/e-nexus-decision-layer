@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -45,4 +46,29 @@ test('境界：Watcher・Knowledge を import しない（process 境界だけ�
   assert.ok(!/from ['"][^'"]*(knowledge-layer|watcher\/lib|sync\/)/.test(text));
   assert.ok(/ENV_NAMES/.test(text) && !/env:\s*process\.env\b/.test(text));
   assert.ok(!/fetch\(|node:https?/.test(text));
+});
+
+test('工程の要約：CLI の整形 JSON（複数行）も読む・stub の Watcher で全工程が通る（2026-10-02：要約が常に null だった不具合の回帰 test）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edl-wc-'));
+  fs.mkdirSync(path.join(dir, 'watcher'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'sync'), { recursive: true });
+  // stub：scan は整形 JSON、triage は requests を作らない、propose は line、handoff は --out に 1 行書く、observe は accepted
+  fs.writeFileSync(path.join(dir, 'watcher', 'cli.mjs'), [
+    "import fs from 'node:fs'; import path from 'node:path';",
+    "const [cmd, ...rest] = process.argv.slice(2);",
+    "if (cmd === 'scan') console.log(JSON.stringify({ status: 'complete', counts: { fetched: 2, skipped_interval: 1 } }, null, 2));",
+    "else if (cmd === 'triage') console.log(JSON.stringify({ ok: true, pending: 0 }, null, 2));",
+    "else if (cmd === 'propose') console.log(JSON.stringify({ ok: true, written: [], line: null }, null, 2));",
+    "else if (cmd === 'handoff') { const o = rest[rest.indexOf('--out') + 1]; fs.mkdirSync(path.dirname(o), { recursive: true }); fs.writeFileSync(o, '{\"x\":1}\\n'); }",
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'sync', 'cli.mjs'), "let t=''; process.stdin.on('data', (d) => { t += d; }).on('end', () => console.log(JSON.stringify({ ok: true, accepted: t.trim().split('\\n').length }, null, 2)));");
+  const r = run(['--watcher-dir', dir]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const out = JSON.parse(r.stdout);
+  const by = Object.fromEntries(out.results.map((x) => [x.id, x]));
+  assert.deepEqual(by.scan.summary.counts, { fetched: 2, skipped_interval: 1 }, '整形 JSON の要約が取れる');
+  assert.equal(by['triage-build'].summary.pending, 0);
+  assert.equal(by['triage-decide'].status, 'skipped', 'request が無ければ Gateway を呼ばない');
+  assert.equal(by.observe.summary.accepted, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

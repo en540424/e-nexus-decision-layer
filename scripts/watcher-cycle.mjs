@@ -54,6 +54,16 @@ if (flag('plan')) {
 }
 if (!fs.existsSync(watcherCli) || !fs.existsSync(syncCli)) { process.stderr.write(`watcher が見つからない: ${watcherCli}\n`); process.exit(2); }
 
+// 各工程の stdout から要約を取る。CLI は整形 JSON（複数行）か JSONL（handoff は record の並び）を出すので、
+// まず全体を 1 つの JSON として読み、だめなら最後の行を読む（2026-10-02：最終行だけを読んで整形 JSON の要約が常に null だった不具合を修正）
+function summarize(stdout) {
+  const text = String(stdout ?? '').trim();
+  let j = null;
+  try { j = JSON.parse(text); } catch { try { j = JSON.parse(text.split('\n').at(-1) ?? ''); } catch { j = null; } }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null;
+  return { ok: j.ok ?? null, status: j.status ?? null, counts: j.counts ?? null, pending: j.pending ?? null, written: j.written ?? null, accepted: j.accepted ?? null, line: j.line ?? null };
+}
+
 const ENV_NAMES = ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LANG', 'TZ'];
 const env = Object.fromEntries(ENV_NAMES.filter((k) => typeof process.env[k] === 'string').map((k) => [k, process.env[k]]));
 const results = [];
@@ -62,8 +72,7 @@ for (const s of steps) {
   if (s.when && !s.when()) { results.push({ id: s.id, status: 'skipped' }); continue; }
   const r = spawnSync(process.execPath, s.cmd, { cwd: s.cwd, encoding: 'utf8', env, windowsHide: true, timeout: 600_000, ...(s.stdinFile ? { input: fs.readFileSync(s.stdinFile, 'utf8') } : {}) });
   const ok = !r.error && !r.signal && s.okExit.includes(r.status);
-  let summary = null;
-  try { const j = JSON.parse(String(r.stdout ?? '').trim().split('\n').at(-1) ?? ''); summary = j && typeof j === 'object' ? { ok: j.ok ?? null, status: j.status ?? null, counts: j.counts ?? null, pending: j.pending ?? null, written: j.written ?? null, accepted: j.accepted ?? null, line: j.line ?? null } : null; } catch { summary = null; }
+  const summary = summarize(r.stdout);
   results.push({ id: s.id, status: ok ? (r.status === 1 ? 'partial' : 'ok') : 'failed', exit: r.status ?? null, signal: r.signal ?? null, error: r.error?.code ?? null, summary });
   if (!ok) { status = 'failed'; break; }
   if (r.status === 1) status = 'partial';
