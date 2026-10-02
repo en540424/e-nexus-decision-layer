@@ -12,7 +12,13 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = path.join(root, 'scripts', 'watcher-triage.mjs');
-const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', cwd: root, windowsHide: true, env: { PATH: process.env.PATH, Path: process.env.Path, SystemRoot: process.env.SystemRoot, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE } });
+// usage 計測は一時ファイルへ（test の判定を実運用の data/usage/usage.jsonl に書かない・2026-10-02 再監査で 26 件の混入を発見して修正）
+const USAGE_TMP = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'edl-wt-usage-')), 'usage.jsonl');
+const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', cwd: root, windowsHide: true, env: { PATH: process.env.PATH, Path: process.env.Path, SystemRoot: process.env.SystemRoot, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, EDL_USAGE_PATH: USAGE_TMP } });
+
+test('test 自身が実運用の usage を汚さない（EDL_USAGE_PATH は一時ファイル）', () => {
+  assert.ok(path.isAbsolute(USAGE_TMP) && USAGE_TMP.startsWith(os.tmpdir()));
+});
 const reqLine = (change_id, input) => JSON.stringify({ schema: 'enexus-watcher-triage-request-v1', id: 'trq_x', change_id, request: { contract_version: '1', decision_type: 'infra-change-triage', application_id: 'watcher', project_id: 'e-nexus-knowledge-layer', input } });
 
 test('watcher-triage script：request ごとに envelope を返す・rules で決まる（Jev なし）・human_review_required は tier human・--out で JSONL を書く', () => {
