@@ -121,6 +121,8 @@ test('knowledge-refresh：3 target とも refresh-state だけ・既定 6 時間
   assert.match(timer, /OnCalendar=\*-\*-\* 01\/6:30:00/);
   assert.match(timer, /Persistent=true/);
   assert.match(timer, /Description=Every 6h E-NEXUS knowledge-refresh/);
+  assert.equal(s.install[0], 'mkdir -p /home/en/e-nexus-knowledge-layer/data/state', 'ReadWritePaths の data/state は clone 直後に無い（gitignore）。無いと unit が起動しない');
+  assert.ok(!/sudo/.test(s.install[0]), '実行ユーザーで作る（root 所有にしない）');
 
   const mac = { job: 'knowledge-refresh', target: 'launchd', dir: '/Users/x/e-nexus-knowledge-layer', node: '/opt/homebrew/bin/node', path: '/opt/homebrew/bin:/usr/bin:/bin', everyHours: '4', hour: 7, minute: 30 };
   assert.deepEqual(validateJobArgs(mac), []);

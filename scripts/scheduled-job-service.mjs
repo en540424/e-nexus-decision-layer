@@ -149,7 +149,8 @@ export function renderJob(a) {
       filename: `${unit}.service`,
       content: service,
       files: [{ filename: `${unit}.service`, content: service }, { filename: `${unit}.timer`, content: timer }],
-      install: [`sudo cp ${unit}.service ${unit}.timer /etc/systemd/system/`, 'sudo systemctl daemon-reload', `sudo systemctl enable --now ${unit}.timer`],
+      // knowledge-refresh：ReadWritePaths の data/state は gitignore で、clone 直後には無い。無いと systemd は unit を起動できない（226/NAMESPACE）ので実行ユーザーで先に作る
+      install: [...(a.job === 'knowledge-refresh' ? [`mkdir -p ${a.dir}/data/state`] : []), `sudo cp ${unit}.service ${unit}.timer /etc/systemd/system/`, 'sudo systemctl daemon-reload', `sudo systemctl enable --now ${unit}.timer`],
     };
   }
   if (a.target === 'launchd') {
