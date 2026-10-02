@@ -10,7 +10,7 @@
       "additionalProperties": false,
       "properties": {
         "change_type": { "type": "string", "enum": ["availability_changed", "pricing_changed", "deprecation_notice_changed", "release_notes_changed", "docs_changed", "model_list_changed"], "description": "Watcher の change_type（情報源の kind から決定的に写したもの）" },
-        "subject_type": { "type": "string", "enum": ["provider", "service", "model", "seed"], "description": "変化した対象の種類。seed＝まだ使っていない候補（Human 追記）" },
+        "subject_type": { "type": "string", "enum": ["provider", "service", "model", "agent", "seed"], "description": "変化した対象の種類。agent＝E-NEXUS が作業を振っている executor（registries の agent_type=executor・registry_status=active。2026-10-02 追加）。seed＝まだ使っていない候補（Human 追記）" },
         "subject_in_use": { "type": "boolean", "description": "Knowledge に uses_provider／uses_model／depends_on の根拠 Relation がある（E-NEXUS が実際に使っている）" },
         "impact_reached": { "type": "boolean", "description": "Knowledge の impact（depth 2）が project／capability／agent／executor に 1 つ以上届いた" },
         "impact_projects": { "type": "integer", "minimum": 0, "description": "impact が届いた project の数" },

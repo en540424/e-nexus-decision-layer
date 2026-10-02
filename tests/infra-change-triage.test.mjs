@@ -22,7 +22,7 @@ const RULES = readJson('policies/routing/rules/infra-change-triage.json').rules;
 const SAFETY = readJson('policies/safety/human-only.json');
 const DT = loadDecisionType('infra-change-triage');
 const CHANGE_TYPES = ['availability_changed', 'pricing_changed', 'deprecation_notice_changed', 'release_notes_changed', 'docs_changed', 'model_list_changed'];
-const SUBJECT_TYPES = ['provider', 'service', 'model', 'seed'];
+const SUBJECT_TYPES = ['provider', 'service', 'model', 'agent', 'seed'];
 const INDICATORS = ['none', 'minor', 'major', 'critical', 'maintenance', 'unknown'];
 
 function* allInputs() {
@@ -47,7 +47,7 @@ test('infra-change-triage：登録済み（rules-reference・domain platform）�
   assert.ok(readJson('registries/projects.json').entries.some((e) => e.id === 'e-nexus-knowledge-layer'));
 });
 
-test('infra-change-triage rules：全 input（6×4×2×2×6×2）に rules が答える・不使用／impact 無しは record_only・major／critical だけ human_attention・deprecation／pricing／model 一覧だけ proposal・価値判定はしない', () => {
+test('infra-change-triage rules：全 input（6×5×2×2×6×2）に rules が答える・不使用／impact 無しは record_only・major／critical だけ human_attention・deprecation／pricing／model 一覧だけ proposal・価値判定はしない', () => {
   const outcomeSchema = DT.schema.properties.outcome;
   let n = 0;
   for (const input of allInputs()) {
@@ -59,6 +59,11 @@ test('infra-change-triage rules：全 input（6×4×2×2×6×2）に rules が�
     assert.deepEqual(validate(outcomeSchema, o), [], rule.id);
     assert.equal(o.value_assessed, false, '価値判定は rules では行わない');
     if (!input.subject_in_use) { assert.equal(o.triage, 'record_only', rule.id); assert.equal(o.relevance, 'none'); assert.equal(o.human_review_required, false); continue; }
+    if (input.subject_type === 'agent' && input.change_type === 'availability_changed' && ['major', 'critical'].includes(input.availability_indicator)) {
+      assert.equal(o.triage, 'human_attention', `使っている executor 自体の障害は impact の有無に関わらず Human の注意: ${rule.id}`);
+      assert.equal(o.human_review_required, true);
+      continue;
+    }
     if (!input.impact_reached) { assert.equal(o.triage, 'record_only', rule.id); assert.equal(o.relevance, 'indirect'); continue; }
     assert.equal(o.relevance, 'direct', rule.id);
     if (input.change_type === 'availability_changed') {
@@ -72,7 +77,7 @@ test('infra-change-triage rules：全 input（6×4×2×2×6×2）に rules が�
     }
     if (input.change_type !== 'availability_changed') assert.notEqual(o.triage, 'human_attention', 'human_attention は稼働障害だけ');
   }
-  assert.equal(n, 6 * 4 * 2 * 2 * 6 * 2);
+  assert.equal(n, 6 * 5 * 2 * 2 * 6 * 2);
   assert.ok(RULES.at(-1).id === 'default-record-only' && Object.keys(RULES.at(-1).when).length === 0, '最後は catch-all');
 });
 
@@ -132,5 +137,19 @@ test('infra-change-triage 入口の検査：未知 field・必須欠落・不正
   const e = await gw.decide(req({ ...base, summary: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA' }), { via: 'cli' });
   assert.equal(e.ok, false);
   assert.equal(e.error.code, 'INVALID_ENVELOPE');
+  assert.equal(calls.n, 0);
+});
+
+test('infra-change-triage：executor（agent）のベンダー障害は impact 無しでも human_attention・使っていない agent や軽微な揺れは record_only（2026-10-02）', async () => {
+  const { engine, calls } = engineWithCountingJev();
+  const gw = createGateway({ engine, env: {} });
+  const base = { change_type: 'availability_changed', subject_type: 'agent', subject_in_use: true, impact_reached: false, impact_projects: 0, availability_indicator: 'major', subject_id: 'agent:claude-code' };
+  const major = await gw.decide(req(base), { via: 'sdk' });
+  assert.equal(major.decision.outcome.triage, 'human_attention');
+  assert.equal(major.decision.tier, 'human');
+  assert.equal((await gw.decide(req({ ...base, availability_indicator: 'minor' }), { via: 'sdk' })).decision.outcome.triage, 'record_only');
+  assert.equal((await gw.decide(req({ ...base, subject_in_use: false }), { via: 'sdk' })).decision.outcome.triage, 'record_only', 'planned の executor（使っていない）は記録のみ');
+  assert.equal((await gw.decide(req({ ...base, change_type: 'release_notes_changed', availability_indicator: 'unknown' }), { via: 'sdk' })).decision.outcome.triage, 'record_only');
+  assert.ok(!/切替|switch|recommend/i.test(major.decision.outcome.note.replace('executor の切替は提案しない', '')), 'executor の切替を提案しない');
   assert.equal(calls.n, 0);
 });
