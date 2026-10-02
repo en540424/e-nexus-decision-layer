@@ -98,6 +98,13 @@
       "final_action": "human-only",
       "final_action_ref": "連絡・送信は常に Human の署名付き承認。本 decision_type は優先度付けのみ",
       "description": "CRM contact 1件の lead_intent / lead_priority / service_fit / b2b_b2c / reply_classification。PII を渡さない（subject_ref＝contact_ref・カテゴリ・件数だけ）。consent・購読・spam・苦情は rules → Jev。call-triage（ai-phone）と併存。2026-09-29 予約から実働化（FB-04）"
+    },
+    "infra-change-triage": {
+      "domain": "platform",
+      "schema": "schemas/platform/infra-change-triage.schema.json",
+      "status": "rules-reference",
+      "candidates": null,
+      "description": "AI Infrastructure Watcher の変化の仕分け（Vault MA-33-3。2026-10-01 名前予約→2026-10-02 実装）。Watcher（e-nexus-knowledge-layer/watcher）が検出した外部 AI／開発基盤の変化 1 件を、Knowledge / Relationship Layer の impact の事実と変化の種類から record_only／proposal_candidate／human_attention へ型付きで仕分ける参考値。rules は catch-all まで決定的に答える（Jev へ流さない）。価値判定（置換・追加・コスト・性能・保守性・PoC）は行わず value_assessed=false。承認・切替・deploy・契約・課金は返せない（forbidden keys。Watcher は発見→比較→影響分析→提案まで）"
     }
   },
   "reserved_decision_types": {
@@ -120,10 +127,6 @@
     "next-best-action": {
       "domain": "growth",
       "description": "nurture vs sales / next_best_action / cross_sell_fit。AI Company V1 §8 Growth 手順の補助。実行は Human、improvement への記録は Claude Code 本体。同 §5"
-    },
-    "infra-change-triage": {
-      "domain": "platform",
-      "description": "AI Infrastructure Watcher（Vault MA-33・2026-10-01 名前予約）。外部 AI／開発基盤の変化（breaking／deprecation／price／new capability／policy／security）が E-NEXUS の何に繋がるか（Knowledge / Relationship Layer の impact）と置換・追加価値・PoC 価値を型付きで返す。Rules First。proposal を返すだけで承認・切替・deploy・契約は返せない（Watcher は発見→比較→影響分析→提案まで）。実装は MA-33-3"
     }
   }
 }

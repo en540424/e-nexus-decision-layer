@@ -1,0 +1,37 @@
+{
+  "$id": "edl/platform/infra-change-triage",
+  "title": "InfraChangeTriage",
+  "description": "rules-reference（Vault MA-33-3・2026-10-01 名前予約→2026-10-02 実装）。AI Infrastructure Watcher（repo e-nexus-knowledge-layer の watcher/）が検出した外部 AI／開発基盤の変化 1 件を、E-NEXUS への関係（Knowledge / Relationship Layer の impact の事実）と変化の種類から『記録のみ／proposal 候補／Human の注意』へ型付きで仕分ける参考値。上位正本は Vault 構想正本 Part B §18（Rules First・AI は候補の関係判定だけ）・技術スタック正本 §3-10-5／§3-10-6。input は Watcher が Knowledge から引いた事実だけ（判断・推奨を含まない）。rules は全 input に答える（catch-all で終わる＝Jev へ流さない・課金なし）。価値判定（置換価値・追加価値・コスト・性能・保守性・PoC 価値）は rules では行わず value_assessed は常に false（Jev 接続・Human 判断は後続。proposal の価値欄は『未評価』と明示する）。承認・切替・deploy・契約・課金は返せない（forbidden keys・Watcher は発見→比較→影響分析→提案まで）。human_review_required=true は engine が tier=human に上げる（human-only.json force_human_when_outcome_keys）。",
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "object",
+      "required": ["change_type", "subject_type", "subject_in_use", "impact_reached"],
+      "additionalProperties": false,
+      "properties": {
+        "change_type": { "type": "string", "enum": ["availability_changed", "pricing_changed", "deprecation_notice_changed", "release_notes_changed", "docs_changed", "model_list_changed"], "description": "Watcher の change_type（情報源の kind から決定的に写したもの）" },
+        "subject_type": { "type": "string", "enum": ["provider", "service", "model", "seed"], "description": "変化した対象の種類。seed＝まだ使っていない候補（Human 追記）" },
+        "subject_in_use": { "type": "boolean", "description": "Knowledge に uses_provider／uses_model／depends_on の根拠 Relation がある（E-NEXUS が実際に使っている）" },
+        "impact_reached": { "type": "boolean", "description": "Knowledge の impact（depth 2）が project／capability／agent／executor に 1 つ以上届いた" },
+        "impact_projects": { "type": "integer", "minimum": 0, "description": "impact が届いた project の数" },
+        "impact_includes_common_platform": { "type": "boolean", "description": "impact が COMMON_PLATFORM_CORE の project に届く" },
+        "availability_indicator": { "type": "string", "enum": ["none", "minor", "major", "critical", "maintenance", "unknown"], "description": "status 情報源（Statuspage）の indicator。status 以外の変化は unknown" },
+        "change_id": { "type": "string", "maxLength": 40, "description": "Watcher の change id（chg_<hash>）。判断には使わない（結び付けの鍵）" },
+        "subject_id": { "type": "string", "maxLength": 200, "description": "Knowledge の Entity id（provider:… 等）または seed id。判断には使わない" },
+        "summary": { "type": "string", "maxLength": 200, "description": "変化の短い説明（diff の added の先頭など。Secret・PII・本文の全文・URL の query・ローカルパスを入れない）" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["triage", "relevance", "human_review_required", "value_assessed"],
+      "additionalProperties": false,
+      "properties": {
+        "triage": { "type": "string", "enum": ["record_only", "proposal_candidate", "human_attention"], "description": "record_only＝記録だけ（proposal を作らない）／proposal_candidate＝Watcher が proposal を生成してよい（採否は Human）／human_attention＝稼働障害など Human が今見るべき事実（proposal ではなく通知）" },
+        "relevance": { "type": "string", "enum": ["none", "indirect", "direct"], "description": "E-NEXUS との関係（Knowledge の事実から）：none＝使っていない／indirect＝使っているが impact が届かない／direct＝impact が届く" },
+        "human_review_required": { "type": "boolean" },
+        "value_assessed": { "type": "boolean", "description": "価値判定（置換・追加・コスト・性能・保守性・PoC）を行ったか。rules では常に false" },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}
