@@ -20,6 +20,8 @@ test('usage-digest（launchd）：毎日の StartCalendarInterval・READ-ONLY �
   assert.ok(!/https?:\/\/(?!www\.apple\.com)/.test(r.content), 'no URL in the definition');
   assert.ok(!/TOKEN=|KEY=|Bearer/.test(r.content));
   assert.ok(r.install.every((l) => !/sudo/.test(l)), 'user LaunchAgent (no sudo)');
+  assert.match(r.content, /<key>ProcessType<\/key><string>Background<\/string>/, '同居する本番 workload に CPU を譲る');
+  assert.match(r.content, /<key>LowPriorityIO<\/key><true\/>/);
 });
 
 test('usage-digest（windows）：Task Scheduler の毎日 trigger・10 分で打ち切り', () => {
@@ -154,4 +156,32 @@ test('knowledge-refresh：--every-hours は 24 の約数（1〜12）だけ・lau
   assert.ok(validateJobArgs({ job: 'watcher-cycle', target: 'windows', dir: 'C:\\edl', watcherDir: 'C:\\kl', hour: 6, minute: 5, vault: 'C:\\v' }).length > 0);
   // 従来の job は毎日 1 回のまま
   assert.match(renderJob({ job: 'usage-digest', target: 'windows', dir: 'C:\\edl', hour: 6, minute: 5 }).content, /-Daily -At '06:05'/);
+});
+
+test('host-health（2026-10-21）：Mac mini（launchd）だけ・毎時 :20／:50 の StartCalendarInterval 配列・ログイン直後は走らせない・Background・webhook は資格情報ストアの名前だけ', () => {
+  const a = { job: 'host-health', target: 'launchd', dir: MAC.dir, node: MAC.node, hour: 7, minute: 30 };
+  assert.deepEqual(validateJobArgs(a), []);
+  const r = renderJob(a);
+  assert.equal(r.filename, 'com.e-nexus.host-health.plist');
+  assert.match(r.content, /<string>\/opt\/homebrew\/bin\/node<\/string>\s*<string>scripts\/host-health\.mjs<\/string>\s*<\/array>/);
+  assert.match(r.content, /<key>StartCalendarInterval<\/key><array><dict><key>Minute<\/key><integer>20<\/integer><\/dict><dict><key>Minute<\/key><integer>50<\/integer><\/dict><\/array>/);
+  assert.ok(!/<key>Hour<\/key>/.test(r.content), '毎時（--hour は使わない）');
+  assert.match(r.content, /<key>RunAtLoad<\/key><false\/>/, '停電後のログイン直後（Trading Lab が VM を戻している時）に重ねない');
+  assert.match(r.content, /<key>ProcessType<\/key><string>Background<\/string>/);
+  assert.ok(r.install.every((l) => !/sudo/.test(l)));
+  const w = renderJob({ ...a, minutes: '5', webhook: 'credential:E-NEXUS/edl/host-health-webhook' });
+  assert.match(w.content, /<array><dict><key>Minute<\/key><integer>5<\/integer><\/dict><\/array>/);
+  assert.match(w.content, /<string>--webhook<\/string>\s*<string>credential:E-NEXUS\/edl\/host-health-webhook<\/string>/);
+  assert.ok(!/https?:\/\/(?!www\.apple\.com)/.test(w.content));
+});
+
+test('host-health：拒否（windows・systemd・分の形・URL の webhook・node の場所が無い）／--minutes は host-health だけ', () => {
+  const a = { job: 'host-health', target: 'launchd', dir: MAC.dir, node: MAC.node, hour: 7, minute: 30 };
+  assert.ok(validateJobArgs({ ...a, target: 'windows' }).some((e) => e.includes('launchd) only')), 'ホスト固有（Windows・VPS には置かない）');
+  assert.ok(validateJobArgs({ ...a, target: 'systemd', environment: 'staging', user: 'edl' }).some((e) => e.includes('launchd) only')));
+  for (const m of ['', '60', '20,20', '1,2,3,4,5,6,7', 'x', '-5']) assert.ok(validateJobArgs({ ...a, minutes: m }).some((e) => e.includes('--minutes')), m);
+  assert.deepEqual(validateJobArgs({ ...a, minutes: '0,15,30,45' }), []);
+  assert.ok(validateJobArgs({ ...a, webhook: 'https://hooks.example/x' }).some((e) => e.includes('--webhook')));
+  assert.ok(validateJobArgs({ ...a, node: undefined }).some((e) => e.includes('--node')));
+  assert.ok(validateJobArgs({ ...MAC, minutes: '20' }).some((e) => e.includes('--minutes is for host-health only')));
 });

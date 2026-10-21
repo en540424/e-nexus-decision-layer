@@ -11,6 +11,7 @@
  *        rotate-logs ：--base <repo を並べた親フォルダの絶対パス>（launchd のみ）
  *        knowledge-refresh（2026-10-03）：--dir は e-nexus-knowledge-layer の絶対パス。[--every-hours 6]（24 の約数 1〜12）[--vault <Vault の絶対パス>]
  *        launchd・systemd は --path 必須（executor の CLI を探す PATH。既定の PATH には npm／Homebrew の global が無く、全 executor が not_installed になる）
+ *        host-health（2026-10-21・MA-22 工程 3）：launchd のみ。[--minutes 20,50]（毎時の分・1〜6 個）[--webhook credential:E-NEXUS/edl/<name>]
  *
  * job：
  *   usage-digest＝`node scripts/usage-digest.mjs --hours 24 --fail-on-anomaly`（FB-18。READ-ONLY・課金なし。webhook は資格情報ストアの名前だけ）
@@ -19,6 +20,8 @@
  *     executor の local 実測（health.local.*）は ttl 1 日で、同じ値は ttl/2 を過ぎるまで書き直さない（design.md §5）。
  *     既定 6 時間ごと＝書き直しは観測から 12〜18 時間後、stale まで 6 時間以上の余裕（1 回の取りこぼしに耐える）。
  *     PC が止まっていた間の分は起動後に 1 回走る（Windows StartWhenAvailable・systemd Persistent・launchd は wake 後に実行）
+ *   host-health ＝`node scripts/host-health.mjs`（Mac mini のホスト監視。READ-ONLY・Trading Lab の領域は見ない・通知は --webhook の時だけ）。
+ *     毎時 :20・:50（H1 足の処理がある :00 前後を避ける）。ログイン直後には走らせない（停電後の復旧と重ねない）
  * --on-anomaly report：`--fail-on-anomaly` を付けない（異常は出力するが exit 0）。Jev を切った staging は Human 率が設計上 100% で、
  * 毎日「異常」扱いになるため（既定は fail）。
  * 実機依存の値（パス・node の場所・PATH・時刻）は引数で受け取り、推測で埋めない。定義に Secret を書かない。
@@ -26,8 +29,9 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh'];
+export const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh', 'host-health'];
 const EVERY_HOURS = [1, 2, 3, 4, 6, 8, 12]; // 24 の約数だけ（毎日同じ時刻に揃う）
+const DEFAULT_HOST_HEALTH_MINUTES = '20,50';
 const TARGETS = ['launchd', 'windows', 'systemd'];
 const UNSAFE = /["'`$\n\r;&|<>]/;
 const WEBHOOK = /^credential:E-NEXUS\/edl\/[a-z0-9-]{1,64}$/;
@@ -36,6 +40,13 @@ function xml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 const isAbs = (p) => typeof p === 'string' && (path.posix.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p));
+/** host-health の毎時の分（1〜6 個・0〜59・重複なし）。形が違えば null */
+function minutesOf(a) {
+  const parts = String(a.minutes ?? DEFAULT_HOST_HEALTH_MINUTES).split(',');
+  const ms = parts.map((x) => (/^\d{1,2}$/.test(x.trim()) ? Number(x) : NaN));
+  if (ms.length < 1 || ms.length > 6 || ms.some((m) => !Number.isInteger(m) || m > 59) || new Set(ms).size !== ms.length) return null;
+  return ms;
+}
 
 export function validateJobArgs(a) {
   const errors = [];
@@ -74,6 +85,14 @@ export function validateJobArgs(a) {
     if (a.target === 'launchd' && !a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定）');
     if (a.webhook !== undefined) errors.push('watcher-cycle has no webhook（通知は SessionStart の 1 行と proposals/）');
   }
+  if (a.minutes !== undefined && a.job !== 'host-health') errors.push('--minutes is for host-health only');
+  if (a.job === 'host-health') {
+    // 2026-10-21（MA-22 工程 3）：Mac mini のホスト監視。ホスト固有なので launchd だけ（Windows・VPS には置かない）
+    if (a.target !== 'launchd') errors.push('host-health is for the Mac mini (launchd) only');
+    else if (!a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定）');
+    if (a.webhook !== undefined && !WEBHOOK.test(a.webhook)) errors.push('--webhook must be credential:E-NEXUS/edl/<name>（URL を引数に置かない）');
+    if (!minutesOf(a)) errors.push('--minutes must be 1-6 distinct minutes 0-59 (e.g. 20,50)');
+  }
   if (a.everyHours !== undefined && a.job !== 'knowledge-refresh') errors.push('--every-hours is for knowledge-refresh only');
   if (a.vault !== undefined && a.job !== 'knowledge-refresh') errors.push('--vault is for knowledge-refresh only');
   if (a.job === 'knowledge-refresh') {
@@ -97,6 +116,10 @@ function commandOf(a) {
     if (a.webhook) args.push('--webhook', a.webhook);
     const node = a.node ?? (a.target === 'windows' ? 'node.exe' : null);
     return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
+  }
+  if (a.job === 'host-health') {
+    const args = ['scripts/host-health.mjs', ...(a.webhook ? ['--webhook', a.webhook] : [])];
+    return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'watcher-cycle') {
     const args = ['scripts/watcher-cycle.mjs', '--watcher-dir', a.watcherDir];
@@ -168,9 +191,14 @@ export function renderJob(a) {
         ...cmd.map((x) => `    <string>${xml(x)}</string>`),
         '  </array>',
         `  <key>WorkingDirectory</key><string>${xml(a.dir)}</string>`,
-        ...(every
-          ? [`  <key>StartInterval</key><integer>${every * 3600}</integer>`, '  <key>RunAtLoad</key><true/>'] // ログイン直後にも 1 回（止まっていた間に stale になった実測を戻す）
-          : [`  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>`, '  <key>RunAtLoad</key><false/>']),
+        // Mac mini は本番の workload（2026-10-21〜 Trading Lab の LIVE VM）と同居する。定期 job は CPU・I/O を譲る（launchd の Background＝強い資源制限・低優先度 I/O）
+        '  <key>ProcessType</key><string>Background</string>',
+        '  <key>LowPriorityIO</key><true/>',
+        ...(a.job === 'host-health'
+          ? [`  <key>StartCalendarInterval</key><array>${minutesOf(a).map((m) => `<dict><key>Minute</key><integer>${m}</integer></dict>`).join('')}</array>`, '  <key>RunAtLoad</key><false/>'] // 毎時の決まった分だけ
+          : every
+            ? [`  <key>StartInterval</key><integer>${every * 3600}</integer>`, '  <key>RunAtLoad</key><true/>'] // ログイン直後にも 1 回（止まっていた間に stale になった実測を戻す）
+            : [`  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>`, '  <key>RunAtLoad</key><false/>']),
         `  <key>StandardOutPath</key><string>${xml(`${a.dir}/data/${a.job}.out.log`)}</string>`,
         `  <key>StandardErrorPath</key><string>${xml(`${a.dir}/data/${a.job}.err.log`)}</string>`,
         ...(a.path ? [`  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(a.path)}</string></dict>`] : []),
@@ -204,7 +232,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];
