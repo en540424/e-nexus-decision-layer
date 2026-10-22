@@ -18,6 +18,9 @@ Mac mini は **2026-09-29 に到着済み（Human 申告）**。実機依存の�
 | `rotate-logs.sh` | 常駐ログの世代管理（copy → truncate・sudo 不要） | ログだけ |
 | `../../scripts/scheduled-job-service.mjs` | usage digest・rotate-logs を毎日動かす LaunchAgent の定義を**生成だけ** | しない |
 | `../../scripts/gateway-service.mjs` | HTTP Gateway の LaunchAgent の定義を**生成だけ**（launchd は `--node` か `--path` が必須） | しない |
+| `rea.sh`（2026-10-22） | REA（npm `rea-agents`）を版を固定して `~/e-nexus-runtime/tools/rea/<版>` へ入れる（optional 依存＝Frida・PTY の native 部品なし・install script なし・`npm audit signatures`）・状態・外す。agent への登録はしない（`rea-agents setup` は Claude Code の user 範囲に書くので使わない。1 フォルダの local 範囲の手順は `register-hint`） | `tools/rea` だけ |
+| `../../scripts/network-baseline.mjs`（2026-10-22） | 経路・DNS・VPN・待ち受けの基準値を保存し（IP が入るので repo の外・mode 600）、後で比べて想定どおり／想定外を分ける（`--expect tailscale`）。Tailscale・リモートログイン等の前後に使う | しない（READ-ONLY） |
+| `../../scripts/hermes-service.mjs`（2026-10-22） | Hermes を専用ユーザーで動かす一式（ユーザー作成・Vault の写し・版を固定した導入・`/etc/hermes` の固定設定・wrapper・LaunchDaemon・検収）を**生成だけ**。実行・登録は Human（順番は生成物の README.txt） | しない |
 
 Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bash -n`、`doctor.sh`（macOS 以外の分岐）、`make-bundles.sh`（en-product-hub）、`bootstrap.sh`（GitHub 4 repo＋bundle 1 repo の実 clone・2 回目は無変更）、`validate.sh`（実 repo 5 つの test 全通過）、`rotate-logs.sh`、生成器の node test。**macOS でしか動かない部分（`security`・`launchctl`・`fdesetup`・`pmset`）は未実行**＝下の「実機で確かめること」。shellcheck は手元に無く未実施。
 

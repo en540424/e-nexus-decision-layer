@@ -10,10 +10,12 @@
 set -u
 
 BASE=''; HERMES_USER=''
+# 値の無い引数で shift 2 が失敗すると、bash（macOS の /bin/sh）では同じ引数のまま無限に回る
+need() { [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --base) BASE="${2:-}"; shift 2 ;;
-    --hermes-user) HERMES_USER="${2:-}"; shift 2 ;;
+    --base) need "$@"; BASE="$2"; shift 2 ;;
+    --hermes-user) need "$@"; HERMES_USER="$2"; shift 2 ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -214,12 +216,18 @@ if [ "$IS_MAC" -eq 1 ]; then
     bs=$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState": *"\([A-Za-z]*\)".*/\1/p' | head -n 1)
     say INFO "tailscale: installed（BackendState=${bs:-unknown}）"
   else
-    say INFO "tailscale: not installed（MA-24 Q6〜Q8 の後）"
+    say INFO "tailscale: not installed（Q6・Q7 と保守窓の後。前後で scripts/network-baseline.mjs）"
   fi
   # Hermes は専用ユーザーで動かす（同じ user だと Claude Code の資格情報と home 全体に届く：MA-24 §7-1・Hermes 公式 docs）
   if has hermes || [ -d "$HOME/.hermes" ]; then say WARN "hermes: この user に Hermes がある（MA-24 §7-1：専用ユーザーで動かす）"; else say INFO "hermes: この user には無い"; fi
   if [ -n "$HERMES_USER" ]; then
     if id "$HERMES_USER" >/dev/null 2>&1; then say INFO "hermes user ${HERMES_USER}: exists"; else say INFO "hermes user ${HERMES_USER}: not found"; fi
+  fi
+  # REA は deploy/macos/rea.sh で Mac Runtime の領域へ。Claude Code の user 範囲の登録は同じ OS user の全 project に出る（2026-10-22）
+  rea_cur=$(readlink "$HOME/e-nexus-runtime/tools/rea/current" 2>/dev/null)
+  if [ -n "$rea_cur" ]; then say INFO "rea: ${rea_cur}（deploy/macos/rea.sh）"; else say INFO "rea: not installed by deploy/macos/rea.sh"; fi
+  if node -e 'const j=require(process.argv[1]);process.exit(Object.keys(j.mcpServers||{}).some((k)=>/^rea$|rea-agents|reverse-engineer/i.test(k))?0:1)' "$HOME/.claude.json" 2>/dev/null || ls -d "$HOME/.claude/skills/"*reverse-engineer* >/dev/null 2>&1; then
+    say WARN "rea: Claude Code の user 範囲に登録がある（同じ OS user の全 project に出る。local 範囲へ：sh deploy/macos/rea.sh register-hint）"
   fi
   # 別のローカルユーザーは主グループが staff になり、group に読める home の中へ入れる
   hm=$(stat -f '%Lp' "$HOME" 2>/dev/null)

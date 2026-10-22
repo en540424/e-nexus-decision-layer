@@ -48,10 +48,10 @@ const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const SCHEDULED_LABELS = JOBS.filter((j) => j !== 'host-health').map((j) => `com.e-nexus.${j}`);
 const GiB = 1024 ** 3;
 
-/** 許可したコマンドだけを shell なしで実行する。失敗しても reject しない（code・stdout・timedOut を返す） */
-export function makeRunner({ execFileImpl = execFile, timeoutMs = COMMAND_TIMEOUT_MS } = {}) {
+/** 許可したコマンドだけを shell なしで実行する。失敗しても reject しない（code・stdout・timedOut を返す）。allowed は network-baseline も使う */
+export function makeRunner({ execFileImpl = execFile, timeoutMs = COMMAND_TIMEOUT_MS, allowed = ALLOWED_BINS } = {}) {
   return (bin, args) => {
-    if (!ALLOWED_BINS.includes(bin)) return Promise.reject(new Error(`command not allowed: ${bin}`));
+    if (!allowed.includes(bin)) return Promise.reject(new Error(`command not allowed: ${bin}`));
     return new Promise((resolve) => {
       execFileImpl(bin, args, { timeout: timeoutMs, encoding: 'utf8', maxBuffer: 256 * 1024, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LC_ALL: 'C' } }, (err, stdout) => {
         if (!err) { resolve({ code: 0, stdout: String(stdout ?? ''), timedOut: false }); return; }
