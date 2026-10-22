@@ -132,7 +132,7 @@ description: 作業後にObsidian用の作業ログを生成する（Obsidianが
 
 積む例（Project statusの変更・現在地／次にやる1件の更新・task／milestoneの追加や状態変更・ideaの登録や状態変更・Project Type初回登録・事業イベント）と、積まない例（文言修正・誤字・内部リファクタ・Hubの現在地に影響しない変更・未確定のもの）の正本は[[AI-Workflow-System/07_project-kits/AI開発環境改善マスタープラン_EN-Product-Hub構想_2026-08-30]]§60-3-3であり、ここに重複記載しない。commit前ゲートとの関係は[[AI-Workflow-System/01_harness/最小ハーネス運用_正本]]§19-7参照。
 
-**Claude Codeが行うのは送信箱へ積むところまで。** `sync-push`・Hubの更新ボタンはHuman-only。報告には「Hubへ反映しました」ではなく**「Hubに更新が◯件届いています。更新ボタンを押してください」**と書く。Humanの反映操作は`hub-update`の1コマンド（同正本§60-4）。
+**Claude Codeは`sync-push`まで行う**（同正本§60-3-6）。Hubの更新ボタン・`hub-update`はHumanが任意の時に行う。報告は「`sync-push`実行済み」だけ。更新ボタンの催促・同期待ち件数の報告・「Hubへ反映しました」は書かない（同正本§60-3-7。2026-10-07改訂）。
 
 ## Notion用フォーマット（ユーザーが明示的に依頼した場合のみ使用。標準では生成しない）
 
