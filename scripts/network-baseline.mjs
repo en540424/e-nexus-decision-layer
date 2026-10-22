@@ -254,7 +254,7 @@ export function validateArgs(a, { repoRoot = REPO } = {}) {
     else if (TRADING_LAB_PATH.test(a[k])) errors.push(`--${k}: Trading Lab の領域には置かない・読まない`);
   }
   // 基準値には IP が入る。この repo は public なので、repo の中には保存しない（git add の事故を防ぐ）
-  if (a.out && path.posix.isAbsolute(a.out) && `${path.resolve(a.out)}/`.startsWith(`${repoRoot}/`)) errors.push('--out must be outside the repository（IP が入るので repo に置かない）');
+  if (a.out && path.posix.isAbsolute(a.out) && `${path.posix.resolve(a.out)}/`.startsWith(`${repoRoot}/`)) errors.push('--out must be outside the repository（IP が入るので repo に置かない）');
   if (a.out && existsSync(a.out)) errors.push('--out already exists（基準値は上書きしない。別の名前にする）');
   for (const p of a.expect) if (!PROFILES.includes(p)) errors.push(`--expect must be ${PROFILES.join('|')}`);
   return errors;

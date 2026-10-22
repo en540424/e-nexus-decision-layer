@@ -208,12 +208,16 @@ test('引数：--out は必須・絶対パス・上書きしない・Trading Lab
   try {
     const existing = path.join(dir, 'b.json');
     writeFileSync(existing, '{}');
+    // 本体は macOS 専用で POSIX の絶対パスだけを受け付ける。--before は存在を確かめないので、OS に依らない POSIX の値にする
+    // （Windows の一時フォルダは C:\ で始まり、全体の npm test を Windows で回すと落ちていた。2026-10-22）
+    const before = '/tmp/edl-netbase/before.json';
     assert.match(validateArgs(parseArgs(['snapshot'])).join('\n'), /needs --out/);
     assert.match(validateArgs(parseArgs(['snapshot', '--out', 'rel.json'])).join('\n'), /absolute/);
-    assert.match(validateArgs(parseArgs(['snapshot', '--out', existing])).join('\n'), /already exists/);
+    // 実在する POSIX の絶対パスが要るので、POSIX の OS だけで確かめる
+    if (path.sep === '/') assert.match(validateArgs(parseArgs(['snapshot', '--out', existing])).join('\n'), /already exists/);
     assert.match(validateArgs(parseArgs(['snapshot', '--out', '/Users/x/Parallels/n.json'])).join('\n'), /Trading Lab/);
-    assert.match(validateArgs(parseArgs(['compare', '--before', existing, '--expect', 'exit-node'])).join('\n'), /--expect must be/);
-    assert.deepEqual(validateArgs(parseArgs(['compare', '--before', existing, '--expect', 'tailscale,remote-login'])), []);
+    assert.match(validateArgs(parseArgs(['compare', '--before', before, '--expect', 'exit-node'])).join('\n'), /--expect must be/);
+    assert.deepEqual(validateArgs(parseArgs(['compare', '--before', before, '--expect', 'tailscale,remote-login'])), []);
     assert.throws(() => parseArgs(['compare', '--bogus', 'x']), /unknown argument/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -27,7 +27,9 @@ function withHome(fn) {
 test('install：版は x.y.z だけ・Trading Lab の領域と相対パスを拒否（ネットワークに出る前に止まる）', { skip: !hasSh }, () => withHome((home) => {
   assert.equal(rea(home, 'install', '--version', 'latest').code, 2);
   assert.equal(rea(home, 'install', '--version', '^6.7.0').code, 2);
-  const tl = rea(home, 'install', '--version', '6.7.0', '--prefix', `${home}/Parallels/rea`);
+  // rea.sh は POSIX の絶対パスだけを受け付ける。Windows（Git Bash）では一時フォルダの C:\… を /c/… に直して渡す（2026-10-22）
+  const shHome = process.platform === 'win32' ? home.replace(/^([A-Za-z]):[\\/]/, (_, d) => `/${d.toLowerCase()}/`).replace(/\\/g, '/') : home;
+  const tl = rea(home, 'install', '--version', '6.7.0', '--prefix', `${shHome}/Parallels/rea`);
   assert.equal(tl.code, 2);
   assert.match(tl.out, /Trading Lab/);
   assert.equal(rea(home, 'install', '--version', '6.7.0', '--prefix', 'rel/rea').code, 2);
