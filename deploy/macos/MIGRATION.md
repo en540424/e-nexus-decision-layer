@@ -12,11 +12,12 @@ Mac mini は **2026-09-29 に到着済み（Human 申告）**。実機依存の�
 | `repos.conf` | 置く repo の一覧（source＝github／bundle・test の種類） | — |
 | `make-bundles.sh` | remote の無い repo（en-product-hub）を git bundle にする（Windows の Git Bash で実行） | しない |
 | `bootstrap.sh` | 無い repo だけ clone（github は `--owner`・bundle は `--bundle-dir`）・依存のある repo だけ `npm ci`。既存 repo には触らない | clone・npm ci だけ |
-| `doctor.sh` | 前提（node≥20・python≥3.10・git・security・launchctl）・有料鍵が env に無いこと・Keychain の有無・repo の状態・LaunchAgent・FileVault／自動ログイン／停電後の自動起動 | しない（READ-ONLY） |
+| `doctor.sh` | 前提（node≥20・python≥3.10・git・security・launchctl）・有料鍵が env に無いこと・Keychain の有無・repo の状態・LaunchAgent・FileVault／自動ログイン／停電後の自動起動。（2026-10-21）「ホストの安全」節（主回線・ファイアウォール・外から届く待ち受け・リモートログイン・UPS・電源・自動更新・ディスク・メモリ・定期 job 等。PASS／INFO／WARN だけで FAIL は増やさない） | しない（READ-ONLY） |
 | `keychain-edl.sh` | Decision Layer 用 Secret（`E-NEXUS/edl/*`）の Keychain 登録・有無・削除（値はマスク入力だけ） | [Human]・TTY |
 | `validate.sh` | 全 repo の test・OpenMontage 連携の unittest・有料鍵の境界（probe）・watcher の状態・（任意）Gateway の /health・/ready | しない |
 | `rotate-logs.sh` | 常駐ログの世代管理（copy → truncate・sudo 不要） | ログだけ |
-| `../../scripts/scheduled-job-service.mjs` | usage digest・rotate-logs を毎日動かす LaunchAgent の定義を**生成だけ** | しない |
+| `../../scripts/scheduled-job-service.mjs` | usage-digest・rotate-logs・watcher-cycle・knowledge-refresh・host-health の定期実行の定義を**生成だけ**。launchd の定義は `ProcessType Background`・`LowPriorityIO` | しない |
+| `../../scripts/host-health.mjs`（2026-10-21） | ホストの資源と Mac Runtime 自身の定期 job だけを READ-ONLY で見る（Trading Lab の process・VM・MT5・Monitor は見ない）。状態が変わった時だけ知らせ、通知は `--webhook credential:` を付けた時だけ | しない（READ-ONLY） |
 | `../../scripts/gateway-service.mjs` | HTTP Gateway の LaunchAgent の定義を**生成だけ**（launchd は `--node` か `--path` が必須） | しない |
 | `rea.sh`（2026-10-22） | REA（npm `rea-agents`）を版を固定して `~/e-nexus-runtime/tools/rea/<版>` へ入れる（optional 依存＝Frida・PTY の native 部品なし・install script なし・`npm audit signatures`）・状態・外す。agent への登録はしない（`rea-agents setup` は Claude Code の user 範囲に書くので使わない。1 フォルダの local 範囲の手順は `register-hint`） | `tools/rea` だけ |
 | `../../scripts/network-baseline.mjs`（2026-10-22） | 経路・DNS・VPN・待ち受けの基準値を保存し（IP が入るので repo の外・mode 600）、後で比べて想定どおり／想定外を分ける（`--expect tailscale`）。Tailscale・リモートログイン等の前後に使う | しない（READ-ONLY） |
@@ -30,6 +31,7 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 2. **Jev 鍵の Mac 上の置き場**（ランブック §9-2 の 4）：CLI consumer 用は shell profile の `JEV_API_KEY`（Windows の User env と同じ扱い）か、Keychain `E-NEXUS/edl/jev-key-<env>`（HTTP Gateway の env file から `credential:`）
 3. **HTTP Gateway を Mac に常駐させるか**：ランブックの既定は「CLI 同居。HTTP 常駐は Hermes 等の HTTP consumer が決まってから」。Worker consumer（crm-executor の preflight・スマホ版）に使うなら外から届く場所（VPS 等）が要る＝台帳 MA-22 行「外から到達が必要な常駐は VPS、内部処理は Mac mini」
 4. **Windows 側 watcher を止める時期**（移行確定の判断）
+5. **同居する本番 workload**（2026-10-21〜 Trading Lab Stage 1 LIVE の VM）：共通資源（電源・回線・macOS の更新と再起動・pmset・tailnet）の変更は Trading Lab の確認＋Human。手順 1・12・13 の時期は Vault の MA-22 ランブック §11 の保守窓
 
 ## 手順
 
@@ -46,7 +48,7 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 - [ ] 9. [AI可] `sh deploy/macos/validate.sh --base 〔実機で確定〕` が FAIL なし
 - [ ] 10. [Human・GUI ログイン中] OpenMontage watcher：`python3 integrations/openmontage/enexus_openmontage_autostart.py install` → `status` で loaded → ログインし直して常駐を確認。通知（osascript）の許可・`~/Documents` 等に置いたときの Full Disk Access は `〔実機で確定〕`
 - [ ] 11. [Human・判断 4] Windows 側で `autostart uninstall`
-- [ ] 12. [任意] 定期実行：`node scripts/scheduled-job-service.mjs --job rotate-logs --target launchd --dir <repo> --base <親> --hour 3 --minute 0`、`--job usage-digest ... --node "$(command -v node)"`（webhook を使うなら `--webhook credential:E-NEXUS/edl/digest-webhook` と手順 7）。登録は [Human]（表示される `launchctl bootstrap`）
+- [ ] 12. [任意] 定期実行：`node scripts/scheduled-job-service.mjs --job rotate-logs --target launchd --dir <repo> --base <親> --hour 3 --minute 0`、`--job usage-digest ... --node "$(command -v node)"`（webhook を使うなら `--webhook credential:E-NEXUS/edl/digest-webhook` と手順 7）。登録は [Human]（表示される `launchctl bootstrap`）。（2026-10-21）ホスト監視：`--job host-health --target launchd --dir <repo> --node "$(command -v node)"`（毎時 :20／:50・`--minutes` で変えられる）。登録は [Human]、時期は保守窓の後
 - [ ] 13. [判断 3 の後] HTTP Gateway の常駐：`docs/deploy-production-gateway.md`（`gateway-service.mjs --target launchd --node "$(command -v node)"`・env file・token・release・smoke）
 
 ## 実機で確かめること（Windows では確かめられない）
