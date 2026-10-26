@@ -1,0 +1,45 @@
+(version 1)
+; REA の MCP（`rea mcp`）を macOS の sandbox に入れる profile（2026-10-26・MA-22 S5）。`rea.sh lab-prepare` が REA の prefix へ写し、
+; 登録の行（`rea.sh register-hint`）が `sandbox-exec -f <prefix>/rea-mcp.sb -D LAB=… -D REA_PREFIX=… -D WORKSPACE=… -D REA_STATE=… -D TMP=… -D DARWIN_CACHE=…` で使う。
+; Claude Code の permissions.deny（`rea.sh deny-settings`）は道具を名前で止めるだけで、許した道具が読む path は限らない
+; （MCP の道具に Claude Code の Read の拒否は効かない）。この profile が OS の側で、読める・書ける場所を
+; REA 本体（REA_PREFIX）・解析の作業場所（WORKSPACE＝専用フォルダの work）・REA の state（REA_STATE）・専用の一時フォルダ（TMP）に限る。
+; 読めないもの：全ユーザーのホーム（Trading Lab の領域・~/.ssh・~/.claude・Vault の clone・Keychain のファイル）・外付けの volume・
+; /private/tmp（同じ OS user の別の Claude Code の project・Trading Lab のセッションの作業領域がある）・/private/var/folders（全アプリの一時と cache）・
+; /Library の Logs・Preferences・Application Support。path の名前・大きさ（metadata）は見える。
+; 専用フォルダの .claude・CLAUDE.md・.mcp.json（拒否リスト・hook）は WORKSPACE の外なので REA は書けない（2026-10-26 独立監査 B1・S1）。
+(allow default)
+
+; ネットワーク：静的な解析は使わない（MCP は stdio）
+(deny network*)
+
+; 読み取り：利用者のデータが在る場所は既定で拒否し、REA が要る場所だけ戻す
+(deny file-read-data
+  (subpath "/Users") (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders")
+  (subpath "/Library/Logs") (subpath "/Library/Preferences") (subpath "/Library/Application Support"))
+(allow file-read-data (subpath (param "REA_PREFIX")) (subpath (param "WORKSPACE")) (subpath (param "REA_STATE")) (subpath (param "TMP")))
+; 専用フォルダ（LAB）そのものは一覧だけ読める：Claude Code は MCP の server をそのフォルダを cwd にして起動し、node は起動時に cwd を引く。
+; 中の .claude 等の中身は読めない
+(allow file-read-data (literal (param "LAB")))
+
+; 書き込み：どこにも書けない。作業場所・state・一時フォルダ・/dev だけ戻す（REA 本体も書き換えられない）
+(deny file-write*)
+(allow file-write* (subpath (param "WORKSPACE")) (subpath (param "REA_STATE")) (subpath (param "TMP")) (subpath "/dev"))
+; swiftc（Swift の静的な補助）は clang の module cache を使う（REA は CLANG_MODULE_CACHE_PATH を env から外す）
+(allow file-read-data file-write* (subpath (string-append (param "DARWIN_CACHE") "/clang/ModuleCache")))
+
+; 動いている process への接続・UI 操作・画面の取得・アプリの起動・disk image の mount・launchd・Keychain の読み出し・clipboard の
+; 道具は起動させない（REA の Frida は入れていない＝rea.sh install。xcrun は swift-demangle 等の静的な補助が使うので止めず、
+; xcrun 経由の lldb は regex で止める。java は Ghidra の有無の確認で毎回呼ばれ、JDK が無いと install の画面を出し得る）。
+; 解析の対象・state の中の実行ファイルも起動させない（TMP は REA が自分で compile した補助を動かすので止めない）
+(deny process-exec
+  (literal "/usr/bin/lldb") (literal "/usr/bin/osascript") (literal "/usr/sbin/screencapture") (literal "/usr/sbin/dtrace")
+  (literal "/usr/bin/open") (literal "/usr/bin/hdiutil") (literal "/bin/launchctl") (literal "/usr/bin/security")
+  (literal "/usr/bin/java") (literal "/usr/bin/pbpaste") (literal "/usr/bin/pbcopy")
+  (regex #"/(lldb|debugserver|frida[^/]*|gdb|adb)$")
+  (subpath (param "WORKSPACE")) (subpath (param "REA_STATE")))
+(deny appleevent-send)
+
+; REA は補助の process を片付けたかを /bin/ps で確かめる（無いと解析が cleanup_incomplete で失敗する）。ps は setuid なので sandbox の中では
+; 起動できない → ps だけ sandbox の外で起動させる（引数は REA の code が決める・process の一覧を読むだけ）
+(allow process-exec (literal "/bin/ps") (with no-sandbox))

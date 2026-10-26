@@ -254,7 +254,7 @@ else
 fi
 n=$(netstat -an -p tcp | awk '$6=="LISTEN"{print $4}' | grep -vcE '^(127\.|::1\.)')
 [ "$n" -eq 0 ] && ok "10 loopback 以外の TCP 待ち受け 0" || echo "WARN 10 loopback 以外の TCP 待ち受け $n（doctor の D4 で理由を確かめる）"
-echo "--- 手で確かめる：11 止めて 60 秒以内に @@USER@@ の process が 0（ps -U @@USER@@）・Trading Lab が影響なしと確認／12 Console の Hermes 用 workspace に月の上限／13 24 時間で RSS < @@RSS_MAX_MIB@@ MiB（host-health --hermes-user @@USER@@）／14 子 process も background（ps -o pid,pri,comm -U @@USER@@）"
+echo "--- 手で確かめる：11 止めて 60 秒以内に @@USER@@ の process が 0（ps -U @@USER@@）・Trading Lab が影響なしと確認／12 Console の Hermes 用 workspace に月の上限・組織の auto-reload が意図どおり（Off なら、クレジットを使い切ると止まる）／13 24 時間で RSS < @@RSS_MAX_MIB@@ MiB（host-health --hermes-user @@USER@@）／14 子 process も background（ps -o pid,pri,comm -U @@USER@@）"
 [ "$FAILS" -eq 0 ] && echo "acceptance: no FAIL" || { echo "acceptance: $FAILS FAIL"; exit 1; }
 `;
 
@@ -294,7 +294,12 @@ function readme(v) {
 
 順番と担当（Trading Lab の VM・Parallels・MT5 には一切触れない。重い工程は FX 市場の週末の休場中か、Trading Lab が認めた時間に）
   H0 前提：Anthropic Console に Hermes 専用 workspace を作り、月の利用上限を設定し、その workspace の API キーを発行（Human）。
-     Decision Layer 用の鍵とは別にする。Claude の Pro／Max の資格情報は使わない。
+     Decision Layer 用の鍵とは別にする。Claude の Pro／Max の資格情報（login・claude setup-token の token）は使わない。
+     Max の付属の API クレジット（2026-10〜・Max 5x は月 100 USD・期限は請求の周期の終わり・繰り越し無し）を使うなら、claude.ai の
+     Settings > Billing で Console の組織を 1 つ link する（後から自分では変えられない＝Human の判断）。クレジットはその組織の全部の鍵・
+     workspace が分け合うので、workspace の上限は要る。クレジットだけの組織は使い切ると API が止まる（Max の枠・プランへは請求されない）が、
+     購入したクレジットや auto-reload があると止まらずに有料で続く → 始める前に Console の Billing で、Promotional credits の残高と期限・
+     購入したクレジットの残高・auto-reload の On／Off を Human が確かめる（出典：platform.claude.com/docs/en/about-claude/api-credits-for-subscribers）。
   H1 sudo sh provision.sh            → 表示を読む → sudo sh provision.sh --apply --lock-operator-home（Human）
   H2 sh vault-copy.sh                → 表示を読む → sh vault-copy.sh --apply（${v.OPERATOR}）
   H3 sudo -u ${v.USER} -i sh /Users/${v.USER}/install-as-hermes.sh（Human。provision が ${v.USER} の home へ置いた写し）

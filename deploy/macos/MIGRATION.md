@@ -19,7 +19,7 @@ Mac mini は **2026-09-29 に到着済み（Human 申告）**。実機依存の�
 | `../../scripts/scheduled-job-service.mjs` | usage-digest・rotate-logs・watcher-cycle・knowledge-refresh・host-health の定期実行の定義を**生成だけ**。launchd の定義は `ProcessType Background`・`LowPriorityIO` | しない |
 | `../../scripts/host-health.mjs`（2026-10-21） | ホストの資源と Mac Runtime 自身の定期 job だけを READ-ONLY で見る（Trading Lab の process・VM・MT5・Monitor は見ない）。状態が変わった時だけ知らせ、通知は `--webhook credential:` を付けた時だけ | しない（READ-ONLY） |
 | `../../scripts/gateway-service.mjs` | HTTP Gateway の LaunchAgent の定義を**生成だけ**（launchd は `--node` か `--path` が必須） | しない |
-| `rea.sh`（2026-10-22） | REA（npm `rea-agents`）を版を固定して `~/e-nexus-runtime/tools/rea/<版>` へ入れる（optional 依存＝Frida・PTY の native 部品なし・install script なし・`npm audit signatures`）・状態・外す。agent への登録はしない（`rea-agents setup` は Claude Code の user 範囲に書くので使わない。1 フォルダの local 範囲の手順は `register-hint`） | `tools/rea` だけ |
+| `rea.sh`（2026-10-22） | REA（npm `rea-agents`）を版を固定して `~/e-nexus-runtime/tools/rea/<版>` へ入れる（optional 依存＝Frida・PTY の native 部品なし・install script なし・`npm audit signatures`）・状態・外す。agent への登録はしない（`rea-agents setup` は Claude Code の user 範囲に書くので使わない。1 フォルダの local 範囲の手順は `register-hint`）。**2026-10-26**：`lab-prepare` が専用フォルダ（700・git と Vault の外）・拒否リスト（`.claude/settings.json`）・sandbox の profile（`rea-mcp.sb` を prefix へ写す）を用意し、`register-hint` の登録の行は REA を空の env（`env -i`・専用の TMPDIR）・`taskpolicy -b`・`sandbox-exec` の中で動かす（読める・書ける場所を REA 本体・専用フォルダの `work`・`tmp`・`~/.rea` に限る。ホーム・`/private/tmp`・`/private/var/folders` 等の利用者のデータ、専用フォルダの `.claude`（拒否リスト）は読めない・書けない。ネットワーク・lldb・launchctl・security・hdiutil 等は不可。許した道具も任意の path を読めるため＝Claude Code の Read の拒否は MCP に効かない・独立監査 2026-10-26）。`status` は sandbox を通らない登録・形の違う登録・REA の版と合わない拒否リストを WARN | `tools/rea`・専用フォルダだけ |
 | `../../scripts/network-baseline.mjs`（2026-10-22） | 経路・DNS・VPN・待ち受けの基準値を保存し（IP が入るので repo の外・mode 600）、後で比べて想定どおり／想定外を分ける（`--expect tailscale`）。Tailscale・リモートログイン等の前後に使う | しない（READ-ONLY） |
 | `../../scripts/hermes-service.mjs`（2026-10-22） | Hermes を専用ユーザーで動かす一式（ユーザー作成・Vault の写し・版を固定した導入・`/etc/hermes` の固定設定・wrapper・LaunchDaemon・検収）を**生成だけ**。実行・登録は Human（順番は生成物の README.txt） | しない |
 
@@ -63,3 +63,16 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 
 - 更新：各 repo で `git pull`（fast-forward のみ）→ `validate.sh` → `autostart restart`（watcher）／Gateway は deploy doc §3 の昇格手順
 - 戻し方：Mac で `autostart uninstall` → Windows で `autostart install`（有料鍵は Windows の資格情報マネージャーと Mac の Keychain に並行して持てる：ランブック §9-3）。repo は消さない（手元の変更を失わない）
+
+## `claude -p` の使い分け（2026-10-26・Max の枠と API の課金を取り違えない）
+
+- **Human が自分で打つ単発**（要約・下書き・diff の確認など）：Max の login のまま。ただしこの Mac の user 範囲には claude.ai の connector・plugin・skill が多く、
+  そのままの `claude -p` は 1 回で数十万 token の文脈を読む（2026-10-26 実測：「OK と返す」だけで cache 作成 約 35 万 token）。
+  軽くするには `--restricted --strict-mcp-config --disable-slash-commands` と、要る道具だけの `--tools`（同じ 1 回で 約 2,300 token）。
+  `ANTHROPIC_API_KEY`・`ANTHROPIC_AUTH_TOKEN` があると `-p` は**必ず鍵を使う**（公式 docs の認証の優先順位）ので、Max で動かす時は `env -u` で外す
+- **定期・無人・アプリから呼ぶもの**：Max の login・`claude setup-token` の token を使わない（OAuth は「Claude Code の通常の利用」のため・公式 legal-and-compliance）。
+  Console の鍵＋`--bare`（OAuth と Keychain を読まない＝鍵が無ければ「Not logged in」で exit 1 になり、Max へ黙って落ちない。2026-10-26 確認）＋`--max-budget-usd`・`--max-turns`。
+  Max の付属の API クレジットは link した Console 組織の鍵でだけ使える。Max の枠を使い続ける定期 job は作らない
+- Decision Layer の判定に `claude -p` は使わない（LLM の再判定は `src/adapters/llm/` の API 鍵の経路＝`ENEXUS_LLM_ANTHROPIC_API_KEY`）。Hermes の代わりにもしない（MA-24）
+- `--bare` を付けない `-p` は、作業フォルダの `.claude/settings.json` の hook と `.mcp.json` の server を信頼の確認なしに動かす（公式 headless docs）→ 知らない repo の中で打たない
+- `--output-format json` の `total_cost_usd` は client 側の見積もり。Max の login の時は請求額ではない（枠の消費の目安）
