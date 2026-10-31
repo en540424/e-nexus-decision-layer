@@ -12,6 +12,7 @@
  *        knowledge-refresh（2026-10-03）：--dir は e-nexus-knowledge-layer の絶対パス。[--every-hours 6]（24 の約数 1〜12）[--vault <Vault の絶対パス>]
  *        launchd・systemd は --path 必須（executor の CLI を探す PATH。既定の PATH には npm／Homebrew の global が無く、全 executor が not_installed になる）
  *        host-health（2026-10-21・MA-22 工程 3）：launchd のみ。[--minutes 20,50]（毎時の分・1〜6 個）[--webhook credential:E-NEXUS/edl/<name>]
+ *          [--hermes-user <name>]（2026-10-31・Hermes の常駐の後。そのユーザーの RSS・CPU も見る＝host-health の hermes_rss_gib）
  *
  * job：
  *   usage-digest＝`node scripts/usage-digest.mjs --hours 24 --fail-on-anomaly`（FB-18。READ-ONLY・課金なし。webhook は資格情報ストアの名前だけ）
@@ -86,6 +87,8 @@ export function validateJobArgs(a) {
     if (a.webhook !== undefined) errors.push('watcher-cycle has no webhook（通知は SessionStart の 1 行と proposals/）');
   }
   if (a.minutes !== undefined && a.job !== 'host-health') errors.push('--minutes is for host-health only');
+  if (a.hermesUser !== undefined && a.job !== 'host-health') errors.push('--hermes-user is for host-health only');
+  if (a.hermesUser !== undefined && !/^[a-z_][a-z0-9_-]{0,31}$/.test(a.hermesUser)) errors.push('--hermes-user must be a local user name');
   if (a.job === 'host-health') {
     // 2026-10-21（MA-22 工程 3）：Mac mini のホスト監視。ホスト固有なので launchd だけ（Windows・VPS には置かない）
     if (a.target !== 'launchd') errors.push('host-health is for the Mac mini (launchd) only');
@@ -118,7 +121,7 @@ function commandOf(a) {
     return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'host-health') {
-    const args = ['scripts/host-health.mjs', ...(a.webhook ? ['--webhook', a.webhook] : [])];
+    const args = ['scripts/host-health.mjs', ...(a.webhook ? ['--webhook', a.webhook] : []), ...(a.hermesUser ? ['--hermes-user', a.hermesUser] : [])];
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'watcher-cycle') {
@@ -232,7 +235,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];

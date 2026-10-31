@@ -173,6 +173,12 @@ test('host-health（2026-10-21）：Mac mini（launchd）だけ・毎時 :20／:
   assert.match(w.content, /<array><dict><key>Minute<\/key><integer>5<\/integer><\/dict><\/array>/);
   assert.match(w.content, /<string>--webhook<\/string>\s*<string>credential:E-NEXUS\/edl\/host-health-webhook<\/string>/);
   assert.ok(!/https?:\/\/(?!www\.apple\.com)/.test(w.content));
+  // 2026-10-31：Hermes の常駐の後は、そのユーザーの資源も見る（hermes-service.mjs の README の H8）
+  const h = renderJob({ ...a, hermesUser: 'hermes' });
+  assert.deepEqual(validateJobArgs({ ...a, hermesUser: 'hermes' }), []);
+  assert.match(h.content, /<string>scripts\/host-health\.mjs<\/string>\s*<string>--hermes-user<\/string>\s*<string>hermes<\/string>/);
+  assert.ok(validateJobArgs({ ...a, hermesUser: 'bad user' }).some((e) => e.includes('--hermes-user')));
+  assert.ok(validateJobArgs({ job: 'rotate-logs', target: 'launchd', dir: MAC.dir, base: '/x', hermesUser: 'hermes' }).some((e) => e.includes('host-health only')));
 });
 
 test('host-health：拒否（windows・systemd・分の形・URL の webhook・node の場所が無い）／--minutes は host-health だけ', () => {
