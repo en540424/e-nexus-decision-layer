@@ -451,7 +451,7 @@ else
 fi
 n=$(netstat -an -p tcp | awk '$6=="LISTEN"{print $4}' | grep -vcE '^(127\.|::1\.)')
 [ "$n" -eq 0 ] && ok "10 loopback 以外の TCP 待ち受け 0" || echo "WARN 10 loopback 以外の TCP 待ち受け \${n}（doctor の D4 で理由を確かめる）"
-echo "--- 手で確かめる：11 止めて 60 秒以内に @@USER@@ の process が 0（ps -U @@USER@@）・Trading Lab が影響なしと確認／12 Console の Hermes 用 workspace に月の上限・組織の auto-reload が意図どおり（Off なら、クレジットを使い切ると止まる）／13 24 時間で RSS < @@RSS_MAX_MIB@@ MiB（host-health --hermes-user @@USER@@）／14 子 process も background（ps -o pid,pri,comm -U @@USER@@）"
+echo "--- 手で確かめる：11 止めて 60 秒以内に wrapper と gateway が消える（ps -U @@USER@@。macOS の user 用 daemon は残ることがある）・Trading Lab が影響なしと確認／12 Console の Hermes 用 workspace に月の上限・組織の auto-reload が意図どおり（Off なら、クレジットを使い切ると止まる）／13 24 時間で RSS < @@RSS_MAX_MIB@@ MiB（host-health --hermes-user @@USER@@）／14 子 process も background（ps -o pid,pri,comm -U @@USER@@）"
 [ "$FAILS" -eq 0 ] && echo "acceptance: no FAIL" || { echo "acceptance: $FAILS FAIL"; exit 1; }
 `;
 
@@ -513,7 +513,7 @@ function readme(v) {
   H6 1 回だけ対話（Human）。hermes は全部 gateway 経由で、常駐が無い時は launchctl print gui/<uid>/… を見る。GUI の session が無い専用ユーザーでは
      exit 125 になり「Gateway inaccessible: service_manager_unavailable」で止まる（常駐が動いていれば見に行かない）→ H7 の前は wrapper を手で動かす（登録なし・保護は同じ）：
        Terminal A：sudo -u ${v.USER} -i env HERMES_HOME=/Users/${v.USER}/.hermes HERMES_WRITE_SAFE_ROOT=/Users/${v.USER}/work /usr/sbin/taskpolicy -b /bin/sh "${v.WRAPPER_DIR}/run.sh"
-       Terminal B：30 秒ほど待ってから sudo -u ${v.USER} -i hermes で短い対話 → 終わったら Terminal A で Ctrl+C（${v.USER} の process は全部止まる。ps -U ${v.USER} で 0 を確かめる）
+       Terminal B：30 秒ほど待ってから sudo -u ${v.USER} -i hermes で短い対話 → 終わったら Terminal A で Ctrl+C（wrapper と gateway が止まる。ps -U ${v.USER} で消えたことを確かめる。macOS の user 用 daemon は残ることがある）
      つながったら Vault の写し ${v.SHARE}/vault を読ませる。終わったら acceptance をもう一度。
      Console の Usage で、この 1 回の分が Hermes の workspace に付いたこと（Decision Layer の鍵・Max の枠ではないこと）を確かめる
   H7 常駐（Human・sudo。host-health が登録済みで、Trading Lab が時期を認めた後）：

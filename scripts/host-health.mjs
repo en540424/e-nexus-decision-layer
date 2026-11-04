@@ -2,11 +2,13 @@
 /**
  * Mac mini（Runtime Node）のホスト監視（2026-10-21・Vault MA-22・Mac Runtime 工程 3）。READ-ONLY・sudo 不要・課金なし・macOS のみ。
  *
- *   node scripts/host-health.mjs [--state-dir <abs>] [--data-dir <abs>]... [--hermes-user <name>]
+ *   node scripts/host-health.mjs [--state-dir <abs>] [--data-dir <abs>]... [--hermes-user <name>] [--no-guard]
+ *   node scripts/host-health.mjs --report [--days 7] [--state-dir <abs>]   記録の要約を出すだけ（観察用。何も書かない）
  *        [--webhook credential:E-NEXUS/edl/<name> [--webhook-format json|slack|discord]] [--json]
  *
  * 見るもの：ホストの資源（起動ディスクの空き・メモリ逼迫・swap・15 分 load・発熱・電源・再起動・既定経路）、
  *   Mac Runtime 自身の定期 job（com.e-nexus.<job> の LaunchAgent）、Mac Runtime のデータ量、（導入後）Hermes ユーザーの資源。
+ *   既定で lib/runtime-guard.mjs の見張りも回す（2026-11-04。Hermes の常駐と隔離・repo の未 push・relay の未送信・Time Machine。--no-guard で外す）。
  * 見ないもの：Trading Lab の process・VM・MT5・状態ファイル・Monitor。LIVE の状態は Trading Lab の Monitor の担当で、ここでは報告しない。
  *   process の一覧・command line・パス・IP・ホスト名は記録にも通知にも出さない（load・メモリはシステム全体の値だけ）。
  * することは 3 つだけ：記録（<state-dir>/state.json・YYYY-MM.jsonl）／状態が変わった時の通知／DEGRADED の印（起動ディスクかメモリが
@@ -19,16 +21,17 @@
  * exit：0＝1 回分を記録した（WARN・CRIT があっても 0。異常は通知と記録で伝える）／1＝失敗／2＝引数・macOS 以外・時間超過／3＝DISABLED
  */
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCredential, EDL_CREDENTIAL_PATTERN } from './lib/env-file.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
+import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_STATE_DIR = path.join(REPO, 'data', 'host-health');
 export const STATE_SCHEMA = 'host-health-state/v1';
-export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du']);
+export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', ...GUARD_BINS]);
 /** 初期値（2026-10-21。Trading Lab の VM と同居する 32 GB の Mac mini を前提にした目安で、実測で見直す） */
 export const THRESHOLDS = Object.freeze({
   disk_free_gib: { warn: 50, crit: 20 },
@@ -153,7 +156,7 @@ export function parsePsUsage(stdout) {
 // ─── 集める・判定する ───
 
 /** 観測。Trading Lab の領域・process 一覧は取らない（ps は Mac Runtime 自身の job の pid と Hermes ユーザーだけ） */
-export async function collect({ run, uid, dataDirs = [], hermesUser = null }) {
+export async function collect({ run, uid, dataDirs = [], hermesUser = null, guard = null }) {
   const ok = (r) => (!r.timedOut && r.code === 0 ? r.stdout : null);
   const sysctl = async (key) => {
     const s = ok(await run('/usr/sbin/sysctl', ['-n', key]));
@@ -198,6 +201,10 @@ export async function collect({ run, uid, dataDirs = [], hermesUser = null }) {
   if (hermesUser) {
     const r = await run('/bin/ps', ['-U', hermesUser, '-o', 'rss=,pcpu=']);
     o.hermes = r.timedOut ? null : parsePsUsage(r.code === 0 ? r.stdout : '');
+  }
+  if (guard) {
+    o.guard = await collectGuard({ run, hermesUser, ...guard });
+    if (hermesUser) o.guard.service = parseLaunchctlPrint(await run('/bin/launchctl', ['print', `system/${HERMES_LABEL}`]));
   }
   return o;
 }
@@ -335,15 +342,16 @@ function setFlag(dir, name, on, text) {
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   if (existsSync(path.join(stateDir, 'DISABLED'))) return { code: 3, status: 'disabled' };
   const prev = readState(stateDir);
   const at = now().toISOString();
   const paused = existsSync(path.join(stateDir, 'PAUSE'));
   try {
-    const o = await collect({ run, uid, dataDirs, hermesUser });
+    const o = await collect({ run, uid, dataDirs, hermesUser, guard });
     const items = [...evaluate(o), ...evaluateEvents(o, prev)];
+    if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard));
     const d = decide(items, prev, { now: at, paused });
     let nextItems = d.items;
     let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
@@ -370,6 +378,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       interface: eventsUnsent ? (prev?.interface ?? null) : (o.route?.interface ?? prev?.interface ?? null),
       consecutive_failures: 0,
       items: nextItems,
+      ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : {}),
     });
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
     for (const x of items) levels[x.level] += 1;
@@ -391,11 +400,13 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
 // ─── CLI ───
 
 export function parseArgs(argv) {
-  const a = { dataDirs: [], json: false };
-  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat' };
+  const a = { dataDirs: [], json: false, guard: true, report: false };
+  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--json') { a.json = true; continue; }
+    if (k === '--no-guard') { a.guard = false; continue; }
+    if (k === '--report') { a.report = true; continue; }
     if (i + 1 >= argv.length) throw new Error(`${k} needs a value`);
     if (k === '--data-dir') a.dataDirs.push(argv[i + 1]);
     else if (map[k]) a[map[k]] = argv[i + 1];
@@ -412,10 +423,19 @@ export function validateArgs(a) {
     if (!path.posix.isAbsolute(v)) errors.push(`${k} must be an absolute path`);
     else if (TRADING_LAB_PATH.test(v)) errors.push(`${k}: Trading Lab の領域は見ない`);
   }
+  if (a.days !== undefined && !/^[1-9]\d{0,2}$/.test(a.days)) errors.push('--days must be 1-999');
   if (a.hermesUser !== undefined && !USER_NAME.test(a.hermesUser)) errors.push('--hermes-user must be a local user name');
   if (a.webhook !== undefined && !WEBHOOK.test(a.webhook)) errors.push('--webhook must be credential:E-NEXUS/edl/<name>（URL を引数に置かない）');
   if (a.webhookFormat !== undefined && !['json', 'slack', 'discord'].includes(a.webhookFormat)) errors.push('--webhook-format must be json|slack|discord');
   return errors;
+}
+
+/** 記録の要約（観察用）。state-dir の YYYY-MM.jsonl を読むだけ */
+export function reportOf(stateDir, { days = 7, now = new Date() } = {}) {
+  const since = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const files = existsSync(stateDir) ? readdirSync(stateDir).filter((f) => /^\d{4}-\d{2}\.jsonl$/.test(f)) : [];
+  const lines = files.flatMap((f) => readFileSync(path.join(stateDir, f), 'utf8').split('\n').filter(Boolean));
+  return { component: 'edl-host-health', days, ...summarizeRecords(lines, { since }) };
 }
 
 async function main(argv) {
@@ -423,6 +443,7 @@ async function main(argv) {
   try { a = parseArgs(argv); } catch (e) { console.error(e.message); return 2; }
   const errors = validateArgs(a);
   if (errors.length) { console.error(errors.join('\n')); return 2; }
+  if (a.report) { console.log(JSON.stringify(reportOf(a.stateDir ?? DEFAULT_STATE_DIR, { days: Number(a.days ?? 7) }), null, 2)); return 0; }
   if (process.platform !== 'darwin') { console.error('host-health is for the Mac mini (macOS) only'); return 2; }
   const deadline = setTimeout(() => {
     console.error(JSON.stringify({ component: 'edl-host-health', status: 'timeout' }));
@@ -433,6 +454,7 @@ async function main(argv) {
     stateDir: a.stateDir ?? DEFAULT_STATE_DIR,
     dataDirs: a.dataDirs.length ? a.dataDirs : [path.join(REPO, 'data')],
     hermesUser: a.hermesUser ?? null,
+    guard: a.guard ? defaultGuard(REPO) : null,
     webhook: a.webhook ?? null,
     webhookFormat: a.webhookFormat ?? 'json',
     run: makeRunner(),
