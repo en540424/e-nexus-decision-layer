@@ -82,6 +82,20 @@ test('常駐：LaunchDaemon は UserName・Background・異常終了の時だけ
   assert.match(r, /-gt 3072 \]/);
   assert.match(r, /STOP present: not starting"; exit 0/);
   assert.match(r, /\[ "\$up" -lt 600 \]/, '起動直後は VM の復旧を優先して待つ');
+  // メモリ：見回りで止める（上限の保証とは書かない）・macOS のメモリ逼迫でも止める・gateway の子（別の process group）まで止める
+  assert.match(r, /sleep 15 & wait \$!/);
+  assert.match(r, /sysctl -n kern\.memorystatus_vm_pressure_level/);
+  assert.match(r, /-ge 4 \] && why="memory pressure critical/);
+  assert.match(r, /"\$warn" -ge 4 \] && why=/);
+  assert.ok(r.indexOf('memory pressure warn') < r.indexOf('memory pressure critical') && r.indexOf('memory pressure critical') < r.indexOf('why="RSS'), '危険は警告より後に評価（ログを上書きされない）・RSS 超過が最後（STOP を書く）');
+  assert.match(r, /why="RSS [^\n]*sticky=1/);
+  assert.match(r, /^reap\(\) \{ kill -KILL -1 2>\/dev\/null; \}/m, 'fork 不要・自分には届かない');
+  assert.match(r, /^\[ "\$\(id -un\)" = hermes \] && \[ "\$\(id -u\)" -ne 0 \] \|\| \{/m, 'kill -1 を root で動かさない');
+  assert.ok(r.indexOf('[ "$(id -un)" = hermes ]') < r.indexOf('reap() {'));
+  assert.match(r, /wait "\$pid"; ec=\$\?\nreap\n/, '異常終了・75 の時も子を残さない');
+  assert.match(r, /trap 'stop_all; log "stopped by signal"; exit 0' TERM INT/);
+  assert.match(r, /上限の保証ではない/);
+  assert.match(bundle()['README.txt'], /上限の保証ではない/);
 });
 
 test('Vault の写し：既定で渡さない（許可リスト必須・残りは全部除く）・中身と名前の検査に通ったものだけ公開・既定は表示だけ', () => {
@@ -159,6 +173,9 @@ test('vault-copy.sh を小さな検体で実行：許可リストの外・.md �
     w('AI/ip.md', 'host 192.0.2.10 here\n');
     w('AI/mail.md', 'contact someone@example.com\n');
     w('AI/upper.md', 'PASSWORD = x\n');
+    w('AI/home.md', 'repo `C:\\\\Users\\\\someone\\\\x`\n');
+    w('AI/home2.md', 'path /Users/someone/x\n');
+    w('AI/home3.md', 'path /home/someone/x\n');
     w('AI/顧客情報_A.md', '中身はふつう\n');
     w('AI/取引先/only.md', '中身はふつう\n');
     w('AI/utf16.txt', Buffer.from('﻿hello', 'utf16le'));
@@ -193,7 +210,7 @@ test('vault-copy.sh を小さな検体で実行：許可リストの外・.md �
     const list = spawnSync('/usr/bin/find', [vault, '-mindepth', '1'], { encoding: 'utf8', timeout: 10_000 }).stdout.split('\n').filter(Boolean).map((p) => path.relative(vault, p)).sort();
     assert.deepEqual(list, ['AI', 'AI/ok.md', 'AI/sub', 'AI/sub/ok2.txt'], '取引先/ のように中身を全部落としたフォルダの名前も残さない');
     const report = readFileSync(path.join(share, '.filtered.txt'), 'utf8').split('\n').filter(Boolean).sort();
-    assert.deepEqual(report, ['AI/ip.md', 'AI/mail.md', 'AI/pay.md', 'AI/upper.md', 'AI/utf16.txt', 'AI/取引先', 'AI/取引先/only.md', 'AI/顧客情報_A.md']);
+    assert.deepEqual(report, ['AI/home.md', 'AI/home2.md', 'AI/home3.md', 'AI/ip.md', 'AI/mail.md', 'AI/pay.md', 'AI/upper.md', 'AI/utf16.txt', 'AI/取引先', 'AI/取引先/only.md', 'AI/顧客情報_A.md']);
     assert.equal(stat(path.join(share, '.stage')), '700', 'rsync -a が置き場の root を元の 755 に変えない');
     assert.equal(stat(path.join(share, '.filtered.txt')), '600');
     assert.equal(stat(vault), '750');
@@ -229,5 +246,4 @@ test('provision：写しの置き場が既にあれば作らない／検収：�
   assert.match(acc, /for p in \$\(pgrep -f 'hermes gateway'\); do .* \|\| ng "9 /);
   assert.ok(!/pgrep -f 'hermes gateway' \| while/.test(acc));
   assert.ok(!/\\s/.test(acc), 'BSD sed・grep の \\s は使わない');
-  assert.match(f['run.sh'], /sleep 30 & wait \$!/);
 });

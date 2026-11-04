@@ -43,7 +43,7 @@ export const DISABLED_TOOLSETS = Object.freeze(['terminal', 'code_execution', 'b
  */
 export const DEFAULT_MODEL = 'claude-haiku-5-5';
 /**
- * Vault の写しから中身と名前で落とす正規表現（grep -E -i・1 行 1 つ・# の行は注釈）。強い信号（鍵・token・IP・電話・メール・MAC・口座）と、
+ * Vault の写しから中身と名前で落とす正規表現（grep -E -i・1 行 1 つ・# の行は注釈）。強い信号（鍵・token・IP・電話・メール・MAC・口座・ユーザー名の入った home のパス）と、
  * 給与・顧客・契約・個人情報の語。語は文書の話題でもあたるので多めに落ちる＝既定は安全側。Human が生成物の写しを直して広げる。
  * この repo は公開なので、特定の事業・口座・取引先の名前は書かない（それは Human が生成物の写しに足す）。全角の数字は検出できない。
  */
@@ -66,6 +66,7 @@ export const VAULT_DENY_PATTERNS = Object.freeze([
   '0[0-9]{1,4}-[0-9]{1,4}-[0-9]{4}',
   '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}',
   '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}',
+  '(^|[^A-Za-z])[A-Za-z]:[/\\\\]+Users[/\\\\]+[A-Za-z0-9._-]|/(Users|home)/[A-Za-z0-9._-]',
   '口座番号|account_id|MT5',
   '給与|賃金|源泉徴収|社会保険|マイナンバー',
   '顧客名|顧客情報|お客様情報|取引先|個人情報',
@@ -242,9 +243,12 @@ echo "vault-copy: done（写した $(find @@SHARE@@/vault -type f | wc -l | tr -
 const RUN = String.raw`#!/bin/sh
 # Hermes gateway の wrapper（root 所有・LaunchDaemon @@LABEL@@ が UserName=@@USER@@ で起動）。生成：scripts/hermes-service.mjs
 # 止める：sudo launchctl bootout system/@@LABEL@@（Human）か、touch /Users/@@USER@@/.hermes-edl/STOP（次の起動から動かない）。
-# KeepAlive は「異常終了の時だけ」。exit 0 では再起動しない＝STOP・メモリ超過・異常終了の重なり（1 時間に 3 回）では exit 0 で止まる。
+# KeepAlive は「異常終了の時だけ」。exit 0 では再起動しない＝STOP・メモリ超過・メモリ逼迫・異常終了の重なり（1 時間に 3 回）では exit 0 で止まる。
 # Hermes の exit 75（再起動の依頼。hermes update の後）はそのまま返し、launchd が ThrottleInterval の後に起動し直す。
+# どの終わり方でも、終える前に @@USER@@ の残りの process（gateway の子・別の process group も）を全部止める＝sudo -u @@USER@@ の対話も止まる。
 set -u
+# kill -KILL -1 は「自分と同じ user の process 全部」に届く＝@@USER@@ 以外（特に root）では絶対に動かさない
+[ "$(id -un)" = @@USER@@ ] && [ "$(id -u)" -ne 0 ] || { echo "run.sh runs only as @@USER@@ (launchd UserName)" >&2; exit 0; }
 S=/Users/@@USER@@/.hermes-edl
 mkdir -p "$S"
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
@@ -254,20 +258,39 @@ up=$(( $(date +%s) - $(sysctl -n kern.boottime | sed 's/.*sec = \([0-9]*\).*/\1/
 [ "$up" -lt 600 ] && sleep $((600 - up))
 ulimit -n 4096
 ulimit -u 512
+# メモリは「見回って止める」で、上限の保証ではない（macOS には一般の process に効くメモリの上限が無い：launchd の ResidentSetSize・
+# ulimit -v は効かない）。15 秒ごとに @@USER@@ の process の RSS の合計を見る＝検知まで最大 15 秒・止めるのに最大 10 秒、その間は超え得る。
+# RSS は圧縮・swap された分を含まないので、macOS のメモリ逼迫（kern.memorystatus_vm_pressure_level：1 通常・2 警告・4 危険）でも止める
+# ＝同居の VM を守る側に倒す（危険は 1 回・警告は 4 回＝約 1 分続けて）。逼迫は VM 自身でも起きるので STOP は書かない（次の起動で戻る）。
+# RSS 超過は Hermes 自身の問題なので STOP を書く（Human が理由を見て消すまで動かない）。
 /Users/@@USER@@/.local/bin/hermes gateway run --external-supervisor &
 pid=$!
-trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; log "stopped by signal"; exit 0' TERM INT
+reap() { kill -KILL -1 2>/dev/null; }   # builtin・fork 不要（ulimit -u に当たっていても効く）。自分（$$）には届かない
+stop_all() {
+  kill -TERM "$pid" 2>/dev/null
+  i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+  reap
+}
+trap 'stop_all; log "stopped by signal"; exit 0' TERM INT
+warn=0
 while kill -0 "$pid" 2>/dev/null; do
-  sleep 30 & wait $!   # trap が 30 秒待たずに動くように（launchd の終了の猶予は 20 秒）
+  sleep 15 & wait $!   # trap が待たずに動くように（launchd の終了の猶予は 20 秒）
   rss=$(ps -U @@USER@@ -o rss= | awk '{s+=$1} END {print int(s/1024)}')
-  if [ "\${rss:-0}" -gt @@RSS_MAX_MIB@@ ]; then
-    log "RSS \${rss} MiB > @@RSS_MAX_MIB@@ MiB: stopping and writing STOP"
-    : > "$S/STOP"
-    kill -TERM "$pid" 2>/dev/null; sleep 20; kill -KILL "$pid" 2>/dev/null
+  lv=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 1)
+  if [ "\${lv:-1}" -ge 2 ]; then warn=$((warn + 1)); else warn=0; fi
+  why=''; sticky=0
+  [ "$warn" -ge 4 ] && why="memory pressure warn x\${warn} (\${lv})"
+  [ "\${lv:-1}" -ge 4 ] && why="memory pressure critical (\${lv})"
+  [ "\${rss:-0}" -gt @@RSS_MAX_MIB@@ ] && { why="RSS \${rss} MiB > @@RSS_MAX_MIB@@ MiB"; sticky=1; }
+  if [ -n "$why" ]; then
+    if [ "$sticky" -eq 1 ]; then : > "$S/STOP"; log "\${why}: stopping all @@USER@@ processes and writing STOP"
+    else log "\${why}: stopping all @@USER@@ processes (no STOP: starts again at the next load or boot)"; fi
+    stop_all
     exit 0
   fi
 done
 wait "$pid"; ec=$?
+reap
 [ "$ec" -eq 0 ] && exit 0
 [ "$ec" -eq 75 ] && { log "restart requested (75)"; exit 75; }
 now=$(date +%s)
@@ -473,7 +496,13 @@ function readme(v) {
 止める（1 か所にまとめる＝MA-24 §16 の 6）
   すぐ止める：sudo launchctl bootout system/${v.LABEL}
   次から起動させない：sudo -u ${v.USER} touch /Users/${v.USER}/.hermes-edl/STOP（消すと次の起動から動く）
-  wrapper が自分で止まる：${v.USER} の RSS 合計が ${v.RSS_MAX_MIB} MiB を超えた時・1 時間に 3 回異常終了した時（STOP を書いて exit 0）
+  wrapper が自分で止まる（exit 0＝launchd は再起動しない）：
+    15 秒ごとの見回りで ${v.USER} の RSS 合計が ${v.RSS_MAX_MIB} MiB を超えた時・1 時間に 3 回異常終了した時 → STOP を書く（Human が消すまで動かない）
+    macOS のメモリ逼迫が危険（1 回）か警告（4 回＝約 1 分続く）の時 → STOP は書かない（VM 自身でも起きるので。次の起動・load で戻る）
+    ${v.RSS_MAX_MIB} MiB は見回りの閾値で、上限の保証ではない（macOS に一般の process のメモリ上限は無い。RSS は検知と停止の間の最大 25 秒、
+    逼迫の警告は約 70 秒の間、超え得る）。最後の見張りは host-health（H7・H8）
+  wrapper が止まる時（launchctl bootout も）は ${v.USER} の process を全部止める＝sudo -u ${v.USER} の対話・編集も止まる。
+    常駐を登録した後に sudo -u ${v.USER} -i で作業する時は、先に bootout するか、STOP を置いてから行う
   Hermes を止めても Trading Lab の LIVE には影響しない（Hermes は LIVE の経路にいない）
 
 外す
