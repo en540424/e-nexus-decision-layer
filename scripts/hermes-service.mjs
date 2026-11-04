@@ -115,30 +115,52 @@ const PROVISION = String.raw`#!/bin/sh
 #   (2) 標準ユーザー @@USER@@（管理者でない・ログイン画面に出さない・home 700）(3) グループ @@GROUP@@（@@USER@@ と @@OPERATOR@@）
 #   (4) Vault の写しの置き場 @@SHARE@@（@@OPERATOR@@ 所有・グループに読み取りだけ）(5) /etc/hermes/config.yaml（root 所有・Hermes の managed scope）
 #   (6) wrapper（root 所有）。LaunchDaemon の登録はしない（README の H7）。Secret は扱わない。
+# 途中で止まったら同じコマンドをもう一度：できている物は飛ばして続きから走る。何かを変える前に、続けてよい状態かを全部確かめる。
+# sysadminctl は失敗しても exit 0 を返す（2026-11-04 実機）＝exit code を信じず、ユーザーができたことを確かめてから先へ進む。
 set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
 APPLY=0; LOCK=0
 for a in "$@"; do case "$a" in --apply) APPLY=1 ;; --lock-operator-home) LOCK=1 ;; *) echo "unknown argument: $a" >&2; exit 2 ;; esac; done
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-run() { echo "+ $*"; if [ "$APPLY" -eq 1 ]; then "$@"; fi; }
+run() { printf '+'; for x in "$@"; do printf " '%s'" "$x"; done; echo; if [ "$APPLY" -eq 1 ]; then "$@"; fi; }
+die() { echo "FAIL: $*" >&2; exit 1; }
+attr() { dscl . -read /Users/@@USER@@ "$1" 2>/dev/null | sed -n "s/^$1: //p"; }
 [ "$(uname -s)" = Darwin ] || { echo "macOS only" >&2; exit 2; }
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 2; }
 id @@OPERATOR@@ >/dev/null 2>&1 || { echo "operator @@OPERATOR@@ not found" >&2; exit 2; }
-if id @@USER@@ >/dev/null 2>&1; then echo "user @@USER@@ already exists（作り直さない）" >&2; exit 2; fi
+state=none
+if dscl . -read /Users/@@USER@@ RecordName >/dev/null 2>&1; then
+  uid=$(attr UniqueID); home=$(attr NFSHomeDirectory)
+  if [ -z "$uid" ] && [ -z "$home" ]; then state=partial   # 前回の失敗で残った空のレコード（UID も home も無い＝ログインできず、何も持たない）
+  elif id @@USER@@ >/dev/null 2>&1 && [ "$home" = /Users/@@USER@@ ] && [ "$uid" -gt 500 ]; then state=ready
+  else echo "user @@USER@@ は別の形で既にある（作り直さない）: uid=$uid home=$home" >&2; exit 2; fi
+fi
+if [ "$state" = ready ] && dseditgroup -o checkmember -m @@USER@@ admin >/dev/null 2>&1; then echo "user @@USER@@ is admin：作り直さない" >&2; exit 2; fi
+if [ -e @@SHARE@@ ] && [ "$(stat -f '%Su %Sg %Lp' @@SHARE@@)" != "@@OPERATOR@@ @@GROUP@@ 750" ]; then
+  echo "@@SHARE@@ already exists（所有者・グループ・権限が違う。install -d は既存の権限を変えるので、専用の新しいフォルダだけにする）" >&2; exit 2
+fi
 mode=$(stat -f '%Lp' /Users/@@OPERATOR@@)
 if [ "$mode" != 700 ]; then
   if [ "$LOCK" -eq 1 ]; then run chmod 700 /Users/@@OPERATOR@@
   else echo "/Users/@@OPERATOR@@ is mode $mode: 別ユーザーから ~/.claude・runtime repo・Vault clone が読める。--lock-operator-home を付ける（MA-24 §7-1）" >&2; exit 2; fi
 fi
-run sysadminctl -addUser @@USER@@ -fullName "E-NEXUS Hermes" -shell /bin/zsh -home /Users/@@USER@@ -password - interactive
+[ "$state" = partial ] && run dscl . -delete /Users/@@USER@@
+if [ "$state" != ready ]; then
+  # -password - は対話の入力（引数・ログに残らない）。root なので管理者の認証は要らない（macOS 27 は末尾の interactive を拒否する）
+  run sysadminctl -addUser @@USER@@ -fullName "E-NEXUS Hermes" -shell /bin/zsh -home /Users/@@USER@@ -password -
+  if [ "$APPLY" -eq 1 ]; then id @@USER@@ >/dev/null 2>&1 || die "ユーザー @@USER@@ を作れなかった（sysadminctl の表示を見る。ここから先は何もしていない）"; fi
+fi
 run dscl . -create /Users/@@USER@@ IsHidden 1
-run createhomedir -c -u @@USER@@
+[ -d /Users/@@USER@@ ] || run createhomedir -c -u @@USER@@
+if [ "$APPLY" -eq 1 ] && [ ! -d /Users/@@USER@@ ]; then run install -d -o @@USER@@ -g staff -m 700 /Users/@@USER@@; fi
 run chmod 700 /Users/@@USER@@
-run dseditgroup -o create -r "E-NEXUS Hermes Vault readers" @@GROUP@@
-run dseditgroup -o edit -a @@USER@@ -t user @@GROUP@@
-run dseditgroup -o edit -a @@OPERATOR@@ -t user @@GROUP@@
-[ -e @@SHARE@@ ] && { echo "@@SHARE@@ already exists（install -d は既存の権限を変えるので、専用の新しいフォルダだけにする）" >&2; exit 2; }
-run install -d -o @@OPERATOR@@ -g @@GROUP@@ -m 750 @@SHARE@@ @@SHARE@@/vault
+if [ "$APPLY" -eq 1 ]; then [ "$(stat -f '%Su %Lp' /Users/@@USER@@)" = "@@USER@@ 700" ] || die "/Users/@@USER@@ の所有者・権限が違う"; fi
+dscl . -read /Groups/@@GROUP@@ PrimaryGroupID >/dev/null 2>&1 || run dseditgroup -o create -r "E-NEXUS Hermes Vault readers" @@GROUP@@
+for m in @@USER@@ @@OPERATOR@@; do
+  dseditgroup -o checkmember -m "$m" @@GROUP@@ >/dev/null 2>&1 || run dseditgroup -o edit -a "$m" -t user @@GROUP@@
+done
+[ -e @@SHARE@@ ] || run install -d -o @@OPERATOR@@ -g @@GROUP@@ -m 750 @@SHARE@@
+[ -e @@SHARE@@/vault ] || run install -d -o @@OPERATOR@@ -g @@GROUP@@ -m 750 @@SHARE@@/vault
 run install -d -o root -g wheel -m 755 /etc/hermes
 run install -o root -g wheel -m 644 "$HERE/managed-config.yaml" /etc/hermes/config.yaml
 run install -d -o root -g wheel -m 755 "@@WRAPPER_DIR@@"
@@ -244,7 +266,7 @@ const RUN = String.raw`#!/bin/sh
 # Hermes gateway の wrapper（root 所有・LaunchDaemon @@LABEL@@ が UserName=@@USER@@ で起動）。生成：scripts/hermes-service.mjs
 # 止める：sudo launchctl bootout system/@@LABEL@@（Human）か、touch /Users/@@USER@@/.hermes-edl/STOP（次の起動から動かない）。
 # KeepAlive は「異常終了の時だけ」。exit 0 では再起動しない＝STOP・メモリ超過・メモリ逼迫・異常終了の重なり（1 時間に 3 回）では exit 0 で止まる。
-# Hermes の exit 75（再起動の依頼。hermes update の後）はそのまま返し、launchd が ThrottleInterval の後に起動し直す。
+# Hermes の exit 75（再起動の依頼。hermes update の後）はそのまま返し、launchd が ThrottleInterval の後に起動し直す。75 も異常終了の重なりに数える（再起動の繰り返しを止める）。
 # どの終わり方でも、終える前に @@USER@@ の残りの process（gateway の子・別の process group も）を全部止める＝sudo -u @@USER@@ の対話も止まる。
 set -u
 # kill -KILL -1 は「自分と同じ user の process 全部」に届く＝@@USER@@ 以外（特に root）では絶対に動かさない
@@ -254,7 +276,7 @@ mkdir -p "$S"
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 [ -f "$S/STOP" ] && { log "STOP present: not starting"; exit 0; }
 # 起動から 10 分は待つ（停電・再起動の直後は同居の VM の復旧を優先する）
-up=$(( $(date +%s) - $(sysctl -n kern.boottime | sed 's/.*sec = \([0-9]*\).*/\1/') ))
+up=$(( $(date +%s) - $(sysctl -n kern.boottime | sed 's/^{ sec = \([0-9]*\),.*/\1/') ))
 [ "$up" -lt 600 ] && sleep $((600 - up))
 ulimit -n 4096
 ulimit -u 512
@@ -292,11 +314,11 @@ done
 wait "$pid"; ec=$?
 reap
 [ "$ec" -eq 0 ] && exit 0
-[ "$ec" -eq 75 ] && { log "restart requested (75)"; exit 75; }
 now=$(date +%s)
 echo "$now" >> "$S/crashes"
 recent=$(awk -v t=$((now - 3600)) '$1 >= t' "$S/crashes" | wc -l | tr -d ' ')
 if [ "$recent" -ge 3 ]; then log "exit $ec: $recent crashes in 1h, writing STOP"; : > "$S/STOP"; exit 0; fi
+[ "$ec" -eq 75 ] && { log "restart requested (75)"; exit 75; }
 log "exit $ec"
 exit "$ec"
 `;
@@ -383,9 +405,21 @@ y=$(perl -e 'alarm 30; exec @ARGV' /usr/bin/ruby -ryaml -e 'c = YAML.safe_load(F
 [ "$y" = "false anthropic @@DEFAULT_MODEL@@ https://api.anthropic.com []" ] && ok "8 managed scope（YAML として読んだ値）：adopt false・Anthropic 直結・@@DEFAULT_MODEL@@・fallback なし" || ng "8 /etc/hermes/config.yaml を YAML として読めないか、値が想定と違う（読めないと Hermes は黙って無視する）"
 if as test -x /Users/@@USER@@/.local/bin/hermes; then
   cfg=$(perl -e 'alarm 60; exec @ARGV' sudo -u @@USER@@ -i hermes config 2>&1) || true
-  if echo "$cfg" | grep -q '/etc/hermes' && echo "$cfg" | grep -qE 'adopt_external_logins[^a-z]{0,8}false'; then
-    ok "8 hermes config が managed scope と adopt_external_logins: false を示す"
-  else ng "8 hermes config に /etc/hermes と adopt_external_logins: false が揃って出ない（hermes doctor・hermes config を目で確かめる。形の違いなら手の確認で可）"; fi
+  # hermes config は管理対象の key の名前だけを出し、値は出さない（v0.22.4 の hermes_cli/config_show.py）→ 値は hermes config get（load_config の結果）で見る
+  if echo "$cfg" | grep -q 'managed by your administrator (/etc/hermes)' && echo "$cfg" | grep -q 'auth\.adopt_external_logins'; then
+    ok "8 hermes config が /etc/hermes の管理と auth.adopt_external_logins の固定を示す"
+  else ng "8 hermes config に /etc/hermes の管理か auth.adopt_external_logins の固定が出ない（managed scope が読まれていない）"; fi
+  pin() {
+    got=$(perl -e 'alarm 60; exec @ARGV' sudo -u @@USER@@ -i hermes config get --json "$1" 2>/dev/null | tail -n 1)
+    [ "$got" = "$2" ] && ok "8 Hermes が解決した値：$1 = $2" || ng "8 Hermes が解決した値が想定と違う：$1 = \${got:-読めない}（想定 \${2}）"
+  }
+  pin auth.adopt_external_logins false
+  pin model.provider '"anthropic"'
+  pin model.default '"@@DEFAULT_MODEL@@"'
+  pin model.base_url '"https://api.anthropic.com"'
+  pin fallback_providers '[]'
+  pin approvals.mode '"manual"'
+  pin agent.disabled_toolsets '@@DISABLED_JSON@@'
 else
   echo "INFO 8 hermes はまだ入っていない（H3 の後にもう一度）"
 fi
@@ -409,8 +443,9 @@ else echo "INFO 8 ログ・session はまだ無い"; fi
 dseditgroup -o checkmember -m @@USER@@ admin >/dev/null 2>&1 && ng "@@USER@@ が admin" || ok "@@USER@@ は管理者でない"
 if out=$(launchctl print system/@@LABEL@@ 2>/dev/null); then
   echo "$out" | grep -iE '^[[:space:]]*(state|username|spawn type|last exit code) =' | sed 's/^[[:space:]]*/INFO 9 launchctl: /'
-  pgrep -U @@USER@@ -f 'hermes gateway' >/dev/null && ok "9 gateway は @@USER@@ の process" || ng "9 @@USER@@ の gateway の process が無い"
-  for p in $(pgrep -f 'hermes gateway'); do [ "$(ps -o user= -p "$p" | tr -d ' ')" = @@USER@@ ] || ng "9 @@USER@@ 以外の user で gateway が動いている（pid \${p}）"; done
+  # hermes は python の -c の起動で動くので、command line に「hermes gateway」は出ない（実機：python3 -I -c … gateway run --external-supervisor）
+  pgrep -U @@USER@@ -f 'gateway run --external-supervisor' >/dev/null && ok "9 gateway は @@USER@@ の process" || ng "9 @@USER@@ の gateway の process が無い"
+  for p in $(pgrep -f 'gateway run --external-supervisor'); do [ "$(ps -o user= -p "$p" | tr -d ' ')" = @@USER@@ ] || ng "9 @@USER@@ 以外の user で gateway が動いている（pid \${p}）"; done
 else
   echo "INFO 9 @@LABEL@@ は未登録（H7 の後にもう一度）"
 fi
@@ -462,7 +497,8 @@ function readme(v) {
      workspace が分け合うので、workspace の上限は要る。クレジットだけの組織は使い切ると API が止まる（Max の枠・プランへは請求されない）が、
      購入したクレジットや auto-reload があると止まらずに有料で続く → 始める前に Console の Billing で、Promotional credits の残高と期限・
      購入したクレジットの残高・auto-reload の On／Off を Human が確かめる（出典：platform.claude.com/docs/en/about-claude/api-credits-for-subscribers）。
-  H1 sudo sh provision.sh            → 表示を読む → sudo sh provision.sh --apply --lock-operator-home（Human）
+  H1 sudo sh provision.sh --lock-operator-home → 表示を読む → sudo sh provision.sh --apply --lock-operator-home（Human）
+     途中で止まったら同じコマンドをもう一度（続きから走る。前回の失敗で残った空のレコードは消して作り直す。同じ名前の別のユーザーがあれば何も変えずに止まる）
   H2 sh vault-copy.sh                → 表示を読む → sh vault-copy.sh --apply（${v.OPERATOR}）
      写す範囲は許可リスト ${v.INCLUDE_FILE}（無ければ動かない）から ${v.EXCLUDE_FILE} を引いたもの。そこから .md・.txt 以外と、
      中身が vault-deny-patterns.txt（鍵・IP・電話・メール・口座・給与・顧客・契約の語）にあたるファイルを落とす。落とした一覧は
@@ -474,7 +510,11 @@ function readme(v) {
        sudo -u ${v.USER} -i → umask 077; nano ~/.hermes/.env に ANTHROPIC_API_KEY=… を貼る → chmod 600 ~/.hermes/.env → exit → pbcopy < /dev/null（クリップボードを消す）。
      鍵を echo・export・コマンドの引数に書かない（shell の履歴・ps に残る）。値を他の場所（メモ・チャット・Windows）に残さない。失くしたら失効して発行し直す
   H5 sudo sh acceptance.sh（Human）→ FAIL 0（managed scope が効いていること・.env の名前と権限も見る）
-  H6 sudo -u ${v.USER} -i hermes で 1 回だけ対話（Human）。Vault の写し ${v.SHARE}/vault を読ませる。終わったら acceptance をもう一度。
+  H6 1 回だけ対話（Human）。hermes は全部 gateway 経由で、常駐が無い時は launchctl print gui/<uid>/… を見る。GUI の session が無い専用ユーザーでは
+     exit 125 になり「Gateway inaccessible: service_manager_unavailable」で止まる（常駐が動いていれば見に行かない）→ H7 の前は wrapper を手で動かす（登録なし・保護は同じ）：
+       Terminal A：sudo -u ${v.USER} -i env HERMES_HOME=/Users/${v.USER}/.hermes HERMES_WRITE_SAFE_ROOT=/Users/${v.USER}/work /usr/sbin/taskpolicy -b /bin/sh "${v.WRAPPER_DIR}/run.sh"
+       Terminal B：30 秒ほど待ってから sudo -u ${v.USER} -i hermes で短い対話 → 終わったら Terminal A で Ctrl+C（${v.USER} の process は全部止まる。ps -U ${v.USER} で 0 を確かめる）
+     つながったら Vault の写し ${v.SHARE}/vault を読ませる。終わったら acceptance をもう一度。
      Console の Usage で、この 1 回の分が Hermes の workspace に付いたこと（Decision Layer の鍵・Max の枠ではないこと）を確かめる
   H7 常駐（Human・sudo。host-health が登録済みで、Trading Lab が時期を認めた後）：
        （host-health は ${v.OPERATOR} が node scripts/scheduled-job-service.mjs --job host-health --target launchd --dir <decision-layer>
@@ -519,6 +559,7 @@ export function buildBundle(a, { now = () => new Date() } = {}) {
     INSTALLER_SHA256: a.installerSha256, LABEL: a.label, RSS_MAX_MIB: Number(a.rssMaxMib), WRAPPER_DIR, OUT_DIR: a.outDir, DEFAULT_MODEL,
     README: `${a.outDir}/README.txt`, GENERATED_AT: now().toISOString(),
     RSYNC_EXCLUDES: VAULT_EXCLUDES.map((x) => `--exclude='${x}'`).join(' '),
+    DISABLED_JSON: JSON.stringify(DISABLED_TOOLSETS).replaceAll(',', ', '),
     FORBIDDEN_FIND: FORBIDDEN_NAMES.map((x) => `-iname '${x}'`).join(' -o '),
   };
   return {

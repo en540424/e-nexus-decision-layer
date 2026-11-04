@@ -57,7 +57,7 @@ test('認証：Claude Code の資格情報を流用させない（managed scope 
   assert.match(f['acceptance.sh'], /\.claude\/\.credentials\.json/);
   assert.match(f['acceptance.sh'], /\/Users\/opuser\/\.claude /);
   assert.match(f['provision.sh'], /--lock-operator-home/);
-  assert.match(f['provision.sh'], /sysadminctl -addUser hermes .*-password - interactive/);
+  assert.match(f['provision.sh'], /sysadminctl -addUser hermes .*-password -\n/, 'パスワードは対話の入力・macOS 27 は末尾の interactive を拒否する');
   assert.ok(!/-admin\b/.test(f['provision.sh'].replace(/checkmember -m hermes admin/g, '')), '管理者にしない');
 });
 
@@ -82,6 +82,11 @@ test('常駐：LaunchDaemon は UserName・Background・異常終了の時だけ
   assert.match(r, /-gt 3072 \]/);
   assert.match(r, /STOP present: not starting"; exit 0/);
   assert.match(r, /\[ "\$up" -lt 600 \]/, '起動直後は VM の復旧を優先して待つ');
+  // kern.boottime は「{ sec = N, usec = M } ...」：usec を拾うと up が巨大になり、待たずに起動する（2026-11-04 実機で発覚）
+  const sedExpr = r.match(/kern\.boottime \| sed '([^']+)'/)[1];
+  const parsed = spawnSync('/usr/bin/sed', [sedExpr], { input: '{ sec = 1790751889, usec = 572739 } Wed Sep 30 16:04:49 2026\n', encoding: 'utf8', timeout: 5000 });
+  assert.equal(parsed.stdout.trim(), '1790751889');
+  assert.ok(r.indexOf('$S/crashes"\n') < r.indexOf('restart requested (75)'), 'exit 75 の繰り返しも 1 時間に 3 回で止める');
   // メモリ：見回りで止める（上限の保証とは書かない）・macOS のメモリ逼迫でも止める・gateway の子（別の process group）まで止める
   assert.match(r, /sleep 15 & wait \$!/);
   assert.match(r, /sysctl -n kern\.memorystatus_vm_pressure_level/);
@@ -95,6 +100,7 @@ test('常駐：LaunchDaemon は UserName・Background・異常終了の時だけ
   assert.match(r, /wait "\$pid"; ec=\$\?\nreap\n/, '異常終了・75 の時も子を残さない');
   assert.match(r, /trap 'stop_all; log "stopped by signal"; exit 0' TERM INT/);
   assert.match(r, /上限の保証ではない/);
+  assert.match(bundle()['README.txt'], /service_manager_unavailable[\s\S]*\/usr\/sbin\/taskpolicy -b \/bin\/sh "[^"]*\/run\.sh"/, 'H7 の前の対話は登録なしで wrapper を手で動かす');
   assert.match(bundle()['README.txt'], /上限の保証ではない/);
 });
 
@@ -149,7 +155,18 @@ test('検収：確かめられない時は PASS にしない・managed scope を
   assert.match(acc, /\/usr\/bin\/ruby -ryaml -e 'c = YAML\.safe_load/);
   assert.match(acc, /= "false anthropic claude-haiku-5-5 https:\/\/api\.anthropic\.com \[\]" \] && ok/);
   assert.match(acc, /sudo -u hermes -i hermes config 2>&1\) \|\| true/);
-  assert.match(acc, /grep -q '\/etc\/hermes' && echo "\$cfg" \| grep -qE 'adopt_external_logins\[\^a-z\]\{0,8\}false'/, '名前だけでなく false まで見る');
+  assert.match(acc, /grep -q 'managed by your administrator \(\/etc\/hermes\)' && echo "\$cfg" \| grep -q 'auth\\.adopt_external_logins'/, 'hermes config は key の名前だけを出す');
+  // 値は Hermes が load_config で解決した結果を key ごとに完全一致で見る（hermes config の表示からは値が分からない）
+  assert.match(acc, /sudo -u hermes -i hermes config get --json "\$1"/);
+  assert.match(acc, /\[ "\$got" = "\$2" \] && ok .* \|\| ng /);
+  assert.match(acc, /^  pin auth\.adopt_external_logins false$/m);
+  assert.match(acc, /^  pin model\.provider '"anthropic"'$/m);
+  assert.match(acc, /^  pin model\.default '"claude-haiku-5-5"'$/m);
+  assert.match(acc, /^  pin model\.base_url '"https:\/\/api\.anthropic\.com"'$/m);
+  assert.match(acc, /^  pin fallback_providers '\[\]'$/m);
+  assert.match(acc, /^  pin approvals\.mode '"manual"'$/m);
+  assert.ok(acc.includes(`pin agent.disabled_toolsets '${JSON.stringify(DISABLED_TOOLSETS).replaceAll(',', ', ')}'`));
+  assert.ok(!/形の違いなら手の確認で可/.test(acc), '手の確認へ逃がさない');
   assert.match(acc, /stat -f '%Su %Lp' "\$E"\)" = "hermes 600"/);
   assert.match(acc, /sed -n 's\/\^\\\(export \\\)\\\{0,1\\\}\\\(\[A-Z\]\[A-Z0-9_\]\\\{0,63\\\}\\\)=/, '名前の形を狭くし、値の一部を名前として拾わない');
   assert.match(acc, /grep -vx ANTHROPIC_API_KEY/);
@@ -238,12 +255,176 @@ test('vault-copy.sh を小さな検体で実行：許可リストの外・.md �
   }
 });
 
+// run.sh を偽の hermes・ps・sysctl・sleep で実行する。kill -KILL -1 は実行した user の process を全部止める（enexus なら同居の VM ごと）
+// ＝test では user の確認と一緒に必ず外し、外れたことを確かめてからでないと実行しない
+function wrapperRun({ hermes = 'exit 7', rssKib = 1024, pressure = 1, runs = 1, uptime = 86_400 } = {}) {
+  const t = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'edl-wrapper-')));
+  const bin = path.join(t, 'bin');
+  mkdirSync(bin);
+  const state = path.join(t, 'edl');
+  const boot = Math.floor(Date.now() / 1000) - uptime;
+  const fake = {
+    hermes,
+    ps: `echo ${rssKib}`,
+    sysctl: `case "$2" in kern.boottime) echo '{ sec = ${boot}, usec = 572739 } Wed Sep 30 16:04:49 2026' ;; *) echo ${pressure} ;; esac`,
+    sleep: `echo "$1" >> "${t}/slept"`,
+  };
+  for (const [k, v] of Object.entries(fake)) writeFileSync(path.join(bin, k), `#!/bin/sh\n${v}\n`, { mode: 0o755 });
+  const script = bundle()['run.sh']
+    .replace(/^\[ "\$\(id -un\)" = hermes \].*\n/m, '')
+    .replace(/^reap\(\) \{.*\n/m, 'reap() { :; }\n')
+    .replace('ulimit -u 512\n', '')
+    .replaceAll('/Users/hermes/.local/bin/hermes', path.join(bin, 'hermes'))
+    .replaceAll('/Users/hermes/.hermes-edl', state);
+  assert.ok(!/kill -KILL/.test(script.replace(/^#.*$/gm, '')), 'kill -KILL -1 を外せていなければ実行しない');
+  const file = path.join(t, 'run.sh');
+  writeFileSync(file, script);
+  const codes = [];
+  let out = '';
+  for (let i = 0; i < runs; i += 1) {
+    const r = spawnSync('/bin/sh', [file], { encoding: 'utf8', timeout: 15_000, env: { PATH: `${bin}:/usr/bin:/bin`, HOME: t } });
+    codes.push(r.status);
+    out += r.stdout;
+  }
+  const stop = existsSync(path.join(state, 'STOP'));
+  const slept = existsSync(path.join(t, 'slept')) ? readFileSync(path.join(t, 'slept'), 'utf8') : '';
+  rmSync(t, { recursive: true, force: true });
+  return { codes, out, stop, slept };
+}
+
+test('wrapper：異常終了は 1 時間に 3 回で STOP・exit 0＝launchd が再起動しない・STOP があれば起動しない', () => {
+  const r = wrapperRun({ runs: 4 });
+  assert.deepEqual(r.codes, [7, 7, 0, 0]);
+  assert.equal(r.stop, true);
+  assert.match(r.out, /3 crashes in 1h, writing STOP/);
+  assert.match(r.out, /STOP present: not starting/);
+});
+
+test('wrapper：exit 75 の繰り返しも止まる・正常終了は再起動させない', () => {
+  const r = wrapperRun({ hermes: 'exit 75', runs: 3 });
+  assert.deepEqual(r.codes, [75, 75, 0]);
+  assert.equal(r.stop, true);
+  const clean = wrapperRun({ hermes: 'exit 0' });
+  assert.deepEqual(clean.codes, [0]);
+  assert.equal(clean.stop, false);
+});
+
+test('wrapper：RSS 超過は STOP を書いて止まる・メモリ逼迫は STOP を書かずに止まる・どちらも exit 0', () => {
+  const rss = wrapperRun({ hermes: 'exec /bin/sleep 20', rssKib: 3073 * 1024 });
+  assert.deepEqual(rss.codes, [0]);
+  assert.equal(rss.stop, true);
+  assert.match(rss.out, /RSS 3073 MiB > 3072 MiB/);
+  const critical = wrapperRun({ hermes: 'exec /bin/sleep 20', pressure: 4 });
+  assert.deepEqual(critical.codes, [0]);
+  assert.equal(critical.stop, false);
+  assert.match(critical.out, /memory pressure critical/);
+  const warn = wrapperRun({ hermes: 'exec /bin/sleep 20', pressure: 2 });
+  assert.deepEqual(warn.codes, [0]);
+  assert.match(warn.out, /memory pressure warn x4/);
+});
+
+test('wrapper：起動の直後は 10 分になるまで待つ（kern.boottime の sec を読む）', () => {
+  assert.match(wrapperRun({ hermes: 'exit 0', uptime: 100 }).slept, /^(499|500)\n/);
+  assert.ok(!/^(499|500)$/m.test(wrapperRun({ hermes: 'exit 0', uptime: 86_400 }).slept), '起動から 10 分を過ぎていれば待たない');
+});
+
+// provision.sh を偽のコマンドだけの PATH で実行する（本物の sysadminctl・dscl には届かない）。パスは一時フォルダへ置き換える
+function provisionRun({ user = 'none', addUser = 'ok', share = 'none', args = ['--apply', '--lock-operator-home'] } = {}) {
+  const t = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'edl-provision-')));
+  const bin = path.join(t, 'bin');
+  mkdirSync(bin); mkdirSync(path.join(t, 'home'));
+  const log = path.join(t, 'calls.log');
+  const home = path.join(t, 'home', 'hermes');
+  const state = path.join(t, 'user');
+  if (user === 'partial') writeFileSync(state, 'partial');
+  if (user === 'ready') { writeFileSync(state, 'ready'); mkdirSync(home); }
+  if (user === 'other') writeFileSync(state, 'other');
+  const shareDir = path.join(t, 'share');
+  if (share !== 'none') mkdirSync(path.join(shareDir, 'vault'), { recursive: true });
+  const fake = {
+    uname: 'echo Darwin',
+    id: `case "$*" in -u) echo 0 ;; opuser) ;; hermes) grep -q ready "${state}" 2>/dev/null ;; *) exit 1 ;; esac`,
+    stat: `case "$2" in '%Lp') echo 750 ;; '%Su %Lp') echo 'hermes 700' ;; *) echo '${share === 'bad' ? 'root wheel 755' : 'opuser e-nexus-hermes-read 750'}' ;; esac`,
+    chmod: `echo "chmod $*" >> "${log}"`,
+    install: `echo "install $*" >> "${log}"`,
+    sudo: 'exit 1',
+    createhomedir: `echo "createhomedir $*" >> "${log}"; mkdir -p "${home}"`,
+    dseditgroup: `case "$2" in checkmember) exit 1 ;; *) echo "dseditgroup $*" >> "${log}" ;; esac`,
+    sysadminctl: `echo "sysadminctl $*" >> "${log}"; ${addUser === 'ok' ? `echo ready > "${state}"` : 'echo "Invalid option" >&2'}; exit 0`,
+    dscl: `case "$2 $3" in
+  -delete*) echo "dscl $*" >> "${log}"; rm -f "${state}" ;;
+  -create*) echo "dscl $*" >> "${log}" ;;
+  "-read "*/Groups/*) exit 56 ;;
+  *) [ -f "${state}" ] || exit 56
+     case "$(cat "${state}"):$4" in
+       ready:UniqueID) echo 'UniqueID: 502' ;;
+       ready:NFSHomeDirectory) echo 'NFSHomeDirectory: ${home}' ;;
+       other:UniqueID) echo 'UniqueID: 503' ;;
+       other:NFSHomeDirectory) echo 'NFSHomeDirectory: /var/empty' ;;
+       *:RecordName) echo 'RecordName: hermes' ;;
+       *) echo "No such key: $4" ;;
+     esac ;;
+esac`,
+  };
+  for (const [k, v] of Object.entries(fake)) writeFileSync(path.join(bin, k), `#!/bin/sh\n${v}\n`, { mode: 0o755 });
+  for (const c of ['/usr/bin/sed', '/usr/bin/dirname', '/usr/bin/grep', '/bin/cat', '/bin/rm', '/bin/mkdir']) symlinkSync(c, path.join(bin, path.basename(c)));
+  const script = bundle()['provision.sh']
+    .replace('PATH=/usr/bin:/bin:/usr/sbin:/sbin', `PATH=${bin}`)
+    .replaceAll('/Users/hermes', home)
+    .replaceAll('/Users/Shared/e-nexus-hermes', shareDir);
+  const file = path.join(t, 'provision.sh');
+  writeFileSync(file, script);
+  const r = spawnSync('/bin/sh', [file, ...args], { encoding: 'utf8', timeout: 10_000 });
+  const calls = existsSync(log) ? readFileSync(log, 'utf8') : '';
+  rmSync(t, { recursive: true, force: true });
+  return { code: r.status, out: r.stdout, err: r.stderr, calls };
+}
+
+test('provision：sysadminctl が exit 0 で失敗しても先へ進まない（2026-11-04 実機の再現）', () => {
+  const r = provisionRun({ addUser: 'fail' });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /作れなかった/);
+  assert.match(r.calls, /^chmod 700 .*\nsysadminctl -addUser hermes .* -password -\n$/, 'home の 700 と sysadminctl の後は何も変えない');
+});
+
+test('provision：空のレコードは消して作り直す・できている物は飛ばして続きから走る・別の形は止まる', () => {
+  const fresh = provisionRun();
+  assert.equal(fresh.code, 0, fresh.err);
+  assert.ok(fresh.calls.indexOf('sysadminctl') < fresh.calls.indexOf('dscl . -create'), 'レコードを触るのはユーザーができた後');
+  assert.ok(!/dscl \. -delete/.test(fresh.calls));
+  assert.ok(!/interactive/.test(fresh.calls));
+  const partial = provisionRun({ user: 'partial' });
+  assert.equal(partial.code, 0, partial.err);
+  assert.ok(partial.calls.indexOf('dscl . -delete') < partial.calls.indexOf('sysadminctl'));
+  const resumed = provisionRun({ user: 'ready', share: 'ok' });
+  assert.equal(resumed.code, 0, resumed.err);
+  assert.ok(!/sysadminctl|dscl \. -delete|createhomedir/.test(resumed.calls), 'できているユーザーを作り直さない');
+  assert.ok(!/install -d -o opuser/.test(resumed.calls), '既存の置き場の権限を変えない');
+  const other = provisionRun({ user: 'other' });
+  assert.equal(other.code, 2);
+  assert.equal(other.calls, '', '別の形のユーザーがあれば何も変えない');
+  const badShare = provisionRun({ share: 'bad' });
+  assert.equal(badShare.code, 2);
+  assert.equal(badShare.calls, '', '確認は最初の変更より前');
+});
+
+test('provision：表示だけなら何も変えない・引数の区切りが見える', () => {
+  const r = provisionRun({ user: 'partial', args: ['--lock-operator-home'] });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.calls, '');
+  assert.match(r.out, /\+ 'dscl' '\.' '-delete'/);
+  assert.match(r.out, /'[^']*\/install-as-hermes\.sh' '[^']*\/hermes\/install-as-hermes\.sh'/);
+  assert.match(r.out, /'\/Library\/Application Support\/E-NEXUS\/hermes\/run\.sh'/);
+});
+
 test('provision：写しの置き場が既にあれば作らない／検収：別 user の gateway を FAIL に数える（pipe の subshell で数えを失わない）', () => {
   const f = bundle();
-  assert.match(f['provision.sh'], /\[ -e \/Users\/Shared\/e-nexus-hermes \] && \{ echo .*already exists/);
-  assert.ok(f['provision.sh'].indexOf('already exists（install -d') < f['provision.sh'].indexOf('run install -d -o opuser'), '確認が作成より前');
+  assert.match(f['provision.sh'], /\[ -e \/Users\/Shared\/e-nexus-hermes \] && \[ "\$\(stat -f '%Su %Sg %Lp' \/Users\/Shared\/e-nexus-hermes\)" != "opuser e-nexus-hermes-read 750" \]/);
+  assert.ok(f['provision.sh'].indexOf('already exists（') < f['provision.sh'].indexOf('run chmod 700 /Users/opuser'), '確認が最初の変更より前');
   const acc = f['acceptance.sh'];
-  assert.match(acc, /for p in \$\(pgrep -f 'hermes gateway'\); do .* \|\| ng "9 /);
-  assert.ok(!/pgrep -f 'hermes gateway' \| while/.test(acc));
+  assert.match(acc, /for p in \$\(pgrep -f 'gateway run --external-supervisor'\); do .* \|\| ng "9 /);
+  assert.ok(!/pgrep -f '[^']*' \| while/.test(acc));
+  assert.match(acc, /pgrep -U hermes -f 'gateway run --external-supervisor' >\/dev\/null && ok "9 /, 'command line に hermes gateway は出ない（python の -c で動く）');
+  assert.ok(!/pgrep[^\n]*'hermes gateway'/.test(acc));
   assert.ok(!/\\s/.test(acc), 'BSD sed・grep の \\s は使わない');
 });
