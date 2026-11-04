@@ -13,6 +13,8 @@
  *        launchd・systemd は --path 必須（executor の CLI を探す PATH。既定の PATH には npm／Homebrew の global が無く、全 executor が not_installed になる）
  *        host-health（2026-10-21・MA-22 工程 3）：launchd のみ。[--minutes 20,50]（毎時の分・1〜6 個）[--webhook credential:E-NEXUS/edl/<name>]
  *          [--hermes-user <name>]（2026-10-31・Hermes の常駐の後。そのユーザーの RSS・CPU も見る＝host-health の hermes_rss_gib）
+ *          [--webhook-format json|slack|discord]（2026-11-04。Discord は json を受け取らないので必須）[--github-owner <owner>]（GitHub の見張り。無人 job が gh の認証を使う）
+ *        host-health-watchdog（2026-11-04）：launchd のみ。[--minutes 35][--webhook …][--webhook-format …]。host-health の停止を別の job から見る
  *
  * job：
  *   usage-digest＝`node scripts/usage-digest.mjs --hours 24 --fail-on-anomaly`（FB-18。READ-ONLY・課金なし。webhook は資格情報ストアの名前だけ）
@@ -23,6 +25,7 @@
  *     PC が止まっていた間の分は起動後に 1 回走る（Windows StartWhenAvailable・systemd Persistent・launchd は wake 後に実行）
  *   host-health ＝`node scripts/host-health.mjs`（Mac mini のホスト監視。READ-ONLY・Trading Lab の領域は見ない・通知は --webhook の時だけ）。
  *     毎時 :20・:50（H1 足の処理がある :00 前後を避ける）。ログイン直後には走らせない（停電後の復旧と重ねない）
+ *   host-health-watchdog＝`node scripts/host-health-watchdog.mjs`（host-health の記録が途絶えた・解除された・DISABLED を別の job から知らせる。READ-ONLY）
  * --on-anomaly report：`--fail-on-anomaly` を付けない（異常は出力するが exit 0）。Jev を切った staging は Human 率が設計上 100% で、
  * 毎日「異常」扱いになるため（既定は fail）。
  * 実機依存の値（パス・node の場所・PATH・時刻）は引数で受け取り、推測で埋めない。定義に Secret を書かない。
@@ -30,9 +33,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh', 'host-health'];
+export const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh', 'host-health', 'host-health-watchdog'];
 const EVERY_HOURS = [1, 2, 3, 4, 6, 8, 12]; // 24 の約数だけ（毎日同じ時刻に揃う）
-const DEFAULT_HOST_HEALTH_MINUTES = '20,50';
+const DEFAULT_MINUTES = { 'host-health': '20,50', 'host-health-watchdog': '35' };
+const HOST_JOBS = ['host-health', 'host-health-watchdog'];
 const TARGETS = ['launchd', 'windows', 'systemd'];
 const UNSAFE = /["'`$\n\r;&|<>]/;
 const WEBHOOK = /^credential:E-NEXUS\/edl\/[a-z0-9-]{1,64}$/;
@@ -43,7 +47,7 @@ function xml(s) {
 const isAbs = (p) => typeof p === 'string' && (path.posix.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p));
 /** host-health の毎時の分（1〜6 個・0〜59・重複なし）。形が違えば null */
 function minutesOf(a) {
-  const parts = String(a.minutes ?? DEFAULT_HOST_HEALTH_MINUTES).split(',');
+  const parts = String(a.minutes ?? DEFAULT_MINUTES[a.job]).split(',');
   const ms = parts.map((x) => (/^\d{1,2}$/.test(x.trim()) ? Number(x) : NaN));
   if (ms.length < 1 || ms.length > 6 || ms.some((m) => !Number.isInteger(m) || m > 59) || new Set(ms).size !== ms.length) return null;
   return ms;
@@ -86,10 +90,14 @@ export function validateJobArgs(a) {
     if (a.target === 'launchd' && !a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定）');
     if (a.webhook !== undefined) errors.push('watcher-cycle has no webhook（通知は SessionStart の 1 行と proposals/）');
   }
-  if (a.minutes !== undefined && a.job !== 'host-health') errors.push('--minutes is for host-health only');
+  if (a.minutes !== undefined && !HOST_JOBS.includes(a.job)) errors.push('--minutes is for host-health only');
+  if (a.webhookFormat !== undefined && !HOST_JOBS.includes(a.job)) errors.push('--webhook-format is for host-health only');
+  if (a.webhookFormat !== undefined && !['json', 'slack', 'discord'].includes(a.webhookFormat)) errors.push('--webhook-format must be json|slack|discord');
+  if (a.githubOwner !== undefined && a.job !== 'host-health') errors.push('--github-owner is for host-health only');
+  if (a.githubOwner !== undefined && !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.githubOwner)) errors.push('--github-owner must be a GitHub owner name');
   if (a.hermesUser !== undefined && a.job !== 'host-health') errors.push('--hermes-user is for host-health only');
   if (a.hermesUser !== undefined && !/^[a-z_][a-z0-9_-]{0,31}$/.test(a.hermesUser)) errors.push('--hermes-user must be a local user name');
-  if (a.job === 'host-health') {
+  if (HOST_JOBS.includes(a.job)) {
     // 2026-10-21（MA-22 工程 3）：Mac mini のホスト監視。ホスト固有なので launchd だけ（Windows・VPS には置かない）
     if (a.target !== 'launchd') errors.push('host-health is for the Mac mini (launchd) only');
     else if (!a.node && !a.path) errors.push('launchd needs --node <absolute path to node> or --path（実機で確定）');
@@ -107,6 +115,8 @@ export function validateJobArgs(a) {
   return errors;
 }
 
+const webhookArgs = (a) => [...(a.webhook ? ['--webhook', a.webhook] : []), ...(a.webhook && a.webhookFormat ? ['--webhook-format', a.webhookFormat] : [])];
+
 function commandOf(a) {
   if (a.job === 'knowledge-refresh') {
     const args = ['sync/cli.mjs', 'refresh-state', ...(a.vault ? ['--vault', a.vault] : [])];
@@ -121,7 +131,11 @@ function commandOf(a) {
     return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'host-health') {
-    const args = ['scripts/host-health.mjs', ...(a.webhook ? ['--webhook', a.webhook] : []), ...(a.hermesUser ? ['--hermes-user', a.hermesUser] : [])];
+    const args = ['scripts/host-health.mjs', ...webhookArgs(a), ...(a.hermesUser ? ['--hermes-user', a.hermesUser] : []), ...(a.githubOwner ? ['--github-owner', a.githubOwner] : [])];
+    return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
+  }
+  if (a.job === 'host-health-watchdog') {
+    const args = ['scripts/host-health-watchdog.mjs', ...webhookArgs(a)];
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'watcher-cycle') {
@@ -197,7 +211,7 @@ export function renderJob(a) {
         // Mac mini は本番の workload（2026-10-21〜 Trading Lab の LIVE VM）と同居する。定期 job は CPU・I/O を譲る（launchd の Background＝強い資源制限・低優先度 I/O）
         '  <key>ProcessType</key><string>Background</string>',
         '  <key>LowPriorityIO</key><true/>',
-        ...(a.job === 'host-health'
+        ...(HOST_JOBS.includes(a.job)
           ? [`  <key>StartCalendarInterval</key><array>${minutesOf(a).map((m) => `<dict><key>Minute</key><integer>${m}</integer></dict>`).join('')}</array>`, '  <key>RunAtLoad</key><false/>'] // 毎時の決まった分だけ
           : every
             ? [`  <key>StartInterval</key><integer>${every * 3600}</integer>`, '  <key>RunAtLoad</key><true/>'] // ログイン直後にも 1 回（止まっていた間に stale になった実測を戻す）
@@ -235,7 +249,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser', '--webhook-format': 'webhookFormat', '--github-owner': 'githubOwner' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];

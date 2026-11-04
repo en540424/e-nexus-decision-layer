@@ -5,13 +5,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir, hostname, userInfo } from 'node:os';
 import path from 'node:path';
 import {
   ALLOWED_BINS, TRADING_LAB_PATH, makeRunner, collect, evaluate, evaluateEvents, decide, runHostHealth, postAlerts, webhookBodyOf,
   parseDfAvailableBytes, parseSwapUsedBytes, parseLoadavg, parseBoottime, parseThermal, parsePowerSource, parseRoute, parseLaunchctlPrint,
-  parseEtimeSeconds, parsePsUsage, parseArgs, validateArgs, REMIND_MS,
+  parseEtimeSeconds, parsePsUsage, parseArgs, validateArgs, REMIND_MS, GAP_MS, PAUSE_MAX_MS, RECOVER_RUNS, alertText, safeValue, isDiscordWebhook, monitorGapEvent, pauseState, recordFailure,
 } from '../scripts/host-health.mjs';
 
 const OUT = {
@@ -78,6 +78,7 @@ test('読み取り：Mac mini の実出力から空き・逼迫・swap・load・
   assert.deepEqual(parseLaunchctlPrint({ code: 113, stdout: '' }), { loaded: false });
   assert.deepEqual(parseLaunchctlPrint({ code: 0, stdout: OUT.launchctlLoaded }), { loaded: true, state: 'not running', pid: null, last_exit_code: 0, spawn_type: 'background' });
   assert.equal(parseLaunchctlPrint({ code: 0, stdout: '\tstate = not running\n\tlast exit code = (never exited)\n' }).last_exit_code, null);
+  assert.equal(parseLaunchctlPrint({ code: 0, stdout: '\tstate = not running\n\tlast exit code = 78: EX_CONFIG\n' }).last_exit_code, 78);
   assert.equal(parseEtimeSeconds('   05:06\n'), 306);
   assert.equal(parseEtimeSeconds('01:02:03'), 3723);
   assert.equal(parseEtimeSeconds('2-03:04:05'), 2 * 86400 + 3 * 3600 + 4 * 60 + 5);
@@ -104,7 +105,7 @@ test('境界：許可したコマンドだけ・shell なし・最小の env・5
   const psCalls = calls.filter((c) => c[0] === '/bin/ps');
   assert.deepEqual(psCalls, [['/bin/ps', '-U', 'hermes', '-o', 'rss=,pcpu=']], 'ps は Hermes ユーザーだけ（全 process の一覧を取らない）');
   const launchctl = calls.filter((c) => c[0] === '/bin/launchctl').map((c) => c[2]);
-  assert.deepEqual(launchctl, ['gui/501/com.e-nexus.usage-digest', 'gui/501/com.e-nexus.rotate-logs', 'gui/501/com.e-nexus.watcher-cycle', 'gui/501/com.e-nexus.knowledge-refresh'], 'Mac Runtime 自身の定期 job だけ（host-health 自身は含めない）');
+  assert.deepEqual(launchctl, ['gui/501/com.e-nexus.usage-digest', 'gui/501/com.e-nexus.rotate-logs', 'gui/501/com.e-nexus.watcher-cycle', 'gui/501/com.e-nexus.knowledge-refresh', 'gui/501/com.e-nexus.host-health-watchdog'], 'Mac Runtime 自身の定期 job だけ（host-health 自身は含めない）');
 });
 
 test('判定：初期値のしきい値（空き 50／20 GiB・逼迫 2／4・swap 2 GiB・load > ncpu・発熱・電源・既定経路）', async () => {
@@ -141,7 +142,7 @@ test('判定：Mac Runtime の job は未登録なら ok・exit ≠ 0 と 30 分
   assert.deepEqual([s.level, s.value], ['warn', 'running 45m']);
 });
 
-test('通知の判定：変化した時だけ・WARN は 12 時間・CRIT は 3 時間ごと・回復は 1 回・unknown は前の状態を保つ・PAUSE は知らせず状態も進めない', () => {
+test('通知の判定：変化した時だけ・WARN は 12 時間・CRIT は 3 時間ごと・回復は 2 回続いて 1 回・unknown は前の状態を保つ・PAUSE は知らせず状態も進めない', () => {
   const at = (ms) => new Date(T0.getTime() + ms).toISOString();
   const warn = [{ id: 'disk_free_gib', level: 'warn', value: 40, kind: 'state' }];
   const d1 = decide(warn, null, { now: at(0) });
@@ -154,7 +155,11 @@ test('通知の判定：変化した時だけ・WARN は 12 時間・CRIT は 3 
   assert.deepEqual(d2.notify.map((n) => n.change), ['new'], '悪化は新しい変化');
   assert.deepEqual(decide(crit, { items: d2.items }, { now: at(60_000 + REMIND_MS.crit) }).notify.map((n) => n.change), ['reminder']);
   const okNow = [{ id: 'disk_free_gib', level: 'ok', value: 80, kind: 'state' }];
-  const d3 = decide(okNow, { items: d2.items }, { now: at(120_000) });
+  const held = decide(okNow, { items: d2.items }, { now: at(120_000) });
+  assert.equal(held.notify.length, 0, `回復は ${RECOVER_RUNS} 回続いてから`);
+  assert.equal(held.items.disk_free_gib.level, 'crit');
+  assert.equal(decide(crit, { items: held.items }, { now: at(130_000) }).notify.length, 0, '行き来しても「発生」を重ねない');
+  const d3 = decide(okNow, { items: held.items }, { now: at(150_000) });
   assert.deepEqual(d3.notify.map((n) => n.change), ['recovered']);
   assert.equal(decide(okNow, { items: d3.items }, { now: at(180_000) }).notify.length, 0, '回復は 1 回だけ');
   const unknown = [{ id: 'disk_free_gib', level: 'unknown', value: null, kind: 'state' }];
@@ -249,10 +254,13 @@ test('postAlerts：URL は資格情報ストアからだけ・https 必須・名
   assert.equal((await postAlerts(notify, { spec: 'credential:E-NEXUS/edl/h', readCredentialImpl: async () => null, fetchImpl })).code, 'WEBHOOK_CREDENTIAL_MISSING');
   assert.equal((await postAlerts(notify, { spec: 'credential:E-NEXUS/edl/h', readCredentialImpl: async () => 'http://hooks.example/x', fetchImpl })).code, 'WEBHOOK_URL_INSECURE');
   assert.equal(fetched.length, 0);
-  const r = await postAlerts(notify, { spec: 'credential:E-NEXUS/edl/h', format: 'discord', at: 'x', readCredentialImpl: async () => 'https://hooks.example/abc', fetchImpl });
+  assert.equal((await postAlerts(notify, { spec: 'credential:E-NEXUS/edl/h', format: 'discord', at: 'x', readCredentialImpl: async () => 'https://hooks.example/abc', fetchImpl })).code, 'WEBHOOK_URL_NOT_DISCORD', '資格情報を取り違えても別の宛先へ送らない');
+  assert.equal(fetched.length, 0);
+  const r = await postAlerts(notify, { spec: 'credential:E-NEXUS/edl/h', format: 'discord', at: 'x', readCredentialImpl: async () => 'https://discord.com/api/webhooks/123/abc-DEF_9', fetchImpl });
   assert.deepEqual(r, { sent: true, code: 'SENT' });
   assert.equal(fetched[0].init.method, 'POST');
-  assert.ok(!fetched[0].init.body.includes('hooks.example'), 'URL を本文に入れない');
+  assert.equal(fetched[0].init.redirect, 'error', 'redirect で別の宛先へ本文を送らない');
+  assert.ok(!fetched[0].init.body.includes('discord.com') && !fetched[0].init.body.includes('abc-DEF_9'), 'URL を本文に入れない');
 });
 
 test('止まる：3 回続けて失敗したら DISABLED を作り、以後は何もしない（exit 3）。Human が消せば戻る', async () => {
@@ -284,4 +292,252 @@ test('引数：絶対パスだけ・Trading Lab の領域を拒否・URL の web
   assert.ok(validateArgs(parseArgs(['--hermes-user', 'Hermes;rm'])).some((e) => e.includes('--hermes-user')));
   assert.throws(() => parseArgs(['--kill', 'parallels']), /unknown argument/);
   assert.throws(() => parseArgs(['--state-dir']), /needs a value/);
+  assert.ok(validateArgs(parseArgs(['--webhook-test'])).some((e) => e.includes('--webhook-test')));
+  assert.ok(validateArgs(parseArgs(['--github-owner', 'a b'])).some((e) => e.includes('--github-owner')));
+  assert.deepEqual(validateArgs(parseArgs(['--github-owner', 'example-org'])), []);
+});
+
+test('Discord：mention を全部無効・長くても途中で切らず件数を出す・CRIT を先頭に・宛先の形を確かめる', () => {
+  const many = Array.from({ length: 120 }, (_, i) => ({ id: `repo:r${i}`, level: 'warn', value: 'dirty 3', change: 'new' }));
+  const body = webhookBodyOf([...many, { id: 'power', level: 'crit', value: 'ups 80%', change: 'new' }], 'discord', 'x');
+  assert.deepEqual(body.allowed_mentions, { parse: [] }, '@everyone を鳴らさない');
+  assert.ok(body.content.length <= 1900, String(body.content.length));
+  assert.match(body.content.split('\n')[1], /^CRIT power=ups 80%/);
+  assert.match(body.content, /…ほか \d+ 件/);
+  assert.ok(isDiscordWebhook(new URL('https://discord.com/api/webhooks/123/abc')));
+  assert.ok(isDiscordWebhook(new URL('https://discordapp.com/api/webhooks/123/abc')));
+  assert.ok(isDiscordWebhook(new URL('https://ptb.discord.com/api/v10/webhooks/123/abc')));
+  for (const u of ['https://discord.com.example/api/webhooks/1/a', 'https://discord.com/api/v9/channels/1', 'https://hooks.example/api/webhooks/1/a']) assert.ok(!isDiscordWebhook(new URL(u)), u);
+});
+
+test('通知の関所（allowlist）：項目ごとの形に合う値だけ通す。知らない項目の文字列は全部落とす', () => {
+  const bad = ['/Users/op/secret', 'C:\\Users\\op', '192.0.2.10', 'fe80::1', '2001:db8::1', 'aa:bb:cc:dd:ee:ff', 'aa-bb-cc-dd-ee-ff', 'https://discord.com/api/webhooks/1/token', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'sk-ant-api03-abc', 'a'.repeat(40), 'mac-mini.local', 'op@example.com', 'x'.repeat(200)];
+  for (const id of ['power', 'repo:r', 'job:usage-digest', 'github:r', 'monitor_gap', 'network_interface_changed', 'hermes_isolation', 'unknown_future_item']) {
+    for (const v of bad) assert.equal(safeValue(id, v), '[redacted]', `${id} ${v}`);
+  }
+  for (const [id, v] of [['power', 'ups 80%'], ['network_interface_changed', 'en0->en1'], ['repo:r', 'dirty 3 ahead 1'], ['repo:r', 'ahead 2 no_upstream'], ['repo:r', 'clean'], ['rebooted', '2026-10-21T03:00:00.000Z'], ['hermes_isolation', 'admin_group,share_open'], ['hermes_service', 'stopped exit 1'], ['github_visibility_changed', 'e-nexus-crm-core:PRIVATE->PUBLIC'], ['monitor_gap', '3h10m'], ['residents_changed', '+host-health-watchdog,-x'], ['backup_archive', '3d restore never'], ['job:watcher-cycle', 'running 45m'], ['delivery_test', '配送試験 異常ではありません']]) {
+    assert.equal(safeValue(id, v), v);
+  }
+  assert.equal(safeValue('disk_free_gib', 12.5), 12.5);
+  assert.equal(safeValue('disk_free_gib', null), null);
+  const text = alertText([{ id: 'x', level: 'warn', value: '/Users/op/.ssh/id_ed25519', change: 'new' }, { id: '/Users/op', level: 'warn', value: 1, change: 'new' }]);
+  assert.ok(!text.includes('/Users'), text);
+  const json = JSON.stringify(webhookBodyOf([{ id: 'x', level: 'warn', value: '192.0.2.10', change: 'new', extra: 'secret' }], 'json', 'x'));
+  assert.ok(!json.includes('192.0.2.10') && !json.includes('secret'), json);
+});
+
+test('監視の空白：前の回から 90 分を超えたら 1 回だけ知らせる。送れない間は値を持ち越し、送れたら消える', async () => {
+  const iso = (ms) => new Date(T0.getTime() + ms).toISOString();
+  assert.deepEqual(monitorGapEvent(null, iso(0)), []);
+  assert.deepEqual(monitorGapEvent({ updated_at: iso(0) }, iso(GAP_MS)), [], '90 分ちょうどは空白にしない');
+  assert.equal(monitorGapEvent({ updated_at: iso(0) }, iso(190 * 60_000))[0].value, '3h10m');
+  const dir = tmp();
+  try {
+    const results = [{ sent: false, code: 'WEBHOOK_CREDENTIAL_MISSING' }, { sent: true, code: 'SENT' }];
+    const post = async () => results.shift();
+    const { run } = fixtureRunner();
+    const opts = { stateDir: dir, dataDirs: [], run, uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    await runHostHealth({ ...opts, now: later(0) });
+    const r1 = await runHostHealth({ ...opts, now: later(190 * 60_000) });
+    assert.deepEqual(r1.notify.map((n) => [n.id, n.value]), [['monitor_gap', '3h10m']]);
+    assert.equal(r1.notifyCode, 'WEBHOOK_CREDENTIAL_MISSING');
+    const r2 = await runHostHealth({ ...opts, now: later(220 * 60_000) });
+    assert.deepEqual(r2.notify.map((n) => [n.id, n.value]), [['monitor_gap', '3h10m']], '送れなかった時間を足さない');
+    assert.equal(r2.notifyCode, 'SENT');
+    const r3 = await runHostHealth({ ...opts, now: later(250 * 60_000) });
+    assert.equal(r3.notify.length, 0, '正常の定期通知はしない');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('監視の停止：DISABLED になったら CRIT で知らせ、止まっている間は 12 時間ごとに知らせ続ける。時間切れも失敗に数える', async () => {
+  const dir = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(n[0]); return { sent: true, code: 'SENT' }; };
+    const webhook = 'credential:E-NEXUS/edl/h';
+    const at = (ms) => new Date(T0.getTime() + ms).toISOString();
+    for (let i = 0; i < 3; i += 1) await recordFailure({ stateDir: dir, at: at(i), webhook, webhookFormat: 'discord', post });
+    assert.ok(existsSync(path.join(dir, 'DISABLED')), '時間切れの 3 回でも止まる（黙って走り続けない）');
+    assert.deepEqual([posted.length, posted[0].level, posted[0].value, posted[0].change], [1, 'crit', 'disabled', 'event']);
+    const { run, calls } = fixtureRunner();
+    const opts = { stateDir: dir, dataDirs: [], run, uid: 501, webhook, webhookFormat: 'discord', post };
+    assert.equal((await runHostHealth({ ...opts, now: later(30 * 60_000) })).code, 3);
+    assert.equal(posted.length, 1, '12 時間は重ねない');
+    assert.equal((await runHostHealth({ ...opts, now: later(REMIND_MS.warn + 60_000) })).code, 3);
+    assert.deepEqual([posted.length, posted[1].change], [2, 'reminder']);
+    assert.equal(calls.length, 0, 'DISABLED の間はコマンドを起動しない');
+    writeFileSync(path.join(dir, 'PAUSE'), '');
+    await runHostHealth({ ...opts, now: later(3 * REMIND_MS.warn) });
+    assert.equal(posted.length, 2, '保守窓は知らせない');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('宛先が Discord なら --webhook-format を付け忘れても Discord の形で送る（json は拒否され、黙って送れ続けない）', async () => {
+  const fetched = [];
+  const r = await postAlerts([{ id: 'power', level: 'crit', value: 'ups 80%', change: 'new' }], { spec: 'credential:E-NEXUS/edl/h', at: 'x', readCredentialImpl: async () => 'https://discord.com/api/webhooks/1/a', fetchImpl: async (u, i) => { fetched.push(JSON.parse(i.body)); return { ok: true, status: 204 }; } });
+  assert.equal(r.code, 'SENT');
+  assert.match(fetched[0].content, /^\[E-NEXUS Mac Runtime host\]/);
+});
+
+test('PAUSE：明けた後に出来事を知らせる（再起動・回線・空白を飲み込まない）', async () => {
+  const dir = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
+    const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(0) });
+    writeFileSync(path.join(dir, 'PAUSE'), '');
+    const rebooted = fixtureRunner({ '/usr/sbin/sysctl -n kern.boottime': { code: 0, stdout: OUT.boottime.replace('1790751889', '1790760000') }, '/sbin/route -n get default': { code: 0, stdout: OUT.route.replace('en1', 'en7') } });
+    const r1 = await runHostHealth({ ...opts, run: rebooted.run, now: later(300 * 60_000) });
+    assert.deepEqual([r1.paused, posted.length], [true, 0]);
+    rmSync(path.join(dir, 'PAUSE'));
+    const r2 = await runHostHealth({ ...opts, run: rebooted.run, now: later(330 * 60_000) });
+    assert.deepEqual(r2.notify.map((n) => n.id).sort(), ['monitor_gap', 'network_interface_changed', 'rebooted']);
+    const r3 = await runHostHealth({ ...opts, run: rebooted.run, now: later(360 * 60_000) });
+    assert.equal(r3.notify.length, 0, '送れた後はもう出さない');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PAUSE の消し忘れ：72 時間を過ぎたら効かない・monitor_pause=expired の WARN', async () => {
+  const dir = tmp();
+  try {
+    const f = path.join(dir, 'PAUSE');
+    writeFileSync(f, '');
+    const old = new Date(T0.getTime() - PAUSE_MAX_MS - 60_000);
+    utimesSync(f, old, old);
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: false, expired: true });
+    const posted = [];
+    const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
+    const r = await runHostHealth({ stateDir: dir, dataDirs: [], run: fixtureRunner().run, uid: 501, webhook: 'credential:E-NEXUS/edl/h', now: later(0), post });
+    assert.equal(r.paused, false);
+    assert.deepEqual(posted.map((n) => [n.id, n.level, n.value]), [['monitor_pause', 'warn', 'expired']]);
+    const fresh = new Date(T0.getTime() - PAUSE_MAX_MS + 60_000);
+    utimesSync(f, fresh, fresh);
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: true, expired: false });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('空白の後の最初の回が失敗しても monitor_gap を失わない', async () => {
+  const dir = tmp();
+  try {
+    const { run } = fixtureRunner();
+    const posted = [];
+    const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
+    const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    await runHostHealth({ ...opts, run, now: later(0) });
+    await runHostHealth({ ...opts, run: async () => { throw new Error('boom'); }, now: later(300 * 60_000) });
+    const r = await runHostHealth({ ...opts, run, now: later(330 * 60_000) });
+    assert.deepEqual(r.notify.map((n) => [n.id, n.value]), [['monitor_gap', '5h0m']]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Human が DISABLED を消したら数え直す（1 回の失敗で黙って止まり直さない）', async () => {
+  const dir = tmp();
+  try {
+    const broken = async () => { throw new Error('boom'); };
+    const posted = [];
+    const post = async (n) => { posted.push(n[0]); return { sent: true, code: 'SENT' }; };
+    const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    for (let i = 0; i < 3; i += 1) await runHostHealth({ ...opts, run: broken, now: later(i) });
+    assert.equal(posted.length, 1);
+    rmSync(path.join(dir, 'DISABLED'));
+    const r = await runHostHealth({ ...opts, run: broken, now: later(10) });
+    assert.equal(r.failures, 1);
+    assert.ok(!existsSync(path.join(dir, 'DISABLED')));
+    for (const i of [11, 12]) await runHostHealth({ ...opts, run: broken, now: later(i) });
+    assert.ok(existsSync(path.join(dir, 'DISABLED')));
+    assert.equal(posted.length, 2, '止まり直したらもう一度知らせる');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('記録を書けない：回数を残せないので毎回知らせる・例外で落ちない・message（パス）を返さない', async () => {
+  const base = tmp();
+  try {
+    const stateDir = path.join(base, 'file-not-dir');
+    writeFileSync(stateDir, '');
+    const posted = [];
+    const post = async (n) => { posted.push(n[0]); return { sent: true, code: 'SENT' }; };
+    const r = await runHostHealth({ stateDir, dataDirs: [], run: fixtureRunner().run, uid: 501, webhook: 'credential:E-NEXUS/edl/h', now: later(0), post });
+    assert.equal(r.code, 1);
+    assert.ok(!String(r.error).includes(base), r.error);
+    assert.deepEqual(posted.map((n) => [n.id, n.level]), [['host_health', 'crit']]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('今回見なかった項目は state から消える（外した repo の水準が残り続けない）。今の水準は observed に残る', async () => {
+  const dir = tmp();
+  try {
+    const stateFile = path.join(dir, 'state.json');
+    const { run } = fixtureRunner();
+    const guard = { base: dir, repos: [], outbox: path.join(dir, 'outbox'), operatorHome: dir };
+    await runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, guard, now: later(0) });
+    const s = JSON.parse(readFileSync(stateFile, 'utf8'));
+    s.items['repo:removed'] = { level: 'warn', since: 'x', last_notified_at: 'x' };
+    writeFileSync(stateFile, JSON.stringify(s));
+    await runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, guard, now: later(60_000) });
+    const after = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.ok(!('repo:removed' in after.items));
+    const low = fixtureRunner({ '/bin/df -k /': { code: 0, stdout: OUT.df.replace('337437064', String(10 * 1024 * 1024)) } });
+    await runHostHealth({ stateDir: dir, dataDirs: [], run: low.run, uid: 501, guard, webhook: 'credential:E-NEXUS/edl/h', now: later(120_000), post: async () => ({ sent: false, code: 'WEBHOOK_UNREACHABLE' }) });
+    const unsent = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(unsent.observed.disk_free_gib, 'crit', '送れていない異常も今の水準には残る');
+    assert.equal(unsent.items.disk_free_gib.level, 'ok', '通知の状態は戻して次の回にもう一度');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('実際に出る項目の id は通知で全部読める（関所で項目名を落とさない）', async () => {
+  const { run } = fixtureRunner();
+  const o = await collect({ run, uid: 501, dataDirs: [], hermesUser: 'hermes' });
+  const ids = [...evaluate(o).map((x) => x.id), ...['monitor_gap', 'monitor_pause', 'monitor_alive', 'host_health', 'rebooted', 'residents_changed', 'github_api', 'github:e-nexus-crm-core', 'repo:en-sns-hub', 'hermes_isolation', 'backup_archive', 'agent_scope']];
+  assert.ok(ids.includes('load_15m'));
+  const text = alertText(ids.map((id) => ({ id, level: 'warn', value: 1, change: 'new' })));
+  assert.ok(!text.includes('[redacted]'), text);
+  for (const id of ids) assert.ok(text.includes(`WARN ${id}=`), id);
+});
+
+test('state を一度書けなかっただけでは止まらない：毎回 CRIT を知らせるが DISABLED にしない・直れば続く', async () => {
+  const dir = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(n[0]); return { sent: true, code: 'SENT' }; };
+    mkdirSync(path.join(dir, 'state.json.tmp')); // state の書き込みだけが失敗する
+    const webhook = 'credential:E-NEXUS/edl/h';
+    const failures = await recordFailure({ stateDir: dir, at: T0.toISOString(), webhook, post });
+    assert.equal(failures, 1);
+    assert.deepEqual(posted.map((n) => [n.id, n.value]), [['host_health', 'state_unwritable']]);
+    assert.ok(!existsSync(path.join(dir, 'DISABLED')));
+    rmSync(path.join(dir, 'state.json.tmp'), { recursive: true });
+    const r = await runHostHealth({ stateDir: dir, dataDirs: [], run: fixtureRunner().run, uid: 501, now: later(60_000), post });
+    assert.equal(r.code, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('前の版が作った DISABLED を Human が消しても数え直す（disabled_at が無い state）', async () => {
+  const dir = tmp();
+  try {
+    writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ schema: 'host-health-state/v1', updated_at: T0.toISOString(), consecutive_failures: 3, items: {} }));
+    const r = await runHostHealth({ stateDir: dir, dataDirs: [], run: async () => { throw new Error('boom'); }, uid: 501, now: later(60_000) });
+    assert.equal(r.failures, 1);
+    assert.ok(!existsSync(path.join(dir, 'DISABLED')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

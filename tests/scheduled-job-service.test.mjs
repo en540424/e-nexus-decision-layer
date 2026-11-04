@@ -181,6 +181,30 @@ test('host-health（2026-10-21）：Mac mini（launchd）だけ・毎時 :20／:
   assert.ok(validateJobArgs({ job: 'rotate-logs', target: 'launchd', dir: MAC.dir, base: '/x', hermesUser: 'hermes' }).some((e) => e.includes('host-health only')));
 });
 
+test('host-health（2026-11-04）：Discord は --webhook-format を job へ渡す（既定の json は Discord に拒否される）・GitHub の見張りは owner を付けた時だけ', () => {
+  const a = { job: 'host-health', target: 'launchd', dir: MAC.dir, node: MAC.node, hour: 7, minute: 30, webhook: 'credential:E-NEXUS/edl/host-health-webhook', webhookFormat: 'discord', hermesUser: 'hermes' };
+  assert.deepEqual(validateJobArgs(a), []);
+  assert.match(renderJob(a).content, /<string>--webhook<\/string>\s*<string>credential:E-NEXUS\/edl\/host-health-webhook<\/string>\s*<string>--webhook-format<\/string>\s*<string>discord<\/string>\s*<string>--hermes-user<\/string>/);
+  assert.ok(!/--github-owner/.test(renderJob(a).content));
+  assert.match(renderJob({ ...a, githubOwner: 'example-org' }).content, /<string>--github-owner<\/string>\s*<string>example-org<\/string>/);
+  assert.ok(validateJobArgs({ ...a, webhookFormat: 'teams' }).some((e) => e.includes('--webhook-format')));
+  assert.ok(validateJobArgs({ ...a, githubOwner: 'a b' }).some((e) => e.includes('--github-owner')));
+  assert.ok(validateJobArgs({ ...MAC, webhookFormat: 'discord' }).some((e) => e.includes('host-health only')));
+  assert.ok(validateJobArgs({ ...MAC, githubOwner: 'example-org' }).some((e) => e.includes('host-health only')));
+});
+
+test('host-health-watchdog（2026-11-04）：launchd だけ・既定は毎時 :35（:00 前後を避ける）・host-health と同じ通知の引数・生成だけ', () => {
+  const a = { job: 'host-health-watchdog', target: 'launchd', dir: MAC.dir, node: MAC.node, hour: 7, minute: 30, webhook: 'credential:E-NEXUS/edl/host-health-webhook', webhookFormat: 'discord' };
+  assert.deepEqual(validateJobArgs(a), []);
+  const r = renderJob(a);
+  assert.equal(r.filename, 'com.e-nexus.host-health-watchdog.plist');
+  assert.match(r.content, /<string>scripts\/host-health-watchdog\.mjs<\/string>\s*<string>--webhook<\/string>/);
+  assert.match(r.content, /<array><dict><key>Minute<\/key><integer>35<\/integer><\/dict><\/array>/);
+  assert.match(r.content, /<key>RunAtLoad<\/key><false\/>/);
+  assert.match(r.content, /<key>ProcessType<\/key><string>Background<\/string>/);
+  assert.ok(validateJobArgs({ ...a, target: 'windows' }).some((e) => e.includes('launchd')));
+});
+
 test('host-health：拒否（windows・systemd・分の形・URL の webhook・node の場所が無い）／--minutes は host-health だけ', () => {
   const a = { job: 'host-health', target: 'launchd', dir: MAC.dir, node: MAC.node, hour: 7, minute: 30 };
   assert.ok(validateJobArgs({ ...a, target: 'windows' }).some((e) => e.includes('launchd) only')), 'ホスト固有（Windows・VPS には置かない）');

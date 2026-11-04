@@ -49,6 +49,7 @@ Windows 上で確かめたこと（2026-09-29）：全 script の `sh -n`／`bas
 - [ ] 10. [Human・GUI ログイン中] OpenMontage watcher：`python3 integrations/openmontage/enexus_openmontage_autostart.py install` → `status` で loaded → ログインし直して常駐を確認。通知（osascript）の許可・`~/Documents` 等に置いたときの Full Disk Access は `〔実機で確定〕`
 - [ ] 11. [Human・判断 4] Windows 側で `autostart uninstall`
 - [ ] 12. [任意] 定期実行：`node scripts/scheduled-job-service.mjs --job rotate-logs --target launchd --dir <repo> --base <親> --hour 3 --minute 0`、`--job usage-digest ... --node "$(command -v node)"`（webhook を使うなら `--webhook credential:E-NEXUS/edl/digest-webhook` と手順 7）。登録は [Human]（表示される `launchctl bootstrap`）。（2026-10-21）ホスト監視：`--job host-health --target launchd --dir <repo> --node "$(command -v node)"`（毎時 :20／:50・`--minutes` で変えられる）。登録は [Human]、時期は保守窓の後
+- [ ] 12-2. [Human] host-health の Discord 通知：`docs/runtime-monitoring.md` §2 の接続（`bash deploy/macos/connect-discord-alerts.sh`）
 - [ ] 13. [判断 3 の後] HTTP Gateway の常駐：`docs/deploy-production-gateway.md`（`gateway-service.mjs --target launchd --node "$(command -v node)"`・env file・token・release・smoke）
 
 ## 実機で確かめること（Windows では確かめられない）
