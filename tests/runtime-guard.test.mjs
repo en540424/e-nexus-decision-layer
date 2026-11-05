@@ -336,3 +336,14 @@ test('--no-guard の手動の回で見張りの基準と状態を消さない', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('バックアップの失敗：2 回続けば古くなるのを待たず CRIT（固定のコードだけ）・1 回は黙る・一度も成功していなくても数える', () => {
+  const at = (body) => {
+    const g = { repos: {}, outbox: null, backup: null, backup_receipt: body };
+    return evaluateGuard(g, null, NOW).find((x) => x.id === 'backup_archive');
+  };
+  const base = { configured: true, finished_at: hoursAgo(24), restore_verified_at: hoursAgo(24), failure_code: 'upload_failed' };
+  assert.deepEqual([at({ ...base, failures: 1 }).level, at({ ...base, failures: 1 }).value], ['ok', '1d restore 1d']);
+  assert.deepEqual([at({ ...base, failures: 2 }).level, at({ ...base, failures: 2 }).value], ['crit', 'failed upload_failed']);
+  assert.equal(at({ configured: true, finished_at: null, restore_verified_at: null, failures: 2, failure_code: 'no_token' }).level, 'crit');
+});

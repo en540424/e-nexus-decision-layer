@@ -1,15 +1,16 @@
 /**
  * バックアップの暗号化アーカイブ（2026-11-04・Mac Runtime）。依存なし（node:crypto）。保存先は持たない（どこへ置くかは Human の決定）。
  *
- * 形式：MAGIC＋salt 16＋iv 12＋AES-256-GCM の暗号文＋tag 16。平文は JSON（files：相対パス・mode・sha256・base64）。鍵は passphrase から scrypt で作る。
+ * 形式：MAGIC＋salt 16＋iv 12＋AES-256-GCM の暗号文＋tag 16。平文は gzip した JSON（files：相対パス・mode・sha256・base64）。鍵は passphrase から scrypt で作る。
  * 改ざん・passphrase の誤りは復号で失敗する。全部をメモリに載せるので MAX_BYTES まで（Mac Runtime の控えの大きさ。大きいものは git か再生成で守る）。
  * 復元は全項目を確かめてから書く（途中まで書いて止まらない）。相対パスだけ・空でない先へは書かない・同じパスを 2 回書かない。
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
-export const MAGIC = Buffer.from('EDLBK1\n');
+export const MAGIC = Buffer.from('EDLBK2\n');
 export const MAX_BYTES = 256 * 1024 ** 2;
 const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 ** 2 };
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
@@ -40,7 +41,7 @@ export function pack(dir, passphrase) {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', keyOf(passphrase, salt), iv);
-  const body = Buffer.concat([cipher.update(JSON.stringify({ files })), cipher.final()]);
+  const body = Buffer.concat([cipher.update(gzipSync(JSON.stringify({ files }))), cipher.final()]);
   return Buffer.concat([MAGIC, salt, iv, body, cipher.getAuthTag()]);
 }
 
@@ -51,7 +52,7 @@ export function unpack(archive, passphrase) {
   const decipher = createDecipheriv('aes-256-gcm', keyOf(passphrase, salt), iv);
   decipher.setAuthTag(archive.subarray(archive.length - 16));
   const body = archive.subarray(MAGIC.length + 28, archive.length - 16);
-  return JSON.parse(Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8')).files; // 改ざん・passphrase の誤りは final で投げる
+  return JSON.parse(gunzipSync(Buffer.concat([decipher.update(body), decipher.final()])).toString('utf8')).files; // 改ざん・passphrase の誤りは final で投げる
 }
 
 export function restore(archive, passphrase, targetDir) {

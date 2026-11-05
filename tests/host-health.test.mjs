@@ -105,7 +105,7 @@ test('境界：許可したコマンドだけ・shell なし・最小の env・5
   const psCalls = calls.filter((c) => c[0] === '/bin/ps');
   assert.deepEqual(psCalls, [['/bin/ps', '-U', 'hermes', '-o', 'rss=,pcpu=']], 'ps は Hermes ユーザーだけ（全 process の一覧を取らない）');
   const launchctl = calls.filter((c) => c[0] === '/bin/launchctl').map((c) => c[2]);
-  assert.deepEqual(launchctl, ['gui/501/com.e-nexus.usage-digest', 'gui/501/com.e-nexus.rotate-logs', 'gui/501/com.e-nexus.watcher-cycle', 'gui/501/com.e-nexus.knowledge-refresh', 'gui/501/com.e-nexus.host-health-watchdog'], 'Mac Runtime 自身の定期 job だけ（host-health 自身は含めない）');
+  assert.deepEqual(launchctl, ['gui/501/com.e-nexus.usage-digest', 'gui/501/com.e-nexus.rotate-logs', 'gui/501/com.e-nexus.watcher-cycle', 'gui/501/com.e-nexus.knowledge-refresh', 'gui/501/com.e-nexus.host-health-watchdog', 'gui/501/com.e-nexus.runtime-backup'], 'Mac Runtime 自身の定期 job だけ（host-health 自身は含めない）');
 });
 
 test('判定：初期値のしきい値（空き 50／20 GiB・逼迫 2／4・swap 2 GiB・load > ncpu・発熱・電源・既定経路）', async () => {

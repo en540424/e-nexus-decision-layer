@@ -15,7 +15,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
 | `scripts/lib/runtime-status-summary.mjs` | Hermes へ渡す要約（§6） | host-health の中で動く |
 | `scripts/runtime-status-summary.mjs` | 要約を手で見る | 標準出力か一時フォルダだけ |
-| `scripts/backup-*.mjs` | バックアップの棚卸しと復元の予行（§5） | 合成データだけ・外へ送らない |
+| `scripts/backup-*.mjs` | 暗号化バックアップ（§5） | 条件が揃うまで何も送らない・job の登録は Human |
 
 監視は決定的なコードで回す。理由：常時の見回りに課金を載せない・判定を再現できる・Hermes の権限を増やさない。
 
@@ -121,13 +121,46 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 ## 5. バックアップ
 
-`scripts/backup-inventory.mjs`（棚卸し・結果は標準出力だけ。**公開の場へ貼らない**）と `scripts/backup-drill.mjs`（合成データで暗号化→改ざん検知→passphrase 誤り→復元→一致確認）。
+GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 Human 決定・H5）。対象は Mac に保全先の無い Mac Runtime の記録だけで、**Time Machine の代わりではない**（Mac 全体は戻らない）。
 
-- 形式：AES-256-GCM・鍵は passphrase から scrypt。パス名も暗号の中。1 アーカイブ 256 MiB まで
-- 実データの入力口は今は無い。保存先と鍵の管理が決まってから、実データ用の入口と受領票（`~/.enexus/backup/last.json`・`runtime-backup-receipt/v1`）を足す
-- 監視：受領票が無ければ `backup_archive=not_configured`（異常にしない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**（戻せると確かめていないものは ok にしない）
-- 守らないもの：Keychain の Secret（再発行で戻す）・再生成できるもの（REA の導入・Hermes の Vault の写し）・Trading Lab の領域
-- Vault の「同期＝バックアップではない」に従い、保存先へ届いたことは別の場所からの確認で実証する（フォルダがあるだけでは数えない）
+| 道具 | 役割 |
+|---|---|
+| `scripts/backup-inventory.mjs` | 棚卸し（結果は標準出力だけ。**公開の場へ貼らない**） |
+| `scripts/lib/backup-plan.mjs` | 選別（allowlist）・世代 |
+| `scripts/lib/backup-archive.mjs` | AES-256-GCM（改ざん検知）・鍵は passphrase から scrypt・パス名も暗号の中・gzip |
+| `scripts/backup-drill.mjs` | 合成データの予行 |
+| `scripts/backup-run.mjs` | `plan`・`check`・`run`・`attest-key`・`restore` |
+| `deploy/macos/connect-backup.sh` | Human の接続（鍵・token・初回・job の登録） |
+
+- 対象：`~/e-nexus-runtime` の作業メモ・rules・`mac-runtime-state`（Hermes の bundle を除く）・Claude の memory・relay の設定と未送信・host-health の記録
+- 除外：コード（GitHub にある）・Keychain の Secret（再発行で戻す）・再生成できるもの・Hermes の home（読めない）・Secret の形のあるファイル・Trading Lab の領域・deny のパターンにあたるファイル（`--deny-file`。公開 repo に置けない識別子を含むのでローカルのファイル。無ければ動かない）
+
+### 本番データを送る条件（1 つでも欠ければ送らない・毎回確かめる）
+
+1. 保存先が Private（API の `private`・`visibility`）
+2. token が fine-grained で、他の private repo が見えない（1 repo だけの権限）
+3. passphrase が Keychain にあり、**Mac の外の控えから打ち直して一致した記録がある**（passphrase を変えると無効）
+4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
+
+### 世代と容量
+
+毎日 1 回。新しい 14 世代と月ごとの最新 12 か月分を repo の先頭に残す（1 回に 5 件まで消す）。消したものも Git の履歴に残る。1 アーカイブ 20 MiB まで・repo 全体 800 MiB を超えたら止めて知らせる（整理は Human）。
+
+### 監視
+
+- 送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（`~/.enexus/backup/last.json`・`runtime-backup-receipt/v1`）に書く（Vault の「同期＝バックアップではない」：届いたことを別の経路で実証する）
+- host-health の `backup_archive`：受領票が無ければ `not_configured`（異常にしない）。2 回続けて失敗で CRIT（Discord へ 1 回。正常時は送らない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**
+
+### 接続（Human の操作）
+
+1. GitHub で Private repo を作る（`gh repo create` も可。Human-only）
+2. fine-grained PAT：Only select repositories で**その repo だけ**、Repository permissions は **Contents を Read and write**（Metadata は Read-only で自動）。期限は 1 年以内
+3. passphrase を 20 文字以上で決め、**Mac の外（パスワード管理か紙）に控える**
+4. Mac の Terminal で `bash deploy/macos/connect-backup.sh <owner> <repo> <deny-file の絶対パス>`。passphrase・控えからの打ち直し・token の順に聞き、条件を確かめ、初回を送り、job を登録する
+
+### 復元（Mac を失った時）
+
+どの PC でも：① decision-layer を clone ② Private repo の `archives/` から最新を取る ③ `node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>`（標準入力に passphrase。Keychain は使わない）。Keychain の Secret は再発行する。
 
 ## 6. Hermes へ渡す状態の要約（A2・2026-11-05 Human 承認）
 

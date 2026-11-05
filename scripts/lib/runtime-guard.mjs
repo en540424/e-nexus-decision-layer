@@ -24,7 +24,7 @@ export const GUARD_BINS = Object.freeze(['/usr/bin/id', '/usr/bin/git', '/usr/bi
 export const RELAY_REPO = 'e-nexus-devlog-relay';
 const FORBIDDEN_GROUPS = ['admin', 'wheel'];
 /** 作業中の差分を異常にしないための猶予。続いた時だけ warn にする */
-export const GUARD_LIMITS = Object.freeze({ repo_hours: 24, outbox_hours: 24, backup_days: { warn: 3, crit: 7 }, restore_days: { warn: 35 } });
+export const GUARD_LIMITS = Object.freeze({ repo_hours: 24, outbox_hours: 24, backup_days: { warn: 3, crit: 7 }, restore_days: { warn: 35 }, backup_failures: 2 });
 /** 変わったら知らせる固定ファイル（repo 内の相対パス）。Human Gate を弱める変更は git の差分より先にここで出す */
 export const WATCHED_POLICIES = Object.freeze({ human_only_policy: 'policies/safety/human-only.json', failure_policy: 'policies/gateway/failure-policy.json' });
 export const MONITOR_LABEL = 'com.e-nexus.host-health';
@@ -160,8 +160,9 @@ function backupReceiptOf(file, fsi) {
   if (!file || !fsi.existsSync(file)) return { configured: false };
   try {
     const r = JSON.parse(fsi.readFileSync(file, 'utf8'));
-    if (r?.schema !== BACKUP_RECEIPT_SCHEMA || Number.isNaN(Date.parse(r.finished_at))) return null;
-    return { configured: true, finished_at: r.finished_at, restore_verified_at: r.restore_verified_at ?? null };
+    const failures = Number.isInteger(r?.consecutive_failures) ? r.consecutive_failures : 0;
+    if (r?.schema !== BACKUP_RECEIPT_SCHEMA || (Number.isNaN(Date.parse(r.finished_at)) && !failures)) return null;
+    return { configured: true, finished_at: r.finished_at ?? null, restore_verified_at: r.restore_verified_at ?? null, failures, failure_code: r.last_failure_code ?? null };
   } catch {
     return null;
   }
@@ -248,7 +249,8 @@ export function evaluateGuard(g, prevGuard, now) {
       const { warn, crit } = GUARD_LIMITS.backup_days;
       const restoreDays = ageDays(b.restore_verified_at);
       const staleRestore = restoreDays == null || restoreDays >= GUARD_LIMITS.restore_days.warn;
-      if (days == null) add('backup_archive', 'unknown', null);
+      if (b.failures >= GUARD_LIMITS.backup_failures) add('backup_archive', 'crit', `failed ${b.failure_code ?? 'unknown'}`); // 古くなるのを待たない
+      else if (days == null) add('backup_archive', 'unknown', null);
       else add('backup_archive', days >= crit ? 'crit' : days >= warn || staleRestore ? 'warn' : 'ok', `${days}d restore ${restoreDays == null ? 'never' : `${restoreDays}d`}`);
     }
   }

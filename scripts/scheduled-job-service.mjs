@@ -16,6 +16,7 @@
  *          [--webhook-format json|slack|discord]（2026-11-04。Discord は json を受け取らないので必須）
  *          [--github-owner <owner> --github-credential credential:E-NEXUS/edl/<name>]（GitHub の見張り。専用の読み取り token だけ。gh のログインは使わない）
  *        host-health-watchdog（2026-11-04）：launchd のみ。[--minutes 35][--webhook …][--webhook-format …]。host-health の停止を別の job から見る
+ *        runtime-backup（2026-11-05・H5）：launchd のみ。--owner <owner> --repo <repo> --deny-file <abs>。毎日 1 回（--hour・--minute）。登録は connect-backup.sh（Human）
  *
  * job：
  *   usage-digest＝`node scripts/usage-digest.mjs --hours 24 --fail-on-anomaly`（FB-18。READ-ONLY・課金なし。webhook は資格情報ストアの名前だけ）
@@ -34,7 +35,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh', 'host-health', 'host-health-watchdog'];
+export const JOBS = ['usage-digest', 'rotate-logs', 'watcher-cycle', 'knowledge-refresh', 'host-health', 'host-health-watchdog', 'runtime-backup'];
 const EVERY_HOURS = [1, 2, 3, 4, 6, 8, 12]; // 24 の約数だけ（毎日同じ時刻に揃う）
 const DEFAULT_MINUTES = { 'host-health': '20,50', 'host-health-watchdog': '35' };
 const HOST_JOBS = ['host-health', 'host-health-watchdog'];
@@ -107,6 +108,13 @@ export function validateJobArgs(a) {
     if (a.webhook !== undefined && !WEBHOOK.test(a.webhook)) errors.push('--webhook must be credential:E-NEXUS/edl/<name>（URL を引数に置かない）');
     if (!minutesOf(a)) errors.push('--minutes must be 1-6 distinct minutes 0-59 (e.g. 20,50)');
   }
+  if (a.job === 'runtime-backup') {
+    if (a.target !== 'launchd') errors.push('runtime-backup is for the Mac mini (launchd) only');
+    if (!a.node) errors.push('runtime-backup needs --node <absolute path to node>');
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.owner ?? '')) errors.push('runtime-backup needs --owner');
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(a.repo ?? '')) errors.push('runtime-backup needs --repo');
+    if (!isAbs(a.denyFile) || UNSAFE.test(a.denyFile)) errors.push('runtime-backup needs --deny-file <absolute path>');
+  }
   if (a.everyHours !== undefined && a.job !== 'knowledge-refresh') errors.push('--every-hours is for knowledge-refresh only');
   if (a.vault !== undefined && a.job !== 'knowledge-refresh') errors.push('--vault is for knowledge-refresh only');
   if (a.job === 'knowledge-refresh') {
@@ -141,6 +149,7 @@ function commandOf(a) {
     const args = ['scripts/host-health-watchdog.mjs', ...webhookArgs(a)];
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
+  if (a.job === 'runtime-backup') return [a.node, 'scripts/backup-run.mjs', 'run', '--owner', a.owner, '--repo', a.repo, '--deny-file', a.denyFile];
   if (a.job === 'watcher-cycle') {
     const args = ['scripts/watcher-cycle.mjs', '--watcher-dir', a.watcherDir];
     const node = a.node ?? (a.target === 'windows' ? 'node.exe' : null);
@@ -252,7 +261,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser', '--webhook-format': 'webhookFormat', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser', '--webhook-format': 'webhookFormat', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential', '--owner': 'owner', '--repo': 'repo', '--deny-file': 'denyFile' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];

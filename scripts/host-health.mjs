@@ -415,7 +415,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^network_interface_changed$/, /^[a-z]{1,10}\d{0,3}->[a-z]{1,10}\d{0,3}$/],
   [/^job:/, /^(?:not_loaded|loaded|running|not running|waiting|spawn scheduled|xpcproxy|exited|exit -?\d+|running \d+m)$/],
   [/^repo:/, /^(?:clean|(?:dirty \d+)?(?: ?ahead \d+)?(?: ?no_upstream)?)$/],
-  [/^backup_/, /^(?:not_configured|latest_unreadable|-?\d+d(?: restore (?:never|\d+d))?)$/],
+  [/^backup_/, /^(?:not_configured|latest_unreadable|failed [a-z_]{1,40}|-?\d+d(?: restore (?:never|\d+d))?)$/],
   [/^hermes_service$/, /^(?:running|not_loaded|stopped exit (?:-?\d+|-))$/],
   [/^hermes_isolation$/, codes('ok', 'admin_group', 'hermes_home_open', 'operator_home_open', 'hermes_home_missing', 'operator_home_missing', '(?:config|plist|wrapper)_(?:not_root_only|missing)', 'share_open', 'share_missing')],
   [/^hermes_files_changed$/, codes('vault_copy', 'config', 'plist', 'wrapper')],
