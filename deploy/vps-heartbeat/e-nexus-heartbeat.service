@@ -1,0 +1,27 @@
+[Unit]
+Description=E-NEXUS Mac mini heartbeat receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edl-heartbeat
+EnvironmentFile=/etc/e-nexus/heartbeat.env
+ExecStart=/usr/bin/node /opt/e-nexus-heartbeat/receiver.mjs
+Restart=on-failure
+RestartSec=30
+StateDirectory=e-nexus-heartbeat
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

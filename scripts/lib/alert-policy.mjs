@@ -45,6 +45,7 @@ const RULES = Object.freeze([
   [/^hermes_service$/, { target: 'Hermes', what: '停止している', action: ACT, hold: TWO_RUNS_MS, promote: true }],
   [/^hermes_isolation$/, { target: 'Hermes の隔離', what: '崩れている', action: ACT, noCooldown: true, codes: true }],
   [/^status_summary$/, { target: 'Hermes への状態の要約', what: '書けない状態が続いている', action: CHECK }],
+  [/^heartbeat$/, { target: '外部の死活監視への生存信号', what: '送れない状態が続いている', action: CHECK }],
   [/^hermes_restarted$/, { target: 'Hermes', what: '再起動を繰り返している', action: CHECK, burst: true }],
   [/^hermes_files_changed$/, { target: 'Hermes の固定ファイル', what: '変更された', action: IF_UNKNOWN }],
   [/^monitor_config_changed$/, { target: '監視の定義か安全 policy', what: '変更された', action: IF_UNKNOWN }],

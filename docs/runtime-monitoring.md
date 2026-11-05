@@ -10,6 +10,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/host-health.mjs` | 30 分ごとの 1 回分：集める・判定する・記録する・変化を知らせる | 通信なし（`--webhook`・`--github-owner` を付けた時だけ） |
 | `scripts/lib/runtime-guard.mjs` | Hermes の常駐と隔離・repo・relay・バックアップ・設定の改変 | host-health の中で動く |
 | `scripts/lib/github-guard.mjs` | GitHub の公開範囲・CI・repo の異常 | token が Keychain にある時だけ（§4） |
+| `scripts/lib/heartbeat.mjs`・`deploy/vps-heartbeat/` | 外部の死活監視（§3-1） | Keychain に入るまで何もしない・VPS の導入は Human |
 | `scripts/lib/alert-policy.mjs` | 知らせる基準と本文の文（§2） | host-health の中で動く |
 | `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
@@ -83,14 +84,23 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 | 止まり方 | 残る手がかり |
 |---|---|
-| host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと |
-| Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。外からの見張りは Human の判断（新しいサービスになる） |
+| host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと。§3-1 の導入後は 60 分で途絶として届く |
+| Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。§3-1 の外部の死活監視の導入後は 60 分で届く |
 | 回線断 | 監視は動き続けるが送れない。戻った回に通知（`recovered_missed` か続く CRIT） |
 | 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
 | Webhook の失効・Discord の障害 | 静かな運用では次の異常か四半期まで分からない。送ろうとした回の `notify_code` が記録に残る（`--report`） |
 | host-health の plist から `--webhook` を消す | `monitor_config_changed` は送る先が無く、基準だけ進む。記録の `NO_WEBHOOK` だけが残る |
 | `DISABLED` のまま job が起動しなくなる | watchdog は `DISABLED` を本体に任せるので、本体の 24 時間ごとの通知が止まっても知らせない |
 | watchdog の plist に `--webhook` が無い | 動いていても送れない。`connect-discord-alerts.sh` は host-health の job だけ確かめる |
+
+### 3-1. 外部の死活監視（H6）
+
+`--heartbeat` の時、host-health の 1 回分が記録を残した後に、VPS の受け側へ時刻と署名だけを送る（`scripts/lib/heartbeat.mjs`）。受け側は 60 分途絶えたら Discord へ 1 回、戻ったら 1 回知らせる（原因は断定しない。24 時間に 2 回途絶えたら「反復」を 1 通）。受け側と導入は `deploy/vps-heartbeat/README.md`（導入は Human）。
+
+- Keychain の `heartbeat-url`・`heartbeat-token` が無い間は何も送らない
+- 送れない状態が 6 時間続けば `heartbeat` の WARN（§2 のとおり続いた時に 1 回）。送った先で署名が合わない時も同じ
+- `DISABLED` の間は送らないので、途絶として届く
+- VPS・Cloudflare・Discord の停止は知らせられない
 
 ## 4. GitHub
 
