@@ -13,7 +13,8 @@
  *        launchd・systemd は --path 必須（executor の CLI を探す PATH。既定の PATH には npm／Homebrew の global が無く、全 executor が not_installed になる）
  *        host-health（2026-10-21・MA-22 工程 3）：launchd のみ。[--minutes 20,50]（毎時の分・1〜6 個）[--webhook credential:E-NEXUS/edl/<name>]
  *          [--hermes-user <name>]（2026-10-31・Hermes の常駐の後。そのユーザーの RSS・CPU も見る＝host-health の hermes_rss_gib）
- *          [--webhook-format json|slack|discord]（2026-11-04。Discord は json を受け取らないので必須）[--github-owner <owner>]（GitHub の見張り。無人 job が gh の認証を使う）
+ *          [--webhook-format json|slack|discord]（2026-11-04。Discord は json を受け取らないので必須）
+ *          [--github-owner <owner> --github-credential credential:E-NEXUS/edl/<name>]（GitHub の見張り。専用の読み取り token だけ。gh のログインは使わない）
  *        host-health-watchdog（2026-11-04）：launchd のみ。[--minutes 35][--webhook …][--webhook-format …]。host-health の停止を別の job から見る
  *
  * job：
@@ -94,6 +95,8 @@ export function validateJobArgs(a) {
   if (a.webhookFormat !== undefined && !HOST_JOBS.includes(a.job)) errors.push('--webhook-format is for host-health only');
   if (a.webhookFormat !== undefined && !['json', 'slack', 'discord'].includes(a.webhookFormat)) errors.push('--webhook-format must be json|slack|discord');
   if (a.githubOwner !== undefined && a.job !== 'host-health') errors.push('--github-owner is for host-health only');
+  if (a.githubCredential !== undefined && !WEBHOOK.test(a.githubCredential)) errors.push('--github-credential must be credential:E-NEXUS/edl/<name>');
+  if ((a.githubOwner === undefined) !== (a.githubCredential === undefined)) errors.push('--github-owner and --github-credential go together');
   if (a.githubOwner !== undefined && !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.githubOwner)) errors.push('--github-owner must be a GitHub owner name');
   if (a.hermesUser !== undefined && a.job !== 'host-health') errors.push('--hermes-user is for host-health only');
   if (a.hermesUser !== undefined && !/^[a-z_][a-z0-9_-]{0,31}$/.test(a.hermesUser)) errors.push('--hermes-user must be a local user name');
@@ -131,7 +134,7 @@ function commandOf(a) {
     return node ? [node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'host-health') {
-    const args = ['scripts/host-health.mjs', ...webhookArgs(a), ...(a.hermesUser ? ['--hermes-user', a.hermesUser] : []), ...(a.githubOwner ? ['--github-owner', a.githubOwner] : [])];
+    const args = ['scripts/host-health.mjs', ...webhookArgs(a), ...(a.hermesUser ? ['--hermes-user', a.hermesUser] : []), ...(a.githubOwner ? ['--github-owner', a.githubOwner, '--github-credential', a.githubCredential] : [])];
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'host-health-watchdog') {
@@ -249,7 +252,7 @@ export function renderJob(a) {
 
 function parse(argv) {
   const a = { hour: 7, minute: 30 };
-  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser', '--webhook-format': 'webhookFormat', '--github-owner': 'githubOwner' };
+  const map = { '--job': 'job', '--target': 'target', '--dir': 'dir', '--base': 'base', '--hour': 'hour', '--minute': 'minute', '--node': 'node', '--path': 'path', '--environment': 'environment', '--webhook': 'webhook', '--user': 'user', '--on-anomaly': 'onAnomaly', '--watcher-dir': 'watcherDir', '--every-hours': 'everyHours', '--vault': 'vault', '--minutes': 'minutes', '--hermes-user': 'hermesUser', '--webhook-format': 'webhookFormat', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!map[argv[i]]) throw new Error(`unknown argument: ${argv[i]}`);
     a[map[argv[i]]] = argv[i + 1];

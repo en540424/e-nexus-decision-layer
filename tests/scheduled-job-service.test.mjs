@@ -186,9 +186,10 @@ test('host-health（2026-11-04）：Discord は --webhook-format を job へ渡�
   assert.deepEqual(validateJobArgs(a), []);
   assert.match(renderJob(a).content, /<string>--webhook<\/string>\s*<string>credential:E-NEXUS\/edl\/host-health-webhook<\/string>\s*<string>--webhook-format<\/string>\s*<string>discord<\/string>\s*<string>--hermes-user<\/string>/);
   assert.ok(!/--github-owner/.test(renderJob(a).content));
-  assert.match(renderJob({ ...a, githubOwner: 'example-org' }).content, /<string>--github-owner<\/string>\s*<string>example-org<\/string>/);
+  assert.match(renderJob({ ...a, githubOwner: 'example-org', githubCredential: 'credential:E-NEXUS/edl/github-monitor-token' }).content, /<string>--github-owner<\/string>\s*<string>example-org<\/string>\s*<string>--github-credential<\/string>\s*<string>credential:E-NEXUS\/edl\/github-monitor-token<\/string>/);
+  assert.ok(validateJobArgs({ ...a, githubOwner: 'example-org' }).some((e) => e.includes('go together')), 'owner だけでは作らない（無人 job は gh のログインを使わない）');
   assert.ok(validateJobArgs({ ...a, webhookFormat: 'teams' }).some((e) => e.includes('--webhook-format')));
-  assert.ok(validateJobArgs({ ...a, githubOwner: 'a b' }).some((e) => e.includes('--github-owner')));
+  assert.ok(validateJobArgs({ ...a, githubOwner: 'a b', githubCredential: 'credential:E-NEXUS/edl/x' }).some((e) => e.includes('--github-owner')));
   assert.ok(validateJobArgs({ ...MAC, webhookFormat: 'discord' }).some((e) => e.includes('host-health only')));
   assert.ok(validateJobArgs({ ...MAC, githubOwner: 'example-org' }).some((e) => e.includes('host-health only')));
 });

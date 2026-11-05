@@ -9,7 +9,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 |---|---|---|
 | `scripts/host-health.mjs` | 30 分ごとの 1 回分：集める・判定する・記録する・変化を知らせる | 通信なし（`--webhook`・`--github-owner` を付けた時だけ） |
 | `scripts/lib/runtime-guard.mjs` | Hermes の常駐と隔離・repo・relay・バックアップ・設定の改変 | host-health の中で動く |
-| `scripts/lib/github-guard.mjs` | GitHub の公開範囲・CI・repo の異常 | `--github-owner` の時だけ |
+| `scripts/lib/github-guard.mjs` | GitHub の公開範囲・CI・repo の異常 | token が Keychain にある時だけ（§4） |
 | `scripts/lib/alert-policy.mjs` | 知らせる基準と本文の文（§2） | host-health の中で動く |
 | `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
@@ -93,19 +93,30 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 ## 4. GitHub
 
-`--github-owner <owner>` の時だけ、1 回に GraphQL の query を 1 通だけ送る（`gh` の既存のログイン。読み取りだけ・新しい鍵なし）。
+`--github-owner <owner> --github-credential credential:E-NEXUS/edl/github-monitor-token` の時だけ、GET で 6 repo を読む（1 回に repo ごと 4 通信まで）。
+**無人 job は専用の読み取り token だけを使う**（2026-11-05 Human 決定）。`gh` のログインや classic token は読み書きの範囲が広いので受け取らない（`github_pat_` 以外は `auth_failed`）。Keychain に token が無い間は項目も通信も無い。
 
 | 項目 | 水準 |
 |---|---|
 | private → public | CRIT（出来事） |
 | public → private・既定 branch の変化 | WARN（出来事） |
-| 既定 branch の先頭 commit の CI が FAILURE／ERROR | WARN（§2 のとおり 24 時間続けば 1 回） |
+| 既定 branch の先頭 commit の Actions か commit status の失敗 | WARN（§2 のとおり 24 時間続けば 1 回） |
+| Actions の run が 6 時間終わらない | WARN（`ci_stuck`） |
 | archived | WARN |
 | disabled・見えない repo | CRIT（CI の失敗が続く repo でも悪化としてすぐ知らせる） |
-| 通信・認証の失敗 | 6 時間までは unknown（悪化も回復も作らない）。続けば `github_api` を WARN |
-| Mac の HEAD と GitHub の差 | 値だけ。別の PC の push で Mac が遅れるのは普通なので知らせない |
+| 通信の失敗 | 6 時間までは unknown（悪化も回復も作らない）。続けば `github_api=unreachable` の WARN |
+| token が使えない（失効・権限不足） | `github_api=auth_failed` の WARN（監視自体の失敗） |
+| token の期限まで 14 日未満 | `github_api=token_expiring` の WARN |
+| Mac の HEAD と GitHub の差 | 別の PC の push で Mac が遅れるのは普通なので値だけ。7 日続けば WARN（未 push は除く） |
 
-未 commit・未 push は `repo:<name>`（runtime-guard・24 時間の猶予）が受け持つ。Trading Lab の repo は query に入らない。
+未 commit・未 push は `repo:<name>`（runtime-guard・24 時間の猶予）が受け持つ。Trading Lab の repo は見ない。Vault の repo は token の範囲に入れない（中身の読み取りを渡さない）ので、公開範囲もここでは見ない。
+
+### token の発行（Human の操作）
+
+1. GitHub の Settings → Developer settings → Fine-grained tokens → Generate new token。Resource owner は自分、Repository access は **Only select repositories で管理対象の 6 repo だけ**、期限は 1 年以内
+2. Repository permissions は **Metadata・Contents・Actions・Commit statuses をすべて Read-only**。それ以外は No access（Contents の読み取りは既定 branch の先頭を見るため）
+3. Mac の Terminal で `bash deploy/macos/connect-github-monitor.sh <owner>`。token を Keychain へ入れて検収する（書き込みができる token は不合格で、Keychain から消える）
+4. 合格すれば次の回から動く。job の定義は登録済みなので launchd の操作は要らない。戻す時は `bash deploy/macos/keychain-edl.sh delete github-monitor-token`
 
 ## 5. バックアップ
 

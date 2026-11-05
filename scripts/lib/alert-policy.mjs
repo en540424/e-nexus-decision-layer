@@ -54,7 +54,7 @@ const RULES = Object.freeze([
   [/^repo:/, { target: (id) => `repo ${name(id)}`, what: '未 commit か未 push が続いている', action: CHECK }],
   [/^relay_outbox$/, { target: 'devlog relay', what: '未送信が残っている', action: CHECK }],
   [/^backup_/, { target: 'バックアップ', what: '古いか復元を確かめていない', action: CHECK }],
-  [/^github_api$/, { target: 'GitHub', what: '読めない状態が続いている', action: CHECK }],
+  [/^github_api$/, { target: 'GitHub の見張り', what: '読めない状態か token の期限切れが近い', action: CHECK }],
   [/^github_visibility_changed$/, { target: 'GitHub の公開範囲', what: '変わった', action: IF_UNKNOWN }],
   [/^github_default_branch_changed$/, { target: 'GitHub の既定 branch', what: '変わった', action: IF_UNKNOWN }],
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],

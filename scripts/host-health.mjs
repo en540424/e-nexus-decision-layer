@@ -6,12 +6,12 @@
  *   node scripts/host-health.mjs --report [--days 7] [--state-dir <abs>]   記録の要約を出すだけ（観察用。何も書かない）
  *   node scripts/host-health.mjs --webhook-test --webhook <…> [--webhook-format discord]   配送試験を 1 通だけ送る（監視の状態は変えない）
  *   node scripts/host-health.mjs --quarterly-preview [--period 2026Q4] [--state-dir <abs>]   運用要約の本文を出すだけ（送らない・何も書かない）
- *        [--webhook credential:E-NEXUS/edl/<name> [--webhook-format json|slack|discord]] [--github-owner <owner>] [--json]
+ *        [--webhook credential:E-NEXUS/edl/<name> [--webhook-format json|slack|discord]] [--github-owner <owner> --github-credential credential:E-NEXUS/edl/<name>] [--json]
  *
  * 見るもの：ホストの資源（起動ディスクの空き・メモリ逼迫・swap・15 分 load・発熱・電源・再起動・既定経路）、
  *   Mac Runtime 自身の定期 job（com.e-nexus.<job> の LaunchAgent）、Mac Runtime のデータ量、（導入後）Hermes ユーザーの資源。
  *   既定で lib/runtime-guard.mjs の見張りも回す（2026-11-04。Hermes の常駐と隔離・repo の未 push・relay の未送信・Time Machine。--no-guard で外す）。
- *   --github-owner を付けた時だけ lib/github-guard.mjs の見張りも回す（GitHub の公開範囲・CI。読み取りの 1 通信だけ。既定は通信なし）。
+ *   --github-owner と --github-credential を付けた時だけ lib/github-guard.mjs の見張りも回す（GitHub の公開範囲・CI。GET だけ。Keychain に token が無ければ通信しない）。
  * 見ないもの：Trading Lab の process・VM・MT5・状態ファイル・Monitor。LIVE の状態は Trading Lab の Monitor の担当で、ここでは報告しない。
  *   process の一覧・command line・パス・IP・ホスト名は記録にも通知にも出さない（load・メモリはシステム全体の値だけ）。
  * することは 3 つだけ：記録（<state-dir>/state.json・YYYY-MM.jsonl）／状態が変わった時の通知／DEGRADED の印（起動ディスクかメモリが
@@ -38,7 +38,7 @@ import { BURST, COOLDOWN_MS, FLAP, RECOVER_RUNS, REMIND_MS, alertLine, remindInt
 import { QUARTERLY_RETRY, canAttempt, duePeriod, isPeriod, periodOf, previousPeriod, quarterlyText, summarizeQuarter } from './lib/quarterly-report.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
 import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
-import { GITHUB_BINS, GITHUB_OWNER, GITHUB_TIMEOUT_MS, collectGithub, evaluateGithub, evaluateGithubEvents, githubBin, nextGithubState } from './lib/github-guard.mjs';
+import { GITHUB_OWNER, collectGithub, evaluateGithub, evaluateGithubEvents, nextGithubState } from './lib/github-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_STATE_DIR = path.join(REPO, 'data', 'host-health');
@@ -179,7 +179,7 @@ export function parsePsUsage(stdout) {
 // ─── 集める・判定する ───
 
 /** 観測。Trading Lab の領域・process 一覧は取らない（ps は Mac Runtime 自身の job の pid と Hermes ユーザーだけ） */
-export async function collect({ run, uid, dataDirs = [], hermesUser = null, guard = null, github = null }) {
+export async function collect({ run, uid, dataDirs = [], hermesUser = null, guard = null, github = null, nowIso = new Date().toISOString() }) {
   const ok = (r) => (!r.timedOut && r.code === 0 ? r.stdout : null);
   const sysctl = async (key) => {
     const s = ok(await run('/usr/sbin/sysctl', ['-n', key]));
@@ -229,7 +229,7 @@ export async function collect({ run, uid, dataDirs = [], hermesUser = null, guar
     o.guard = await collectGuard({ run, hermesUser, ...guard });
     if (hermesUser) o.guard.service = parseLaunchctlPrint(await run('/bin/launchctl', ['print', `system/${HERMES_LABEL}`]));
   }
-  if (github) o.github = await collectGithub(github);
+  if (github) o.github = await collectGithub({ ...github, now: nowIso });
   return o;
 }
 
@@ -420,8 +420,8 @@ const VALUE_SHAPES = Object.freeze([
   [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'human_only_policy', 'failure_policy')],
   [/^agent_scope$/, codes('ok', 'user_claude_md', 'user_rules')],
   [/^residents_changed$/, /^[+-][a-z0-9.-]{1,60}(?:,[+-][a-z0-9.-]{1,60})*$/],
-  [/^github_api$/, /^(?:ok|unreachable)$/],
-  [/^github:/, /^(?:ok|ci_failure|archived|disabled|not_found|differs_from_mac)$/],
+  [/^github_api$/, /^(?:ok|unreachable|auth_failed|token_expiring)$/],
+  [/^github:/, /^(?:ok|ci_failure|ci_stuck|archived|disabled|not_found|differs_from_mac)$/],
   [/^github_visibility_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${VISIBILITY}->${VISIBILITY}$`)],
   [/^github_default_branch_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${BRANCH}->${BRANCH}$`)],
   [/^monitor_gap$/, /^\d+h\d+m$/],
@@ -625,15 +625,17 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       writeState(stateDir, prev);
     }
     const { paused, expired } = pauseState(stateDir, at);
-    const o = await collect({ run, uid, dataDirs, hermesUser, guard, github });
+    const o = await collect({ run, uid, dataDirs, hermesUser, guard, github, nowIso: at });
     const gap = monitorGapEvent(prev, at);
     const items = [...evaluate(o), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS }));
-    if (github) items.push(...evaluateGithub(o.github, o.guard?.repos, prev?.github, at), ...evaluateGithubEvents(o.github, prev?.github));
+    const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
+    const githubRepos = o.github?.status === 'ok' ? o.github.repos : null;
+    if (githubOn) items.push(...evaluateGithub(githubRepos, o.guard?.repos, prev?.github, at, { failure: o.github.status, expiresAt: o.github.expires_at ?? null }), ...evaluateGithubEvents(githubRepos, prev?.github));
     const d = decide(items, prev, { now: at, paused });
     // 今回見なかった項目は消す（外した repo・Hermes の水準が残り続けない）。GitHub が読めなかった回は残す
     const seen = new Set(items.map((x) => x.id));
-    const keep = (id) => seen.has(id) || paused || !guard || (id.startsWith('github:') && github && o.github == null);
+    const keep = (id) => seen.has(id) || paused || !guard || (id.startsWith('github:') && githubOn && githubRepos == null);
     let nextItems = Object.fromEntries(Object.entries(d.items).filter(([id]) => keep(id)));
     let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
     if (d.notify.length && webhook) {
@@ -666,7 +668,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       bursts,
       quarterly: quarterly.state,
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
-      ...(github ? { github: nextGithubState(o.github, prev?.github, at, { keepEvents: eventsUnsent }) } : prev?.github ? { github: prev.github } : {}),
+      ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
     });
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
@@ -683,7 +685,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
 
 export function parseArgs(argv) {
   const a = { dataDirs: [], json: false, guard: true, report: false, webhookTest: false, quarterlyPreview: false };
-  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner', '--period': 'period' };
+  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential', '--period': 'period' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--json') { a.json = true; continue; }
@@ -713,6 +715,8 @@ export function validateArgs(a) {
   if (a.webhookFormat !== undefined && !['json', 'slack', 'discord'].includes(a.webhookFormat)) errors.push('--webhook-format must be json|slack|discord');
   if (a.webhookTest && !a.webhook) errors.push('--webhook-test needs --webhook');
   if (a.githubOwner !== undefined && !GITHUB_OWNER.test(a.githubOwner)) errors.push('--github-owner must be a GitHub owner name');
+  if (a.githubCredential !== undefined && !WEBHOOK.test(a.githubCredential)) errors.push('--github-credential must be credential:E-NEXUS/edl/<name>');
+  if ((a.githubOwner === undefined) !== (a.githubCredential === undefined)) errors.push('--github-owner と --github-credential は両方必要（無人 job は gh のログインを使わない）');
   if (a.period !== undefined && !isPeriod(a.period)) errors.push('--period must look like 2026Q4');
   return errors;
 }
@@ -763,8 +767,7 @@ async function main(argv) {
     dataDirs: a.dataDirs.length ? a.dataDirs : [path.join(REPO, 'data')],
     hermesUser: a.hermesUser ?? null,
     guard,
-    // gh の認証情報を読むための HOME はこの runner にだけ渡す（他のコマンドの env は最小のまま）
-    github: a.githubOwner ? { run: makeRunner({ allowed: GITHUB_BINS, timeoutMs: GITHUB_TIMEOUT_MS, env: { HOME: process.env.HOME } }), bin: githubBin(), owner: a.githubOwner, repos: guard?.repos ?? [] } : null,
+    github: a.githubOwner ? { credential: a.githubCredential.slice('credential:'.length), owner: a.githubOwner, repos: guard?.repos ?? [] } : null,
     webhook,
     webhookFormat,
     run: makeRunner(),

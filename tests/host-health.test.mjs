@@ -294,7 +294,7 @@ test('引数：絶対パスだけ・Trading Lab の領域を拒否・URL の web
   assert.throws(() => parseArgs(['--state-dir']), /needs a value/);
   assert.ok(validateArgs(parseArgs(['--webhook-test'])).some((e) => e.includes('--webhook-test')));
   assert.ok(validateArgs(parseArgs(['--github-owner', 'a b'])).some((e) => e.includes('--github-owner')));
-  assert.deepEqual(validateArgs(parseArgs(['--github-owner', 'example-org'])), []);
+  assert.deepEqual(validateArgs(parseArgs(['--github-owner', 'example-org', '--github-credential', 'credential:E-NEXUS/edl/github-monitor-token'])), []);
 });
 
 test('Discord：mention を全部無効・長くても途中で切らず件数を出す・CRIT を先頭に・宛先の形を確かめる', () => {

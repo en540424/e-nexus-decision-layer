@@ -79,7 +79,7 @@ async function main(argv) {
   let a;
   try { a = parseArgs(argv); } catch (e) { console.error(e.message); return 2; }
   const errors = validateArgs(a);
-  if (a.report || a.webhookTest || a.githubOwner || a.hermesUser || a.days || a.period || a.quarterlyPreview || a.dataDirs.length) errors.push('host-health-watchdog takes only --state-dir, --webhook, --webhook-format');
+  if (a.report || a.webhookTest || a.githubOwner || a.githubCredential || a.hermesUser || a.days || a.period || a.quarterlyPreview || a.dataDirs.length) errors.push('host-health-watchdog takes only --state-dir, --webhook, --webhook-format');
   if (errors.length) { console.error(errors.join('\n')); return 2; }
   if (process.platform !== 'darwin') { console.error('host-health-watchdog is for the Mac mini (macOS) only'); return 2; }
   try {

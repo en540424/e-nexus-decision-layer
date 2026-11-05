@@ -1,96 +1,147 @@
 /**
- * GitHub 側の見張り（2026-11-04・MA-22）。host-health の --github-owner を付けた時だけ動く。READ-ONLY（GraphQL の query だけ）・1 回 1 通信・AI／課金なし。
+ * GitHub 側の見張り（2026-11-04・MA-22。2026-11-05 H3：無人 job は専用の読み取り token だけを使う形へ）。host-health の --github-owner と --github-credential を
+ * 両方付けた時だけ動く。GET だけ・AI／課金なし。
  *
- * 見るもの：repo の公開範囲の変化（private → public は CRIT）・archived／disabled・既定 branch の変化・既定 branch の先頭 commit の CI 結果・
- *   Mac の HEAD との差（値だけ。Windows の push で Mac が遅れるのは普通なので知らせない。未 push は runtime-guard の repo:<name> が知らせる）。
- * 見ないもの：Trading Lab の repo・issue・PR の本文・Secret。記録と通知に出すのは固定のコードと repo 名だけ（commit の hash は state にだけ残す）。
- * 認証：gh の既存のログインをそのまま使う（新しい鍵を作らない）。通信や認証の失敗は unknown で、続いた時だけ github_api を warn にする。
+ * 見るもの：repo の公開範囲の変化（private → public は CRIT）・archived／disabled・既定 branch の変化・既定 branch の先頭 commit の Actions と commit status・
+ *   Mac の HEAD との差（別の PC の push で Mac が遅れるのは普通なので、GITHUB_LIMITS.differs_days 続いた時だけ warn）。未 push は runtime-guard の repo:<name> が知らせる。
+ * 見ないもの：Trading Lab の repo・issue・PR の本文・Secret・ファイルの中身。記録と通知に出すのは固定のコードと repo 名だけ（commit の hash は記録しない）。
+ * 認証：Keychain の fine-grained PAT（github_pat_）だけ。gh のログインや classic token は読み書きの範囲が広いので受け取らない。
+ *   Keychain に無ければ何もしない（項目も通信もなし＝Human が token を入れた次の回から動く）。token は Authorization の header だけに使い、記録・通知・例外に出さない。
+ * 認証の失敗は github_api=auth_failed、期限が近ければ token_expiring、通信の失敗は unknown で、続いた時だけ unreachable。
  */
-import { existsSync } from 'node:fs';
+import { readCredential } from './env-file.mjs';
 
-export const GITHUB_BINS = Object.freeze(['/opt/homebrew/bin/gh', '/usr/local/bin/gh']);
-export const GITHUB_TIMEOUT_MS = 15_000;
-/** Mac に clone が無くても公開範囲は見る repo */
-export const GITHUB_EXTRA_REPOS = Object.freeze(['EN-Knowledge-Vault']);
-export const GITHUB_LIMITS = Object.freeze({ api_fail_hours: 6 });
+export const GITHUB_API = 'https://api.github.com';
+export const GITHUB_TIMEOUT_MS = 20_000;
+export const GITHUB_TOKEN_PREFIX = 'github_pat_';
+export const GITHUB_LIMITS = Object.freeze({ api_fail_hours: 6, differs_days: 7, ci_stuck_hours: 6, token_expiry_days: 14 });
 export const GITHUB_OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const TRADING_LAB = /trading-?lab/i;
+const FAILED_RUN = ['failure', 'timed_out', 'startup_failure'];
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 
-export function githubBin(exists = existsSync) {
-  return GITHUB_BINS.find((b) => exists(b)) ?? null;
-}
-
-/** 読み取りだけの 1 通の query。名前は形を確かめてから埋める（query の組み立てに外の文字列を混ぜない） */
-export function buildQuery(owner, repos) {
-  if (!GITHUB_OWNER.test(owner)) throw new Error('invalid GitHub owner');
-  const fields = 'visibility isArchived isDisabled defaultBranchRef { name target { ... on Commit { oid statusCheckRollup { state } } } }';
-  const parts = repos.map((name, i) => {
-    if (!REPO_NAME.test(name)) throw new Error('invalid repo name');
-    return `r${i}: repository(owner: "${owner}", name: "${name}") { ${fields} }`;
-  });
-  return `query { ${parts.join(' ')} }`;
-}
-
-/** repo が消えた・見えない時は gh が 0 以外で終わっても data に null が入る。data が読めなければ通信の失敗（null） */
-export function parseGithub({ code, stdout, timedOut }, repos) {
-  if (timedOut) return null;
-  let data;
-  try {
-    data = JSON.parse(stdout)?.data;
-  } catch {
-    return null;
-  }
-  if (!data || (code !== 0 && Object.values(data).every((v) => v == null))) return null;
-  const out = {};
-  repos.forEach((name, i) => {
-    const r = data[`r${i}`];
-    if (r == null) { out[name] = { found: false }; return; }
-    const target = r.defaultBranchRef?.target;
-    out[name] = {
-      found: true,
-      visibility: r.visibility ?? null,
-      archived: Boolean(r.isArchived),
-      disabled: Boolean(r.isDisabled),
-      default_branch: r.defaultBranchRef?.name ?? null,
-      oid: target?.oid ?? null,
-      ci: target?.statusCheckRollup?.state ?? null,
-    };
-  });
-  return out;
-}
-
-/** gh が無い・名前が不正・通信の失敗は全部 null（github_api の unknown／warn になる。1 回分の失敗には数えない） */
-export async function collectGithub({ run, bin, owner, repos }) {
-  if (!bin) return null;
-  const names = [...new Set([...repos, ...GITHUB_EXTRA_REPOS])].filter((n) => !TRADING_LAB.test(n));
-  try {
-    return parseGithub(await run(bin, ['api', 'graphql', '-f', `query=${buildQuery(owner, names)}`]), names);
-  } catch {
-    return null;
+class GithubFailure extends Error {
+  constructor(status) {
+    super(status);
+    this.status = status;
   }
 }
 
-/** 状態の項目。localRepos は runtime-guard の g.repos（oid・ahead）。Mac の HEAD との差は値に残すだけで知らせない */
-export function evaluateGithub(gh, localRepos, prev, now) {
+/** token を閉じ込めた GET。宛先は api.github.com の固定、redirect に従わない。読めない応答は投げる（token を含む文は作らない） */
+export function makeGithubGet({ token, fetchImpl = globalThis.fetch, signal }) {
+  return async (resource) => {
+    let res;
+    try {
+      res = await fetchImpl(`${GITHUB_API}${resource}`, { method: 'GET', redirect: 'error', signal, headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'e-nexus-host-health' } });
+    } catch {
+      throw new GithubFailure('failed');
+    }
+    if (res.status === 401) throw new GithubFailure('auth');
+    if (res.status === 429 || (res.status === 403 && res.headers?.get?.('x-ratelimit-remaining') === '0')) throw new GithubFailure('failed');
+    if (res.status === 403) throw new GithubFailure('auth'); // 権限の足りない token
+    if (res.status >= 500) throw new GithubFailure('failed');
+    let json = null;
+    try {
+      json = await res.json();
+    } catch {
+      if (res.status === 200) throw new GithubFailure('failed');
+    }
+    return { status: res.status, json, expires: res.headers?.get?.('github-authentication-token-expiration') ?? null };
+  };
+}
+
+/** Actions の workflow ごとの最新の run と commit status から、先頭 commit の状態。無ければ null */
+export function ciOf(statusJson, runsJson, now) {
+  if (statusJson?.total_count > 0 && ['failure', 'error'].includes(statusJson.state)) return 'FAILURE';
+  const latest = new Map();
+  for (const r of runsJson?.workflow_runs ?? []) {
+    const at = Date.parse(r.created_at);
+    if (!latest.has(r.workflow_id) || at > latest.get(r.workflow_id).at) latest.set(r.workflow_id, { ...r, at });
+  }
+  const runs = [...latest.values()];
+  if (runs.some((r) => r.status === 'completed' && FAILED_RUN.includes(r.conclusion))) return 'FAILURE';
+  if (runs.some((r) => r.status !== 'completed' && Date.parse(now) - r.at >= GITHUB_LIMITS.ci_stuck_hours * HOUR)) return 'STUCK';
+  return null;
+}
+
+async function repoState(get, owner, name, now) {
+  const base = `/repos/${owner}/${name}`;
+  const r = await get(base);
+  if (r.status === 404) return { found: false };
+  if (r.status !== 200) throw new GithubFailure('failed');
+  const branch = r.json.default_branch ?? null;
+  const ref = branch ? await get(`${base}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`) : null;
+  const oid = ref?.status === 200 ? (ref.json?.object?.sha ?? null) : null; // 空の repo は 404／409
+  const [status, runs] = oid ? await Promise.all([get(`${base}/commits/${oid}/status`), get(`${base}/actions/runs?head_sha=${oid}&per_page=30&exclude_pull_requests=true`)]) : [null, null];
+  return {
+    found: true,
+    visibility: String(r.json.visibility ?? (r.json.private ? 'private' : 'public')).toUpperCase(),
+    archived: Boolean(r.json.archived),
+    disabled: Boolean(r.json.disabled),
+    default_branch: branch,
+    oid,
+    ci: ciOf(status?.json, runs?.json, now),
+    expires: r.expires,
+  };
+}
+
+/**
+ * 1 回分。戻り値 status：off＝token が無い（動かない）／ok／auth＝token が使えない／failed＝通信の失敗。
+ * read・fetchImpl は test で差し替える。例外は投げない（1 回分の監視を失敗にしない）。
+ */
+export async function collectGithub({ credential, owner, repos, now, read = readCredential, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
+  let token;
+  try {
+    token = await read(credential);
+  } catch {
+    return { status: 'failed' };
+  }
+  if (!token) return { status: 'off' };
+  if (!token.startsWith(GITHUB_TOKEN_PREFIX)) return { status: 'auth' };
+  const names = repos.filter((n) => !TRADING_LAB.test(n));
+  if (!GITHUB_OWNER.test(owner) || !names.every((n) => REPO_NAME.test(n))) return { status: 'failed' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const get = makeGithubGet({ token, fetchImpl, signal: controller.signal });
+    const rows = await Promise.all(names.map(async (n) => [n, await repoState(get, owner, n, now)]));
+    const expires = rows.map(([, r]) => Date.parse(r.expires)).find(Number.isFinite) ?? null;
+    return { status: 'ok', repos: Object.fromEntries(rows.map(([n, { expires: _e, ...r }]) => [n, r])), expires_at: expires };
+  } catch (err) {
+    return { status: err instanceof GithubFailure && err.status === 'auth' ? 'auth' : 'failed' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 状態の項目。localRepos は runtime-guard の g.repos（oid・ahead）。failure は collectGithub の status、expiresAt は token の期限（ms） */
+export function evaluateGithub(gh, localRepos, prev, now, { failure = null, expiresAt = null } = {}) {
   const items = [];
   const add = (id, level, value) => items.push({ id, level, value, kind: 'state' });
+  const t = Date.parse(now);
   if (gh == null) {
+    if (failure === 'auth') { add('github_api', 'warn', 'auth_failed'); return items; } // 待っても直らない。§2 の猶予の後に 1 回
     const since = prev?.fail_since ?? now;
-    const old = Date.parse(now) - Date.parse(since) >= GITHUB_LIMITS.api_fail_hours * HOUR;
+    const old = t - Date.parse(since) >= GITHUB_LIMITS.api_fail_hours * HOUR;
     add('github_api', old ? 'warn' : 'unknown', old ? 'unreachable' : null);
     return items;
   }
-  add('github_api', 'ok', 'ok');
+  const expiring = expiresAt != null && expiresAt - t < GITHUB_LIMITS.token_expiry_days * DAY;
+  add('github_api', expiring ? 'warn' : 'ok', expiring ? 'token_expiring' : 'ok');
   for (const [name, r] of Object.entries(gh)) {
     const id = `github:${name}`;
     if (!r.found) { add(id, 'crit', 'not_found'); continue; } // 消えた・無効にされた repo は CI の失敗より重い。続いている WARN に隠さない
     if (r.disabled) { add(id, 'crit', 'disabled'); continue; }
     if (r.archived) { add(id, 'warn', 'archived'); continue; }
     if (r.ci === 'FAILURE' || r.ci === 'ERROR') { add(id, 'warn', 'ci_failure'); continue; }
-    const local = localRepos?.[name]?.oid;
-    add(id, 'ok', local && r.oid && local !== r.oid ? 'differs_from_mac' : 'ok');
+    if (r.ci === 'STUCK') { add(id, 'warn', 'ci_stuck'); continue; }
+    const local = localRepos?.[name];
+    const differs = Boolean(local?.oid && r.oid && local.oid !== r.oid && !local.ahead);
+    const since = prev?.differ_since?.[name];
+    const old = differs && since && t - Date.parse(since) >= GITHUB_LIMITS.differs_days * DAY;
+    add(id, old ? 'warn' : 'ok', differs ? 'differs_from_mac' : 'ok');
   }
   return items;
 }
@@ -108,10 +159,27 @@ export function evaluateGithubEvents(gh, prev) {
 }
 
 /** 次の state。keepEvents＝出来事を送れなかった回は前の値を残し、次の回にもう一度判定させる */
-export function nextGithubState(gh, prev, now, { keepEvents = false } = {}) {
+export function nextGithubState(gh, prev, now, { keepEvents = false, localRepos = null } = {}) {
   if (gh == null) return { ...(prev ?? {}), fail_since: prev?.fail_since ?? now };
-  if (keepEvents) return { repos: prev?.repos ?? {} };
+  const differSince = {};
+  for (const [name, r] of Object.entries(gh)) {
+    const local = localRepos?.[name];
+    if (r.found && local?.oid && r.oid && local.oid !== r.oid && !local.ahead) differSince[name] = prev?.differ_since?.[name] ?? now;
+  }
+  if (keepEvents) return { repos: prev?.repos ?? {}, differ_since: differSince };
   const repos = { ...(prev?.repos ?? {}) };
   for (const [name, r] of Object.entries(gh)) if (r.found) repos[name] = { visibility: r.visibility, default_branch: r.default_branch };
-  return { repos };
+  return { repos, differ_since: differSince };
+}
+
+/** token の検収（connect-github-monitor.sh から）。書き込みの権限が無いことは、必ず失敗する要求への応答で確かめる（不正な ref は 422 で、何も作られない） */
+export async function verifyMonitorToken({ token, owner, repos, now, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
+  if (!token?.startsWith(GITHUB_TOKEN_PREFIX)) return { ok: false, code: 'NOT_FINE_GRAINED' };
+  const r = await collectGithub({ credential: 'E-NEXUS/edl/x', owner, repos, now, read: async () => token, fetchImpl, timeoutMs });
+  if (r.status !== 'ok') return { ok: false, code: r.status === 'auth' ? 'TOKEN_REJECTED' : 'GITHUB_UNREACHABLE' };
+  const missing = Object.entries(r.repos).filter(([, x]) => !x.found || !x.oid).map(([n]) => n);
+  if (missing.length) return { ok: false, code: 'REPO_NOT_READABLE', repos: missing };
+  const probe = await fetchImpl(`${GITHUB_API}/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'e-nexus-host-health', 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
+  if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };
+  return { ok: true, code: 'OK', repos: Object.keys(r.repos).length, expires_at: r.expires_at };
 }
