@@ -553,7 +553,10 @@ export function notifyChannelItem(prev) {
 }
 export const WEBHOOK_CHECK_MS = 24 * 3_600_000;
 /** ok の間は 1 日 1 回。それ以外は毎回確かめる（作り直した Webhook へ古い「使えない」を送らない） */
-const webhookCheckDue = (prev, at) => prev?.code !== 'ok' || !(Date.parse(at) - Date.parse(prev?.at) < WEBHOOK_CHECK_MS);
+const webhookCheckDue = (prev, at) => {
+  const ms = Date.parse(at) - Date.parse(prev?.at);
+  return prev?.code !== 'ok' || !(ms >= 0 && ms < WEBHOOK_CHECK_MS); // 時計が戻っても未来の記録で止めない
+};
 
 /** 取り違えた資格情報で別の宛先へ送らない（Discord の webhook の形だけ） */
 export function isDiscordWebhook(url) {

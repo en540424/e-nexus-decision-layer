@@ -96,6 +96,12 @@ test('入力境界：知らない鍵・自由な文字列・パス・IP・Secret
   }
 });
 
+test('Webhook の確かめ方を持たない宛先も、そのまま読める', () => {
+  const b = buildBrief(stateOf(OK_ITEMS, { webhook_check: { code: 'unsupported' } }), { items: OK_ITEMS, now: NOW });
+  assert.equal(b.sections.notify.state, 'unsupported');
+  assert.deepEqual(boundaryViolations(b), []);
+});
+
 test('v1 の要約も同じ境界を通る', () => {
   const items = [...OK_ITEMS, item('power', 'crit', 'battery 90%')];
   assert.deepEqual(boundaryViolations(buildStatusSummary(stateOf(items), { now: NOW })), []);

@@ -16,6 +16,14 @@ export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_by
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
 const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)$/i;
 const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
+/** 判定できない本文（巨大な 1 行で正規表現のスタックが溢れる）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
+const hasSecret = (text) => {
+  try {
+    return SECRET_PATTERNS.some((p) => p.test(text));
+  } catch {
+    return true;
+  }
+};
 /** 全角と濁点の分かれた形も同じ語として見る */
 const mentionsTradingLab = (text) => TRADING_LAB.test(text.normalize('NFKC'));
 /** Secret の形。ファイルに 1 つでもあれば丸ごと除外する（暗号の中でも鍵を持ち出さない） */
@@ -140,7 +148,7 @@ export function planBackup({ sources, denyText, tmpRoot }) {
         continue;
       }
       if (text.includes('\0')) { count('binary'); continue; }
-      if (SECRET_PATTERNS.some((p) => p.test(text))) { count('secret'); continue; }
+      if (hasSecret(text)) { count('secret'); continue; }
       if (mentionsTradingLab(text)) { count('trading_lab'); continue; } // 言及だけのファイルも入れない（識別子の判定は deny に任せきりにしない）
       rows.push({ id: s.id, rel, body, bytes: body.length });
     }
@@ -155,7 +163,7 @@ export function planBackup({ sources, denyText, tmpRoot }) {
 
 /** 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない） */
 export function policyViolations(rows, denyText, tmpRoot) {
-  const clean = (r) => !SKIP_NAME.test(r.rel) && !mentionsTradingLab(r.rel) && !SECRET_PATTERNS.some((p) => p.test(r.body.toString('utf8'))) && !mentionsTradingLab(r.body.toString('utf8'));
+  const clean = (r) => !SKIP_NAME.test(r.rel) && !mentionsTradingLab(r.rel) && !hasSecret(r.body.toString('utf8')) && !mentionsTradingLab(r.body.toString('utf8'));
   return rows.filter((r) => !clean(r)).length + deniedIndexes(rows, denyText, tmpRoot).size;
 }
 

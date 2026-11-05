@@ -21,7 +21,7 @@ const GROUPED = Object.freeze([['repos', (id) => id.startsWith('repo:')], ['jobs
 const GROUP_RULE = Object.freeze({ repos: 'repo:x', jobs: 'job:x', github: 'github:x' });
 const LEVELS = ['ok', 'warn', 'crit', 'unknown'];
 const HEARTBEAT = ['off', 'sent', 'failed', 'rejected', 'config_invalid', 'unknown'];
-const CHANNEL = ['ok', 'gone', 'unreachable', 'config_invalid', 'unknown'];
+const CHANNEL = ['ok', 'gone', 'unreachable', 'config_invalid', 'unsupported', 'unknown'];
 const HISTORY = ['history_ok', 'history_stale', 'history_failed', 'unknown'];
 const daysLeft = (at, now) => {
   const ms = Date.parse(at) - now.getTime();
