@@ -148,7 +148,7 @@ function commandOf(a) {
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'host-health-watchdog') {
-    const args = ['scripts/host-health-watchdog.mjs', ...webhookArgs(a)];
+    const args = ['scripts/host-health-watchdog-launcher.mjs', ...webhookArgs(a)];
     return a.node ? [a.node, ...args] : ['/usr/bin/env', 'node', ...args];
   }
   if (a.job === 'runtime-backup') return [a.node, 'scripts/backup-run.mjs', 'run', '--owner', a.owner, '--repo', a.repo, '--deny-file', a.denyFile];

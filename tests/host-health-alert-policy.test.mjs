@@ -374,8 +374,58 @@ test('反復の本文：固定の文と回数だけ・値は出さない・回�
   assert.doesNotMatch(alertText([{ id: 'power', level: 'crit', value: 'ups', change: 'new', repeat: 'x' }]), /反復/);
 });
 
-test('行き来を数えない項目の state は変わらない（ディスクなどに flap の欄を足さない）', () => {
-  const d = decide([state('disk_free_gib', 'crit', 10)], null, { now: iso(0) });
-  assert.ok(!('flap_hits' in d.items.disk_free_gib));
+test('行き来を数えない項目の state は変わらない（WARN だけの項目に flap の欄を足さない）', () => {
+  const d = decide([state('data_gib', 'crit', 10)], null, { now: iso(0) });
+  assert.ok(!('flap_hits' in d.items.data_gib));
   assert.equal(d.notify[0].repeat, undefined);
+});
+
+test('監査の列：反復の明けに再通知・回復・新規が続いても、どの 24 時間でも 3 通まで（行き来の項目すべて）', () => {
+  const rolling = (out) => Math.max(...out.map(([ms]) => out.filter(([x]) => x >= ms && x < ms + 24 * HOUR).length));
+  const seq = ['crit', 'ok', 'ok', ...Array(49).fill('crit'), 'ok', 'ok', 'crit', 'ok', 'ok', 'crit', 'crit', ...Array(100).fill('ok')];
+  const out = playSending(seq.map((level, i) => [i * 30 * MIN, [state('power', level, 'ups 90%')]]));
+  assert.ok(rolling(out) <= 3, JSON.stringify(out));
+  for (const id of ['memory_pressure', 'hermes_isolation', 'monitor_alive', 'monitor_watchdog', 'disk_free_gib', 'hermes_rss_gib', 'hermes_service']) {
+    for (const period of [3, 6, 7, 14, 15]) {
+      const o = playSending(every30(24 * 14, (i) => [state(id, i % period === 0 ? 'crit' : 'ok', 'ok')]));
+      assert.ok(rolling(o) <= 3, `${id} ${period} ${JSON.stringify(o.slice(0, 8))}`);
+    }
+  }
+});
+
+test('通数の上限で持ち越した重大は、上限が明けた回に知らせる（永久に黙らない）・隔離の新しいコードは上限を待たない', () => {
+  const seq = [...Array(4).fill(null).flatMap(() => ['crit', 'ok', 'ok']), ...Array(200).fill('crit')];
+  const out = playSending(seq.map((level, i) => [i * 30 * MIN, [state('power', level, 'ups 50%')]]));
+  assert.ok(out.at(-1)[0] > 24 * HOUR, '続いていれば明けた後にも知らせる');
+  const iso1 = playSending([[0, [state('hermes_isolation', 'crit', 'admin_group')]], [30 * MIN, [state('hermes_isolation', 'ok', 'ok')]], [60 * MIN, [state('hermes_isolation', 'ok', 'ok')]], [90 * MIN, [state('hermes_isolation', 'crit', 'admin_group')]], [120 * MIN, [state('hermes_isolation', 'crit', 'admin_group,share_open')]]]);
+  assert.deepEqual(iso1.map(([, , change, repeat]) => [change, repeat]), [['new', null], ['recovered', null], ['new', 2], ['new', null]], '反復で静かな間も新しいコードは知らせる');
+});
+
+test('再開の後の 2 回目でも watchdog の古い記録で偽の CRIT を出さない（ログインが起動より遅い時）', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-resume-'));
+  try {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(path.join(dir, 'state.json'), JSON.stringify({ schema: 'host-health-state/v1', items: {}, updated_at: iso(0), last_success_at: iso(0) }));
+    writeFileSync(path.join(dir, 'watchdog.json'), JSON.stringify({ updated_at: iso(0) }));
+    const label = 'com.e-nexus.host-health-watchdog';
+    const run = async (bin, args) => {
+      if (bin === '/bin/launchctl' && args[1].includes('watchdog')) return { code: 0, stdout: 'state = not running\n', timedOut: false };
+      if (bin === '/usr/sbin/sysctl' && args[1] === 'kern.boottime') return { code: 0, stdout: `{ sec = ${Math.floor((T0 + 5 * HOUR) / 1000) - 7200}, usec = 0 }`, timedOut: false };
+      return { code: 1, stdout: '', timedOut: false };
+    };
+    const base = { stateDir: dir, dataDirs: [], run, uid: 501, guard: { base: dir, repos: [], outbox: path.join(dir, 'none'), operatorHome: dir } };
+    mkdirSync(path.join(dir, 'Library', 'LaunchAgents'), { recursive: true });
+    writeFileSync(path.join(dir, 'Library', 'LaunchAgents', `${label}.plist`), 'x');
+    mkdirSync(path.join(dir, 'x'), { recursive: true });
+    const tick = (ms) => runHostHealth({ ...base, now: () => new Date(T0 + ms) });
+    const first = await tick(5 * HOUR);
+    const second = await tick(5.5 * HOUR);
+    const level = (r) => r.items.find((x) => x.id === 'monitor_watchdog')?.level;
+    assert.equal(first.status, 'ok');
+    assert.equal(level(first), 'unknown');
+    assert.equal(level(second), 'unknown', '再開の 2 回目も watchdog の次の回を待つ');
+    assert.equal(level(await tick(7 * HOUR)), 'crit', '待った後も watchdog が動かなければ知らせる');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

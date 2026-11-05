@@ -36,8 +36,8 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | 行き来する CRIT | 間引く | 回復を知らせてから 6 時間は重ねない。続いていれば明けた回に知らせる（隔離・電源・回線・監視の停止は待たない） |
 | 重大な出来事 | すぐ 1 回 | 再起動・監視の空白・Hermes の固定ファイルの変化・監視の定義と安全 policy の変化・常駐の増減・GitHub の公開範囲と既定 branch の変化 |
 | 軽微な出来事 | 送らない | 回線の切替・Hermes の再起動。24 時間に 3 回繰り返した時だけ 1 回 |
-| 電源・回線・再起動・監視の空白の行き来 | 「反復」を 1 通 | 1 回目はふつうに知らせる。24 時間に 2 回目で「反復」を 1 通送り、24 時間は静かにする。明けた時に重大が続けば再通知、落ち着けば回復を 1 回。行き来が続いても 1 日 3 通まで。回線断で送れなかった回も数える。原因は断定しない |
-| 監視の停止 | すぐ 1 回 | §3。止まっている間は 24 時間ごと |
+| 重大の行き来（電源・回線・ディスク・メモリ・Hermes・隔離・監視の停止）と再起動・監視の空白の繰り返し | 「反復」を 1 通 | 1 回目はふつうに知らせる。24 時間に 2 回目で「反復」を 1 通送り、24 時間は静かにする。明けた時に重大が続けば再通知、落ち着けば回復を 1 回（回線断で送れないまま繰り返した時は、反復の 1 通で終わる）。**項目ごとに直近 24 時間で 3 通が上限**で、超える分は持ち越す。回線断で送れなかった回も数える。隔離の新しいコードだけは上限を待たない。原因は断定しない。上限は項目ごとで、同じ停電で電源と回線の両方が出ることはある |
+| 監視の停止 | すぐ 1 回 | §3。`DISABLED` の間は 24 時間ごと。`monitor_alive`・`monitor_watchdog` は CRIT の継続と同じ間隔 |
 | 運用要約 | 四半期に 1 通 | §2-1 |
 
 項目ごとの例外：Hermes の停止は 1 時間（3 回の観測）続いたら重大として扱う（再通知と回復の通知あり）。user 範囲の指示の混入は WARN でも待たない。`repo:`・`relay_outbox` は WARN になるまでの猶予が 24 時間あるので、知らせるのは 48 時間後。`backup_time_machine` は 3 日で WARN なので 4 日後。
@@ -72,13 +72,14 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | 止まり方 | 見つけ方 |
 |---|---|
 | 例外が 3 回続いた | `DISABLED`＋CRIT の通知。止まっている間も 24 時間ごと。Human が消した後は数え直す |
-| 記録を書けない | 回数を残せないので時刻の枠で CRIT を知らせる（6 時間ごとの最初の 1 時間。他の通知は送らない） |
+| 記録を書けない | 回数を残せないので時刻の枠で CRIT を知らせる（6 時間ごとの最初の 30 分＝1 日 4 通。`DISABLED` の間に書けなくなった時も同じ。他の通知は送らない） |
 | 全体の時間切れ（60 秒） | 失敗に数える（上と同じ） |
 | 一時的に止まって再開した | 再開した回に `monitor_gap`（最後の成功から 90 分を超えた空白。再開の回が失敗しても持ち越す） |
 | job の解除・ハング・記録の途絶 | `host-health-watchdog`（別の job。`DISABLED` は本体の担当で重ねない）。Mac の再開の直後（起動から 90 分以内・自分の前の回から 90 分超）は判定しない＝偽の CRIT を出さず、次の回に判定する |
+| 共有のコードの破損（編集の失敗で import が落ちる） | 両方の job が止まるので、watchdog の入口（`host-health-watchdog-launcher.mjs`・依存なし）が固定の文で知らせる（24 時間ごと）。入口そのものの破損は §3-1 の途絶で見る |
 | watchdog の解除・ハング | host-health の `monitor_watchdog`（解除＝CRIT・記録が 3 時間途絶＝CRIT・plist を消せば `residents_changed`）。未登録なら `not_installed` で異常にしない |
 
-watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起動しない。戻し方は `launchctl bootout gui/$(id -u)/com.e-nexus.host-health-watchdog` の後に plist を消す（1 回だけ `residents_changed` と `monitor_config_changed` が届く）。
+watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起動しない。戻し方は `launchctl bootout gui/$(id -u)/com.e-nexus.host-health-watchdog` の後に plist を消す（1 回だけ `residents_changed` と `monitor_config_changed` が届く）。登録も戻すのも :21〜:34 か :51〜:19 に、続けて実行する（間に host-health の回が入ると `not_loaded` の偽の CRIT が出る）。
 
 ### 未カバー（Mac の上の監視では知らせられない）
 
@@ -90,6 +91,8 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
 | Webhook の失効・Discord の障害 | 静かな運用では次の異常か四半期まで分からない。送ろうとした回の `notify_code` が記録に残る（`--report`） |
 | host-health の plist から `--webhook` を消す | `monitor_config_changed` は送る先が無く、基準だけ進む。記録の `NO_WEBHOOK` だけが残る |
+| スリープの窓 | host-health の後に眠り、起床で watchdog が先に動くと、間が 90 分未満なら偽の CRIT が 1 度出る（この Mac は常時稼働の前提） |
+| `DISABLED` を :20〜:35 に消す | watchdog が先に回ると古い記録を見て偽の CRIT が 1 度出る |
 | `DISABLED` のまま job が起動しなくなる | watchdog は `DISABLED` を本体に任せるので、本体の 24 時間ごとの通知が止まっても知らせない |
 | watchdog の plist に `--webhook` が無い | 動いていても送れない。`connect-discord-alerts.sh` は host-health の job だけ確かめる |
 

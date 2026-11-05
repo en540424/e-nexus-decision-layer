@@ -5,10 +5,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { monitorState, runWatchdog } from '../scripts/host-health-watchdog.mjs';
+import { BROKEN_TEXT, REMIND_MS, launch, reportBroken } from '../scripts/host-health-watchdog-launcher.mjs';
 
 const T0 = Date.parse('2026-11-04T09:00:00.000Z');
 const iso = (m) => new Date(T0 + m * 60_000).toISOString();
@@ -121,4 +122,35 @@ test('接続の道具（Human が実行）：端末でなければ何もしな�
   assert.equal(spawnSync('bash', ['-n', file.pathname], { timeout: 10_000 }).status, 0);
   const r = spawnSync('bash', [file.pathname], { input: '', timeout: 10_000, encoding: 'utf8' });
   assert.equal(r.status, 2, '端末でなければ Keychain に触れない');
+});
+
+test('入口：repo の他のファイルに依存しない・本体を読み込めない時は固定の文を 24 時間に 1 通・直れば印を消す', async () => {
+  const source = readFileSync(new URL('../scripts/host-health-watchdog-launcher.mjs', import.meta.url), 'utf8');
+  assert.deepEqual([...source.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]).filter((m) => !m.startsWith('node:')), [], '静的な import は node: だけ');
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-launcher-'));
+  try {
+    const argv = ['--webhook', 'credential:E-NEXUS/edl/h', '--webhook-format', 'discord'];
+    const url = 'https://discord.com/api/webhooks/1/x';
+    const sent = [];
+    let clock = T0;
+    const fetchImpl = async (u, o) => { sent.push(JSON.parse(o.body)); return { ok: true }; };
+    const report = (a) => reportBroken({ ...a, read: async () => url, fetchImpl, now: () => clock });
+    const broken = () => launch(argv, { stateDir: dir, load: async () => { throw new SyntaxError('/Users/x/alert-policy.mjs'); }, report });
+    assert.equal(await broken(), 1);
+    assert.equal(await broken(), 1);
+    assert.equal(sent.length, 1, '間引く');
+    assert.equal(sent[0].content, BROKEN_TEXT);
+    assert.deepEqual(sent[0].allowed_mentions, { parse: [] });
+    clock += REMIND_MS;
+    await broken();
+    assert.equal(sent.length, 2, '24 時間ごと');
+    assert.equal(await launch(argv, { stateDir: dir, load: async () => ({ main: async () => 0 }), report }), 0);
+    assert.ok(!existsSync(path.join(dir, 'watchdog-broken.json')), '直れば印を消す');
+    assert.equal(await reportBroken({ argv: [], stateDir: dir, read: async () => url, fetchImpl }), 'no_webhook');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => 'https://evil.invalid/x', fetchImpl }), 'no_webhook', 'Discord 以外へ送らない');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl: async () => ({ ok: false }) }), 'failed');
+    assert.ok(!existsSync(path.join(dir, 'watchdog-broken.json')), '送れなければ次の回にもう一度');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

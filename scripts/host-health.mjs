@@ -58,8 +58,9 @@ export const THRESHOLDS = Object.freeze({
 });
 /** DISABLED の間の通知の間隔 */
 export const DISABLED_REMIND_MS = 24 * 3_600_000;
-/** 回数を残せない時の通知の間隔。state が無いので時刻の枠で決める（6 時間ごとの最初の 1 時間。job が毎時のどの分でも枠に入る） */
+/** 回数を残せない時の通知の間隔。state が無いので時刻の枠で決める（6 時間ごとの最初の 30 分。30 分ごとの job がちょうど 1 回入る＝1 日 4 通） */
 export const UNWRITABLE_SLOT_MS = 6 * 3_600_000;
+const UNWRITABLE_WINDOW_MS = 30 * 60_000;
 /** 毎時の watchdog の 3 回分 */
 export const WATCHDOG_STALE_MS = 3 * 3_600_000;
 export const WATCHDOG_LABEL = 'com.e-nexus.host-health-watchdog';
@@ -328,7 +329,9 @@ export function decide(items, prev, { now, paused = false }) {
     }
     if (it.level === 'unknown') continue;
     const p = prevItems[it.id] ?? { level: 'ok', since: now, last_notified_at: null };
-    const hushed = rule.flap && quiet(p.flap_quiet_until);
+    const spent = rule.flap ? recent(p.flap_sends) : [];
+    const hushed = rule.flap && (quiet(p.flap_quiet_until) || spent.length >= FLAP.max_sends);
+    const sends = (change) => (change ? [...spent, now] : spent);
     if (it.level === 'ok') {
       if (p.level !== 'ok') {
         const okRuns = (p.ok_runs ?? 0) + 1;
@@ -344,7 +347,7 @@ export function decide(items, prev, { now, paused = false }) {
         since: now,
         last_notified_at: change ? now : p.last_notified_at,
         recovered_at: change === 'recovered' ? now : (p.recovered_at ?? null), // 「知らせられなかった」の後の戻りは待たせない
-        ...(rule.flap ? { flap_hits: hits, flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
+        ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
       };
       if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change, ...(repeat ? { repeat } : {}) });
       continue;
@@ -363,8 +366,8 @@ export function decide(items, prev, { now, paused = false }) {
     else if (!p.notified && held) change = 'new';
     const onset = rule.flap && (p.level === 'ok' || (p.ok_runs ?? 0) > 0); // 回復を待っている間の戻りも 1 回の行き来
     const hits = rule.flap ? [...recent(p.flap_hits), ...(onset ? [now] : [])] : null;
-    if (change === 'new' && hushed) change = null;
-    const repeat = change === 'new' && rule.flap && hits.length >= FLAP.count ? hits.length : null;
+    if (change && hushed && !grew) change = null; // 隔離の新しいコードは待たない
+    const repeat = change === 'new' && !grew && rule.flap && hits.length >= FLAP.count ? hits.length : null;
     next[it.id] = {
       level: it.level,
       since,
@@ -375,7 +378,7 @@ export function decide(items, prev, { now, paused = false }) {
       recovered_at: p.recovered_at ?? null,
       missed_at: change && level === 'crit' ? null : (p.missed_at ?? null),
       lowered_at: it.level === 'crit' ? null : (p.lowered_at ?? now),
-      ...(rule.flap ? { flap_hits: hits, flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
+      ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
     };
     if (change) notify.push({ id: it.id, level, value: it.value, change, ...(repeat ? { repeat } : {}) });
   }
@@ -531,7 +534,16 @@ async function noticeDisabled({ stateDir, state, webhook, webhookFormat, at, pos
   const last = state?.disabled_notified_at;
   if (!webhook || pauseState(stateDir, at).paused) return null;
   if (last && Date.parse(at) - Date.parse(last) < DISABLED_REMIND_MS) return null;
-  if (value === 'state_unwritable' && Date.parse(at) % UNWRITABLE_SLOT_MS >= 3_600_000) return null;
+  // 送った印を残せない時は回数で間引けないので、時刻の枠だけで送る（DISABLED の間に書けなくなった時も毎回の初回にしない）
+  let writable = value !== 'state_unwritable';
+  if (writable) {
+    try {
+      writeState(stateDir, state ?? { schema: STATE_SCHEMA, items: {} });
+    } catch {
+      writable = false;
+    }
+  }
+  if (!writable && Date.parse(at) % UNWRITABLE_SLOT_MS >= UNWRITABLE_WINDOW_MS) return null;
   const r = await post([{ id: 'host_health', level: 'crit', value, change: last ? 'reminder' : 'event' }], { spec: webhook, format: webhookFormat, at }).catch(() => ({ sent: false, code: 'WEBHOOK_UNREACHABLE' }));
   if (r.sent) {
     try {
@@ -646,7 +658,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     const o = await collect({ run, uid, dataDirs, hermesUser, guard, github, nowIso: at });
     const gap = monitorGapEvent(prev, at);
     const items = [...evaluate(o), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
-    if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS }));
+    if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS || Date.parse(at) - Date.parse(prev?.resumed_at) < GAP_MS }));
     if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     if (heartbeat) { const h = heartbeatItem(prev?.heartbeat, at); if (h) items.push(h); }
     const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
@@ -690,6 +702,8 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
+      // 再開の後の watchdog の 1 回目を待つ（ログインが起動より遅い再開で、watchdog が回る前に古い記録を見ないように）
+      ...(gap.length ? { resumed_at: at } : prev?.resumed_at ? { resumed_at: prev.resumed_at } : {}),
     };
     const statusCode = publishStatus({ statusDir, stateDir, state: nextState, at, uid });
     writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) });

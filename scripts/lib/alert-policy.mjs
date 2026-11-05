@@ -7,8 +7,9 @@
  *   出来事：1 回。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
  *   codes：値がコードの一覧の項目は、知らせた後に新しいコードが増えれば知らせ直す
  *   noCooldown：回復の直後の戻りも待たない（セキュリティ・電源・回線・監視の停止）
- *   flap：行き来を数える（電源・回線・再起動・監視の空白）。1 回目はふつうに知らせ、FLAP.window_ms の間に FLAP.count 回に達したら「反復」を 1 通だけ送り、
- *     FLAP.window_ms の間は静かにする。明けた時に続いていれば再通知、落ち着いていれば回復を 1 回。1 日の通知の上限はおよそ 2〜3 通
+ *   flap：行き来を数える（重大になりうる項目と再起動・監視の空白）。1 回目はふつうに知らせ、FLAP.window_ms の間に FLAP.count 回に達したら「反復」を 1 通だけ送り、
+ *     FLAP.window_ms の間は静かにする。明けた時に続いていれば再通知、落ち着いていれば回復を 1 回。項目ごとに直近 24 時間で FLAP.max_sends 通が上限で、
+ *     超える分は持ち越す（続いていれば後で知らせる）。隔離の新しいコードだけは上限を待たない
  * 本文は 1 行に「対象：何が起きたか → 対応」だけ。文言はここの固定文で、値は host-health の関所（VALUE_SHAPES）を通ったものだけ足す。
  */
 const HOUR = 3_600_000;
@@ -20,7 +21,7 @@ export const COOLDOWN_MS = 6 * HOUR;
 /** 回復とするまでに ok が続く回数（30 分ごとなので 30 分遅れる。行き来する項目で通知を重ねない） */
 export const RECOVER_RUNS = 2;
 export const BURST = Object.freeze({ window_ms: 24 * HOUR, count: 3 });
-export const FLAP = Object.freeze({ window_ms: 24 * HOUR, count: 2 });
+export const FLAP = Object.freeze({ window_ms: 24 * HOUR, count: 2, max_sends: 3 });
 const HOLD_MS = 24 * HOUR;
 /** 30 分ごとの job の 2 回先（時刻の揺れで 1 回延びないよう 1 時間より短く） */
 const TWO_RUNS_MS = 45 * 60_000;
@@ -32,8 +33,8 @@ const name = (id) => id.slice(id.indexOf(':') + 1);
 
 /** [id の形, 基準]。上から最初に合ったもの。target は関数でもよい */
 const RULES = Object.freeze([
-  [/^disk_free_gib$/, { target: '起動ディスク', what: '空きが少ない', action: ACT }],
-  [/^memory_pressure$/, { target: 'メモリ', what: '逼迫している', action: ACT }],
+  [/^disk_free_gib$/, { target: '起動ディスク', what: '空きが少ない', action: ACT, flap: '基準の前後を行き来している' }],
+  [/^memory_pressure$/, { target: 'メモリ', what: '逼迫している', action: ACT, flap: '逼迫を繰り返している' }],
   [/^swap_used_gib$/, { target: 'swap', what: '使用量が多い状態が続いている', action: CHECK }],
   [/^load_15m$/, { target: 'CPU の負荷', what: '高い状態が続いている', action: CHECK }],
   [/^thermal$/, { target: '発熱', what: '警告が続いている', action: CHECK }],
@@ -41,9 +42,9 @@ const RULES = Object.freeze([
   [/^network_default_route$/, { target: 'ネットワーク', what: '既定経路が無い', action: ACT, noCooldown: true, flap: '断続を繰り返している' }],
   [/^job:/, { target: (id) => `定期 job ${name(id)}`, what: '失敗か長時間の実行が続いている', action: CHECK }],
   [/^data_gib$/, { target: 'Mac Runtime のデータ量', what: '基準を超えている', action: CHECK }],
-  [/^hermes_rss_gib$/, { target: 'Hermes のメモリ', what: '使用量が多い', action: ACT }],
-  [/^hermes_service$/, { target: 'Hermes', what: '停止している', action: ACT, hold: TWO_RUNS_MS, promote: true }],
-  [/^hermes_isolation$/, { target: 'Hermes の隔離', what: '崩れている', action: ACT, noCooldown: true, codes: true }],
+  [/^hermes_rss_gib$/, { target: 'Hermes のメモリ', what: '使用量が多い', action: ACT, flap: '使用量の増減を繰り返している' }],
+  [/^hermes_service$/, { target: 'Hermes', what: '停止している', action: ACT, hold: TWO_RUNS_MS, promote: true, flap: '停止を繰り返している' }],
+  [/^hermes_isolation$/, { target: 'Hermes の隔離', what: '崩れている', action: ACT, noCooldown: true, codes: true, flap: '崩れては戻るを繰り返している' }],
   [/^status_summary$/, { target: 'Hermes への状態の要約', what: '書けない状態が続いている', action: CHECK }],
   [/^heartbeat$/, { target: '外部の死活監視への生存信号', what: '送れない状態が続いている', action: CHECK }],
   [/^hermes_restarted$/, { target: 'Hermes', what: '再起動を繰り返している', action: CHECK, burst: true }],
@@ -62,8 +63,8 @@ const RULES = Object.freeze([
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
   [/^monitor_gap$/, { target: '監視', what: '間があいた', action: CHECK, flap: '止まっては戻るを繰り返している' }],
   [/^monitor_pause$/, { target: '監視の PAUSE', what: '期限を過ぎて残っている', action: CHECK }],
-  [/^monitor_alive$/, { target: '監視', what: '止まっている', action: ACT, noCooldown: true }],
-  [/^monitor_watchdog$/, { target: '監視の見張り', what: '止まっている', action: ACT, noCooldown: true }],
+  [/^monitor_alive$/, { target: '監視', what: '止まっている', action: ACT, noCooldown: true, flap: '止まっては戻るを繰り返している' }],
+  [/^monitor_watchdog$/, { target: '監視の見張り', what: '止まっている', action: ACT, noCooldown: true, flap: '止まっては戻るを繰り返している' }],
   [/^host_health$/, { target: '監視', what: (value) => (value === 'state_unwritable' ? '記録を書けない' : '停止した'), action: ACT, hideValue: true }],
   [/^delivery_test$/, { target: '配送試験', what: '異常ではありません', action: '対応不要', hideValue: true }],
 ]);

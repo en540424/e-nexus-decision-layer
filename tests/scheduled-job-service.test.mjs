@@ -199,7 +199,7 @@ test('host-health-watchdog（2026-11-04）：launchd だけ・既定は毎時 :3
   assert.deepEqual(validateJobArgs(a), []);
   const r = renderJob(a);
   assert.equal(r.filename, 'com.e-nexus.host-health-watchdog.plist');
-  assert.match(r.content, /<string>scripts\/host-health-watchdog\.mjs<\/string>\s*<string>--webhook<\/string>/);
+  assert.match(r.content, /<string>scripts\/host-health-watchdog-launcher\.mjs<\/string>\s*<string>--webhook<\/string>/);
   assert.match(r.content, /<array><dict><key>Minute<\/key><integer>35<\/integer><\/dict><\/array>/);
   assert.match(r.content, /<key>RunAtLoad<\/key><false\/>/);
   assert.match(r.content, /<key>ProcessType<\/key><string>Background<\/string>/);

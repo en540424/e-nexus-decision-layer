@@ -3,6 +3,7 @@
  * host-health の見張りの見張り（2026-11-04・MA-22）。host-health とは別の job で動く。READ-ONLY・課金なし・AI なし・macOS のみ。
  *
  *   node scripts/host-health-watchdog.mjs [--state-dir <abs>] [--webhook credential:E-NEXUS/edl/<name> [--webhook-format discord]] [--json]
+ *   job は host-health-watchdog-launcher.mjs から起動する（この file の import が壊れた時も知らせるため）
  *
  * 見るもの：host-health の記録の更新時刻・DISABLED の印・launchd の登録。監視が止まった時（本体が自分では知らせられない形）を知らせる。
  * 限界：同じ Mac の上で動くので、Mac 自身の停止は見えない（再開した時に host-health の monitor_gap が知らせる。外からの見張りは Human の判断）。
@@ -75,7 +76,7 @@ export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null
   return { code: 0, status: 'ok', level: seen.level, value: seen.value, notify: d.notify, notifyCode, paused };
 }
 
-async function main(argv) {
+export async function main(argv) {
   let a;
   try { a = parseArgs(argv); } catch (e) { console.error(e.message); return 2; }
   const errors = validateArgs(a);
