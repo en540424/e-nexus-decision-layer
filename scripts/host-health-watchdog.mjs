@@ -15,10 +15,11 @@
  * exit：0＝1 回分を終えた（異常があっても 0）／1＝失敗／2＝引数・macOS 以外
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_STATE_DIR, GAP_MS, decide, makeRunner, parseArgs, parseBoottime, parseLaunchctlPrint, pauseState, postAlerts, rollbackUnsent, validateArgs } from './host-health.mjs';
-import { MONITOR_LABEL } from './lib/runtime-guard.mjs';
+import { MONITOR_LABEL, plistArgs } from './lib/runtime-guard.mjs';
 
 const WATCHDOG_SCHEMA = 'host-health-watchdog/v1';
 const ID = 'monitor_alive';
@@ -36,6 +37,14 @@ export function monitorState({ state, disabled, job, now, resumed = false }) {
   return minutes * 60_000 > GAP_MS ? { level: 'crit', value: `stale ${minutes}m` } : { level: 'ok', value: 'ok' };
 }
 
+/** host-health の job に --webhook が無いと本体は何も知らせられないので、ここから知らせる。定義が無い・読めない時は判定しない */
+export function monitorWebhookItem(plistText) {
+  const args = plistArgs(plistText);
+  if (args == null) return { id: 'monitor_webhook', level: 'unknown', value: null, kind: 'state' };
+  const ok = args.includes('--webhook');
+  return { id: 'monitor_webhook', level: ok ? 'ok' : 'warn', value: ok ? 'ok' : 'no_webhook', kind: 'state' };
+}
+
 function readJson(file) {
   try {
     return JSON.parse(readFileSync(file, 'utf8'));
@@ -45,7 +54,7 @@ function readJson(file) {
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
+export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, monitorPlist = path.join(homedir(), 'Library', 'LaunchAgents', `${MONITOR_LABEL}.plist`) }) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const at = now().toISOString();
   const file = path.join(stateDir, 'watchdog.json');
@@ -58,7 +67,11 @@ export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null
   const resumed = (bootSec != null && nowMs - bootSec * 1000 < GAP_MS) || nowMs - Date.parse(prev?.updated_at) > OWN_GAP_MS;
   const seen = monitorState({ state: readJson(path.join(stateDir, 'state.json')), disabled: existsSync(path.join(stateDir, 'DISABLED')), job, now: at, resumed });
   const { paused } = pauseState(stateDir, at);
-  const d = decide([{ id: ID, ...seen, kind: 'state' }], prev?.schema === WATCHDOG_SCHEMA ? prev : null, { now: at, paused });
+  let plist = null;
+  try {
+    plist = readFileSync(monitorPlist, 'utf8');
+  } catch { /* 無ければ判定しない */ }
+  const d = decide([{ id: ID, ...seen, kind: 'state' }, monitorWebhookItem(plist)], prev?.schema === WATCHDOG_SCHEMA ? prev : null, { now: at, paused });
   let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
   const save = (items) => {
     const tmp = `${file}.tmp`;

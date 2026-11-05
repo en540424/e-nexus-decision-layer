@@ -89,11 +89,19 @@ async function repoState(get, owner, name, now) {
   };
 }
 
+const RELAY_ID = /^\d{8}T\d{6}Z-[a-z0-9-]{1,40}-[0-9a-f]{6}$/;
+/** devlog relay の受領（acks branch のファイル名だけ。中身は読まない）。読めなければ null（数えない） */
+async function relayAcks(get, owner, { repo, prefix }) {
+  const r = await get(`/repos/${owner}/${repo}/git/trees/acks?recursive=1`);
+  if (r.status !== 200 || r.json?.truncated || !Array.isArray(r.json?.tree)) return null;
+  return r.json.tree.map((e) => String(e?.path ?? '')).filter((p) => p.startsWith(prefix) && p.endsWith('.json')).map((p) => p.slice(p.lastIndexOf('/') + 1, -'.json'.length)).filter((id) => RELAY_ID.test(id));
+}
+
 /**
  * 1 回分。戻り値 status：off＝token が無い（動かない）／ok／auth＝token が使えない／failed＝通信の失敗。
  * read・fetchImpl は test で差し替える。例外は投げない（1 回分の監視を失敗にしない）。
  */
-export async function collectGithub({ credential, owner, repos, now, read = readCredential, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
+export async function collectGithub({ credential, owner, repos, now, relay = null, read = readCredential, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
   let token;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs); // Keychain の待ちも同じ予算に入れる
@@ -113,7 +121,8 @@ export async function collectGithub({ credential, owner, repos, now, read = read
     const get = makeGithubGet({ token, fetchImpl, signal: controller.signal });
     const rows = await Promise.race([Promise.all(names.map(async (n) => [n, await repoState(get, owner, n, now)])), aborted]);
     const expires = rows.map(([, r]) => Date.parse(r.expires)).find(Number.isFinite) ?? null;
-    return { status: 'ok', repos: Object.fromEntries(rows.map(([n, { expires: _e, ...r }]) => [n, r])), expires_at: expires };
+    const relayAcked = relay ? await relayAcks(get, owner, relay).catch(() => null) : null;
+    return { status: 'ok', repos: Object.fromEntries(rows.map(([n, { expires: _e, ...r }]) => [n, r])), expires_at: expires, ...(relay ? { relay_acked: relayAcked } : {}) };
   } catch (err) {
     return { status: err instanceof GithubFailure && err.status === 'auth' ? 'auth' : 'failed' };
   } finally {

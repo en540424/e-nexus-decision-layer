@@ -60,10 +60,10 @@ export function buildStatusSummary(state, { now = new Date(), paused = false, di
 }
 
 /**
- * 本番の 1 ファイルを置き換える。戻り値は記録用のコード：written／not_configured（フォルダが無い）／dir_unsafe（symlink・他人のもの・他人が書ける）／write_failed。
+ * 本番のファイルを置き換える（name・text で隣の要約と読み方も同じ規則で書く）。戻り値は記録用のコード：written／not_configured（フォルダが無い）／dir_unsafe（symlink・他人のもの・他人が書ける）／write_failed。
  * Hermes が読むので group の読み取りだけ（0640）。group はフォルダから継ぐ。途中の状態を読ませないよう rename で置き換える。
  */
-export function writeStatusSummary(summary, { dir = STATUS_DIR, uid = process.getuid() } = {}) {
+export function writeStatusSummary(summary, { dir = STATUS_DIR, uid = process.getuid(), name = STATUS_FILE, text = null } = {}) {
   let s;
   try {
     s = lstatSync(dir);
@@ -71,10 +71,10 @@ export function writeStatusSummary(summary, { dir = STATUS_DIR, uid = process.ge
     return 'not_configured';
   }
   if (!s.isDirectory() || s.uid !== uid || s.mode & 0o027) return 'dir_unsafe';
-  const file = path.join(dir, STATUS_FILE);
+  const file = path.join(dir, name);
   const tmp = `${file}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o640 });
+    writeFileSync(tmp, text ?? `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o640 });
     chmodSync(tmp, 0o640);
     renameSync(tmp, file);
     return 'written';

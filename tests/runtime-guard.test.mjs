@@ -90,7 +90,7 @@ test('collectGuard：index を書かない git だけを呼び、Hermes の home
   assert.deepEqual(git.slice(1, 3), ['--no-optional-locks', '-C']);
   assert.ok(!calls.flat().some((a) => /fetch|pull|push|ls-remote/.test(a)));
   assert.deepEqual(g.isolation, []);
-  assert.deepEqual(fsi.reads.sort(), [...Object.values(HERMES_FILES), '/Users/op/Library/LaunchAgents/com.e-nexus.host-health.plist', '/Users/op/Library/LaunchAgents/com.e-nexus.host-health-watchdog.plist'].sort());
+  assert.deepEqual([...new Set(fsi.reads)].sort(), [...Object.values(HERMES_FILES), '/Users/op/Library/LaunchAgents/com.e-nexus.host-health.plist', '/Users/op/Library/LaunchAgents/com.e-nexus.host-health-watchdog.plist', '/Users/op/Library/LaunchAgents/com.e-nexus.runtime-backup.plist'].sort());
   assert.equal(g.backup.configured, false);
 });
 
@@ -108,7 +108,7 @@ test('読めない時は unknown にして、悪化も回復も作らない', as
   const g = await collectGuard({ run, hermesUser: 'hermes', ...guardArgs(fakeFs()) });
   g.service = null;
   const by = Object.fromEntries(evaluateGuard(g, null, NOW).map((x) => [x.id, x.level]));
-  assert.deepEqual(by, { 'repo:r1': 'unknown', relay_outbox: 'ok', backup_time_machine: 'unknown', backup_archive: 'ok', agent_scope: 'ok', hermes_service: 'unknown', hermes_isolation: 'unknown' });
+  assert.deepEqual(by, { 'repo:r1': 'unknown', relay_outbox: 'ok', backup_time_machine: 'unknown', backup_archive: 'ok', monitor_args: 'unknown', agent_scope: 'ok', hermes_service: 'unknown', hermes_isolation: 'unknown' });
 });
 
 test('repo の差分は続いた時だけ warn（作業中は異常にしない）', () => {

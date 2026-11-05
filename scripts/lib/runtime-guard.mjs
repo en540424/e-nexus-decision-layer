@@ -24,15 +24,26 @@ export const GUARD_BINS = Object.freeze(['/usr/bin/id', '/usr/bin/git', '/usr/bi
 export const RELAY_REPO = 'e-nexus-devlog-relay';
 const FORBIDDEN_GROUPS = ['admin', 'wheel'];
 /** 作業中の差分を異常にしないための猶予。続いた時だけ warn にする */
-export const GUARD_LIMITS = Object.freeze({ repo_hours: 24, outbox_hours: 24, backup_days: { warn: 3, crit: 7 }, restore_days: { warn: 35 }, backup_failures: 2 });
+export const GUARD_LIMITS = Object.freeze({ repo_hours: 24, outbox_hours: 24, backup_days: { warn: 3, crit: 7 }, restore_days: { warn: 35 }, backup_failures: 2, history_days: 45, token_expiry_days: 14 });
 /** 変わったら知らせる固定ファイル（repo 内の相対パス）。Human Gate を弱める変更は git の差分より先にここで出す */
-export const WATCHED_POLICIES = Object.freeze({ human_only_policy: 'policies/safety/human-only.json', failure_policy: 'policies/gateway/failure-policy.json' });
+export const WATCHED_POLICIES = Object.freeze({ human_only_policy: 'policies/safety/human-only.json', failure_policy: 'policies/gateway/failure-policy.json', repos_conf: 'deploy/macos/repos.conf' });
 export const MONITOR_LABEL = 'com.e-nexus.host-health';
 const WATCHDOG_PLIST = 'com.e-nexus.host-health-watchdog.plist';
+const BACKUP_PLIST = 'com.e-nexus.runtime-backup.plist';
 export const BACKUP_RECEIPT_SCHEMA = 'runtime-backup-receipt/v1';
 const RESIDENT = /^(com\.e-nexus\.[a-z0-9.-]+)\.plist$/;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+
+/** relay の送信側の machine id（~/.enexus/devlog-relay.json）。読めなければ null（未反映の件数を数えない） */
+export function relayMachine(home) {
+  try {
+    const id = JSON.parse(readFileSync(path.join(home, '.enexus', 'devlog-relay.json'), 'utf8')).machineId;
+    return /^[a-z0-9-]{1,40}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 /** repos.conf の <name>|<source>|<test> から名前だけ。relay は別の repo なので足す */
 export function readRepoNames(confText) {
@@ -45,6 +56,7 @@ export function defaultGuard(repoRoot) {
     base: path.resolve(repoRoot, '..'),
     repos: readRepoNames(readFileSync(path.join(repoRoot, 'deploy', 'macos', 'repos.conf'), 'utf8')),
     outbox: path.join(homedir(), '.enexus', 'devlog-relay', 'outbox'),
+    sent: path.join(homedir(), '.enexus', 'devlog-relay', 'sent'),
     operatorHome: homedir(),
     repoRoot,
     backupReceipt: path.join(homedir(), '.enexus', 'backup', 'last.json'),
@@ -151,6 +163,31 @@ function residentsOf(operatorHome, fsi) {
   }
   return [...new Set(names)].sort();
 }
+/** plist の ProgramArguments の文字列（XML の plist だけ。読めなければ null） */
+export function plistArgs(text) {
+  if (typeof text !== 'string' || !text.includes('<plist')) return null;
+  return [...text.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
+}
+function readText(file, fsi) {
+  try {
+    return fsi.existsSync(file) ? String(fsi.readFileSync(file, 'utf8')) : null;
+  } catch {
+    return null;
+  }
+}
+/** 監視の job の引数の欠け。host-health は watchdog の分を、watchdog は host-health の分を知らせる（--webhook が無い job は自分では知らせられない） */
+function monitorArgsOf(agents, fsi) {
+  const monitor = readText(path.join(agents, `${MONITOR_LABEL}.plist`), fsi);
+  const watchdog = readText(path.join(agents, WATCHDOG_PLIST), fsi);
+  if (monitor == null && watchdog == null) return undefined; // 登録の前
+  const m = plistArgs(monitor);
+  const w = plistArgs(watchdog);
+  if ((monitor != null && m == null) || (watchdog != null && w == null)) return null;
+  const codes = [];
+  if (m) for (const [flag, code] of [['--webhook', 'monitor_no_webhook'], ['--heartbeat', 'monitor_no_heartbeat'], ['--github-owner', 'monitor_no_github']]) if (!m.includes(flag)) codes.push(code);
+  if (w && !w.includes('--webhook')) codes.push('watchdog_no_webhook');
+  return codes;
+}
 /** Claude Code の user 範囲は同じ OS ユーザーの Trading Lab にも届く。E-NEXUS の指示はそこへ置かない（有無だけ見る。中身は読まない） */
 function scopeOf(operatorHome, fsi) {
   return [['user_claude_md', ['.claude', 'CLAUDE.md']], ['user_rules', ['.claude', 'rules']]].filter(([, p]) => fsi.existsSync(path.join(operatorHome, ...p))).map(([code]) => code);
@@ -162,14 +199,14 @@ function backupReceiptOf(file, fsi) {
     const r = JSON.parse(fsi.readFileSync(file, 'utf8'));
     const failures = Number.isInteger(r?.consecutive_failures) ? r.consecutive_failures : 0;
     if (r?.schema !== BACKUP_RECEIPT_SCHEMA || (Number.isNaN(Date.parse(r.finished_at)) && !failures)) return null;
-    return { configured: true, finished_at: r.finished_at ?? null, restore_verified_at: r.restore_verified_at ?? null, failures, failure_code: r.last_failure_code ?? null };
+    return { configured: true, finished_at: r.finished_at ?? null, restore_verified_at: r.restore_verified_at ?? null, failures, failure_code: r.last_failure_code ?? null, history_verified_at: r.history_verified_at ?? null, history_failure: r.history_failure ?? null, token_expires_at: r.token_expires_at ?? null };
   } catch {
     return null;
   }
 }
 
 /** run は host-health の makeRunner（許可したコマンドだけ）。fsi は test で差し替える */
-export async function collectGuard({ run, hermesUser = null, base, repos, outbox, operatorHome, repoRoot = null, backupReceipt = null, fsi = { readFileSync, statSync, readdirSync, existsSync } }) {
+export async function collectGuard({ run, hermesUser = null, base, repos, outbox, sent = null, operatorHome, repoRoot = null, backupReceipt = null, fsi = { readFileSync, statSync, readdirSync, existsSync } }) {
   const g = { repos: {} };
   for (const name of repos) {
     const dir = path.join(base, name);
@@ -183,6 +220,13 @@ export async function collectGuard({ run, hermesUser = null, base, repos, outbox
   } catch {
     g.outbox = null;
   }
+  if (sent) {
+    try {
+      g.relay_sent = fsi.readdirSync(sent).filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -'.md'.length));
+    } catch {
+      g.relay_sent = null;
+    }
+  }
   const dest = parseTimeMachineDestination(await run('/usr/bin/tmutil', ['destinationinfo']));
   g.backup = dest;
   if (dest?.configured) {
@@ -193,7 +237,12 @@ export async function collectGuard({ run, hermesUser = null, base, repos, outbox
   g.residents = residentsOf(operatorHome, fsi);
   g.scope = scopeOf(operatorHome, fsi);
   const agents = path.join(operatorHome, 'Library', 'LaunchAgents');
-  g.config = { monitor_plist: sha256OfFile(path.join(agents, `${MONITOR_LABEL}.plist`), fsi), watchdog_plist: sha256OfFile(path.join(agents, WATCHDOG_PLIST), fsi) };
+  g.config = { monitor_plist: sha256OfFile(path.join(agents, `${MONITOR_LABEL}.plist`), fsi), watchdog_plist: sha256OfFile(path.join(agents, WATCHDOG_PLIST), fsi), backup_plist: sha256OfFile(path.join(agents, BACKUP_PLIST), fsi) };
+  // バックアップの除外の条件そのもの。パスは plist から読む（公開 repo にローカルのパスを置かない）
+  const backupArgs = plistArgs(readText(path.join(agents, BACKUP_PLIST), fsi)) ?? [];
+  const deny = backupArgs[backupArgs.indexOf('--deny-file') + 1];
+  if (backupArgs.includes('--deny-file') && deny) g.config.backup_deny = sha256OfFile(deny, fsi);
+  g.monitor_args = monitorArgsOf(agents, fsi);
   if (repoRoot) for (const [name, p] of Object.entries(WATCHED_POLICIES)) g.config[name] = sha256OfFile(path.join(repoRoot, p), fsi);
   if (hermesUser) {
     const r = await run('/usr/bin/id', ['-Gn', hermesUser]);
@@ -252,7 +301,17 @@ export function evaluateGuard(g, prevGuard, now) {
       if (b.failures >= GUARD_LIMITS.backup_failures) add('backup_archive', 'crit', `failed ${b.failure_code ?? 'unknown'}`); // 古くなるのを待たない
       else if (days == null) add('backup_archive', 'unknown', null);
       else add('backup_archive', days >= crit ? 'crit' : days >= warn || staleRestore ? 'warn' : 'ok', `${days}d restore ${restoreDays == null ? 'never' : `${restoreDays}d`}`);
+      // 古い世代の読み直し。最初の検証の前は異常にしない
+      const historyDays = ageDays(b.history_verified_at);
+      if (b.history_failure) add('backup_history', 'warn', 'history_failed');
+      else if (b.history_verified_at) add('backup_history', historyDays == null || historyDays >= GUARD_LIMITS.history_days ? 'warn' : 'ok', historyDays == null || historyDays >= GUARD_LIMITS.history_days ? 'history_stale' : 'history_ok');
+      const left = Date.parse(b.token_expires_at) - t;
+      if (Number.isFinite(left)) add('credential_backup_token', left <= 0 ? 'crit' : left < GUARD_LIMITS.token_expiry_days * DAY ? 'warn' : 'ok', left <= 0 ? 'expired' : left < GUARD_LIMITS.token_expiry_days * DAY ? 'expiring' : 'ok');
     }
+  }
+  if (g.monitor_args !== undefined) {
+    if (g.monitor_args == null) add('monitor_args', 'unknown', null);
+    else add('monitor_args', g.monitor_args.length ? 'warn' : 'ok', g.monitor_args.length ? g.monitor_args.join(',') : 'ok');
   }
   if (g.scope !== undefined) add('agent_scope', g.scope.length ? 'warn' : 'ok', g.scope.length ? g.scope.join(',') : 'ok');
   if (g.service !== undefined) {

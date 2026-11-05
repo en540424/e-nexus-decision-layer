@@ -76,7 +76,8 @@ test('読み取り：Mac mini の実出力から空き・逼迫・swap・load・
   assert.deepEqual(parseRoute({ code: 1, stdout: '' }), { default_route: false, interface: null }, '既定経路なし');
   assert.equal(parseRoute({ code: -1, stdout: '', timedOut: true }), null, '時間切れは分からない');
   assert.deepEqual(parseLaunchctlPrint({ code: 113, stdout: '' }), { loaded: false });
-  assert.deepEqual(parseLaunchctlPrint({ code: 0, stdout: OUT.launchctlLoaded }), { loaded: true, state: 'not running', pid: null, last_exit_code: 0, spawn_type: 'background' });
+  assert.deepEqual(parseLaunchctlPrint({ code: 0, stdout: OUT.launchctlLoaded }), { loaded: true, state: 'not running', pid: null, last_exit_code: 0, spawn_type: 'background', runs: 3, last_signal: null });
+  assert.equal(parseLaunchctlPrint({ code: 0, stdout: '\tstate = not running\n\tlast terminating signal = Killed: 9\n' }).last_signal, '9');
   assert.equal(parseLaunchctlPrint({ code: 0, stdout: '\tstate = not running\n\tlast exit code = (never exited)\n' }).last_exit_code, null);
   assert.equal(parseLaunchctlPrint({ code: 0, stdout: '\tstate = not running\n\tlast exit code = 78: EX_CONFIG\n' }).last_exit_code, 78);
   assert.equal(parseEtimeSeconds('   05:06\n'), 306);

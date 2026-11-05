@@ -5,6 +5,7 @@
  *   node scripts/backup-run.mjs plan --deny-file <abs> [--json]                  選別の結果だけ（送らない・Keychain に触れない）
  *   node scripts/backup-run.mjs check --owner <o> --repo <r> --deny-file <abs>   送る条件を全部確かめる（送らない）
  *   node scripts/backup-run.mjs run   --owner <o> --repo <r> --deny-file <abs>   1 回分（条件が全部揃った時だけ送る）
+ *   node scripts/backup-run.mjs verify --owner <o> --repo <r> --deny-file <abs>  保存済みのアーカイブ（最新と最古）を読み直して検証する（送らない・平文を画面へ出さない）
  *   node scripts/backup-run.mjs attest-key   標準入力の passphrase が Keychain と同じなら、Mac の外の控えがあると記録する（connect-backup.sh から）
  *   node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>   標準入力の passphrase で復元する（Keychain を使わない。どの PC でも）
  *
@@ -15,6 +16,8 @@
  *   4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
  * 届いたことの実証：送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（~/.enexus/backup/last.json）に restore_verified_at を書く。
  * 失敗は受領票に数え、host-health の backup_archive が知らせる（2 回続けば CRIT。ここからは Discord へ送らない）。
+ * 保存済みの検証：VERIFY_EVERY_MS ごとに定期の回の中で最古の世代も読み直す（復号・全ファイルの hash・改ざんと鍵の誤りが拒まれること・除外の方針）。失敗は受領票の history_failure で host-health が知らせる。
+ * token の期限：応答の header を受領票の token_expires_at に残す（host-health が事前に知らせる）。
  * 世代：lib/backup-plan.mjs の retentionPlan。消したものも Git の履歴に残る。repo が size_limit_kib を超えたら止めて知らせる（消すのは Human）。
  * 記録に出すのは件数・大きさ・コードだけ。パス・中身・鍵は出さない。
  * exit：0＝成功／1＝失敗／2＝引数／3＝条件が揃っていない（送っていない）
@@ -25,7 +28,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAX_BYTES, manifestOf, pack, restore, unpack } from './lib/backup-archive.mjs';
-import { backupSources, planBackup, retentionPlan } from './lib/backup-plan.mjs';
+import { backupSources, planBackup, policyViolations, retentionPlan } from './lib/backup-plan.mjs';
 import { readCredential } from './lib/env-file.mjs';
 import { GITHUB_API, GITHUB_OWNER, GITHUB_TOKEN_PREFIX } from './lib/github-guard.mjs';
 import { BACKUP_RECEIPT_SCHEMA, defaultGuard } from './lib/runtime-guard.mjs';
@@ -41,6 +44,8 @@ const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const MAX_DELETES = 5;
 const HTTP_TIMEOUT_MS = 30_000;
 const STALE_WORK_MS = 3_600_000;
+/** 古い世代の読み直しの間隔（host-health の GUARD_LIMITS.history_days より短く） */
+export const VERIFY_EVERY_MS = 30 * 24 * 3_600_000;
 const backupDir = (home) => path.join(home, '.enexus', 'backup');
 /** 平文の写しを置く場所。0700。強制終了の残骸は 1 時間たったものだけ消す（別の process の回の写しを消さない）。各回は下に自分の一時フォルダを作る */
 export function workRoot(home, now = Date.now()) {
@@ -85,7 +90,8 @@ export function keyAttested({ home, passphrase }) {
 
 /** 宛先は api.github.com の固定。redirect に従わない。token は header だけ */
 function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
-  return async (method, resource, { body = null, accept = 'application/vnd.github+json', raw = false } = {}) => {
+  let expires = null;
+  const api = async (method, resource, { body = null, accept = 'application/vnd.github+json', raw = false } = {}) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -96,6 +102,8 @@ function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
         headers: { authorization: `Bearer ${token}`, accept, 'x-github-api-version': '2022-11-28', 'user-agent': 'e-nexus-backup', ...(body ? { 'content-type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
+      const seen = Date.parse(res.headers?.get?.('github-authentication-token-expiration'));
+      if (Number.isFinite(seen)) expires = new Date(seen).toISOString();
       if (raw) return { status: res.status, bytes: res.status === 200 ? Buffer.from(await res.arrayBuffer()) : null };
       return { status: res.status, json: await res.json().catch(() => null) };
     } catch {
@@ -104,6 +112,8 @@ function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
       clearTimeout(timer);
     }
   };
+  api.tokenExpiresAt = () => expires;
+  return api;
 }
 
 /** 条件 1・2・3。戻り値は送るのに使うもの。揃わなければ notReady を投げる */
@@ -172,6 +182,71 @@ async function upload({ api, owner, repo, name, archive, passphrase }) {
   unpack(back.bytes, passphrase); // 改ざん・鍵の違いはここで投げる
 }
 
+/** Git の blob の hash（一覧の sha と読み直した中身の照合） */
+const blobSha = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
+
+/**
+ * 保存済みの 1 世代の検証。平文はメモリの上だけ（除外の方針の grep だけ work の一時フォルダを使う）。戻り値は件数だけ。
+ * 確かめること：復号できる・全ファイルの hash が合う・1 byte 変えると拒まれる・別の passphrase で拒まれる・除外の方針に反するファイルが無い。
+ */
+export function verifyArchive({ bytes, passphrase, scan }) {
+  const files = unpack(bytes, passphrase);
+  for (const f of files) {
+    if (sha256(Buffer.from(f.data, 'base64')) !== f.sha256) throw new Stop('file_hash_mismatch');
+  }
+  const refused = (fn) => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const flipped = Buffer.from(bytes);
+  flipped[Math.floor(flipped.length / 2)] ^= 0xff;
+  if (!refused(() => unpack(flipped, passphrase))) throw new Stop('tamper_not_detected');
+  if (!refused(() => unpack(bytes, `${passphrase}x`))) throw new Stop('wrong_key_not_refused');
+  const violations = scan(files.map((f) => ({ rel: f.path, body: Buffer.from(f.data, 'base64') })));
+  if (violations) throw new Stop('policy_violation');
+  return { files: files.length, bytes: bytes.length };
+}
+
+async function storedArchives({ api, owner, repo }) {
+  const list = await api('GET', `/repos/${owner}/${repo}/contents/archives`);
+  if (list.status !== 200 || !Array.isArray(list.json)) throw new Stop('archives_unreadable');
+  return list.json.filter((e) => /^\d{4}-\d{2}-\d{2}T\d{4}Z\.edlbk$/.test(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function verifyStored({ api, owner, repo, entry, passphrase, scan }) {
+  const back = await api('GET', `/repos/${owner}/${repo}/contents/archives/${entry.name}`, { accept: 'application/vnd.github.raw+json', raw: true });
+  if (back.status !== 200 || blobSha(back.bytes) !== entry.sha) throw new Stop('read_back_mismatch');
+  try {
+    return verifyArchive({ bytes: back.bytes, passphrase, scan });
+  } catch (err) {
+    throw err instanceof Stop ? err : new Stop('archive_unreadable'); // 改ざん・鍵の違い
+  }
+}
+
+/** 最新と最古を検証する（同じなら 1 つ）。受領票の history_verified_at を進める。失敗は history_failure に残す（毎日の回の成否は変えない） */
+export async function verifyBackups({ owner, repo, home, otherRepos, scan, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date() }) {
+  const receipt = path.join(backupDir(home), 'last.json');
+  const at = now().toISOString();
+  try {
+    const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl });
+    const stored = await storedArchives({ api, owner, repo });
+    if (!stored.length) throw new Stop('nothing_stored');
+    const picks = [...new Set([stored.at(-1), stored[0]])];
+    const rows = [];
+    for (const entry of picks) rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
+    writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() ?? readReceipt(receipt)?.token_expires_at ?? null });
+    return { code: 0, status: 'verified', stored: stored.length, rows, tamper_detected: true, wrong_key_refused: true, policy_violations: 0 };
+  } catch (err) {
+    const code = err instanceof Stop ? err.code : 'verify_failed';
+    writeReceipt(receipt, { ...readReceipt(receipt), history_failure: code });
+    return { code: err instanceof Stop ? err.exit : 1, status: 'failed', failure: code };
+  }
+}
+
 /** 世代の整理。失敗しても 1 回分は成功のまま（次の回にもう一度） */
 async function prune({ api, owner, repo, current }) {
   const list = await api('GET', `/repos/${owner}/${repo}/contents/archives`);
@@ -199,8 +274,11 @@ function writeReceipt(file, body) {
   renameSync(tmp, file);
 }
 
+/** 毎回の受領票へ持ち越す項目（古い世代の検証と token の期限） */
+const keptFields = (prev) => Object.fromEntries(['history_verified_at', 'history_failure', 'token_expires_at'].filter((k) => prev?.[k] != null).map((k) => [k, prev[k]]));
+
 /** 1 回分。plan・read・fetchImpl・now を差し替えて test する（実データも GitHub も使わずに回せる） */
-export async function runBackup({ owner, repo, home, otherRepos, planFiles, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date(), drill = runDrill }) {
+export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan = null, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date(), drill = runDrill }) {
   const at = now().toISOString();
   const receipt = path.join(backupDir(home), 'last.json');
   const prev = readReceipt(receipt);
@@ -214,11 +292,15 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, read
     await upload({ api, owner, repo, name, archive, passphrase });
     const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
-    writeReceipt(receipt, { finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null });
-    return { code: 0, status: 'ok', archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, pruned };
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() ?? prev?.token_expires_at ?? null });
+    // 古い世代も戻せることの定期の確かめ。失敗しても今回の回は成功のまま（受領票の history_failure で host-health が知らせる）
+    const last = Date.parse(prev?.history_verified_at);
+    const due = scan && !(Date.parse(at) - last < VERIFY_EVERY_MS);
+    const history = due ? await verifyBackups({ owner, repo, home, otherRepos, scan: (rows) => scan(tmpRoot, rows), read, fetchImpl, now }) : null;
+    return { code: 0, status: 'ok', archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, pruned, ...(history ? { history: history.status } : {}) };
   } catch (err) {
     const code = err instanceof Stop ? err.code : 'backup_failed'; // message にはパスが入る。記録へ出さない
-    writeReceipt(receipt, { finished_at: prev?.finished_at ?? null, restore_verified_at: prev?.restore_verified_at ?? null, consecutive_failures: (prev?.consecutive_failures ?? 0) + 1, last_failure_code: code, failed_at: at });
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: prev?.finished_at ?? null, restore_verified_at: prev?.restore_verified_at ?? null, consecutive_failures: (prev?.consecutive_failures ?? 0) + 1, last_failure_code: code, failed_at: at });
     return { code: err instanceof Stop ? err.exit : 1, status: 'failed', failure: code };
   }
 }
@@ -237,12 +319,12 @@ function parse(argv) {
 
 export function validate(a) {
   const errors = [];
-  if (!['plan', 'check', 'run', 'attest-key', 'restore'].includes(a.command)) errors.push('command must be plan|check|run|attest-key|restore');
-  if (['check', 'run'].includes(a.command)) {
+  if (!['plan', 'check', 'run', 'verify', 'attest-key', 'restore'].includes(a.command)) errors.push('command must be plan|check|run|verify|attest-key|restore');
+  if (['check', 'run', 'verify'].includes(a.command)) {
     if (!GITHUB_OWNER.test(a.owner ?? '')) errors.push('--owner is required');
     if (!REPO_NAME.test(a.repo ?? '')) errors.push('--repo is required');
   }
-  if (['plan', 'check', 'run'].includes(a.command) && !path.isAbsolute(a.denyFile ?? '')) errors.push('--deny-file must be an absolute path');
+  if (['plan', 'check', 'run', 'verify'].includes(a.command) && !path.isAbsolute(a.denyFile ?? '')) errors.push('--deny-file must be an absolute path');
   if (a.command === 'restore' && (!a.archive || !a.target)) errors.push('restore needs --archive and --target');
   return errors;
 }
@@ -289,7 +371,14 @@ async function main(argv) {
       return err instanceof Stop ? err.exit : 1;
     }
   }
-  const r = await runBackup({ owner: a.owner, repo: a.repo, home, otherRepos, planFiles });
+  const scan = (tmpRoot, rows) => policyViolations(rows, readFileSync(a.denyFile, 'utf8'), tmpRoot);
+  if (a.command === 'verify') {
+    const tmpRoot = workRoot(home);
+    const v = await verifyBackups({ owner: a.owner, repo: a.repo, home, otherRepos, scan: (rows) => scan(tmpRoot, rows) });
+    log(Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'code')));
+    return v.code;
+  }
+  const r = await runBackup({ owner: a.owner, repo: a.repo, home, otherRepos, planFiles, scan });
   log(Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'code')));
   return r.code;
 }

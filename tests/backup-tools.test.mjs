@@ -12,8 +12,8 @@ import { gzipSync } from 'node:zlib';
 import { MAGIC, manifestOf, pack, restore, unpack } from '../scripts/lib/backup-archive.mjs';
 import { runDrill } from '../scripts/backup-drill.mjs';
 import { catalog, inventory } from '../scripts/backup-inventory.mjs';
-import { backupSources, denyLines, planBackup, retentionPlan } from '../scripts/lib/backup-plan.mjs';
-import { SIZE_LIMIT_KIB, attestKey, buildArchive, keyAttested, runBackup, validate, workRoot } from '../scripts/backup-run.mjs';
+import { backupSources, denyLines, planBackup, policyViolations, retentionPlan } from '../scripts/lib/backup-plan.mjs';
+import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
 import { BACKUP_RECEIPT_SCHEMA } from '../scripts/lib/runtime-guard.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
 
@@ -125,7 +125,9 @@ test('復元：全項目を確かめてから書く（悪い項目があれば 1
 const PASS = 'synthetic-passphrase-0123456789';
 const TOKEN = 'github_pat_SYNTHETIC0000';
 const creds = (over = {}) => async (t) => ({ 'E-NEXUS/edl/backup-passphrase': PASS, 'E-NEXUS/edl/backup-token': TOKEN, ...over })[t] ?? null;
-const reply = (status, json = null, bytes = null) => ({ status, json: async () => json, arrayBuffer: async () => bytes });
+const EXPIRY = '2027-02-03 08:39:03 UTC';
+const reply = (status, json = null, bytes = null) => ({ status, json: async () => json, arrayBuffer: async () => bytes, headers: { get: (k) => (k === 'github-authentication-token-expiration' ? EXPIRY : null) } });
+const blob = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 
 /** 保存先の役。files に置いたものを読み直しで返す。tamper で読み直しの中身を変える */
 function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
@@ -137,7 +139,7 @@ function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, def
     if (u.pathname === '/user/repos') return reply(list === 'denied' ? 403 : 200, list === 'denied' ? {} : list);
     if (u.pathname === '/repos/o/private-other') return reply(other, {});
     if (u.pathname === '/repos/o/backup/keys') return reply(keys, []);
-    if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.keys()].map((n) => ({ name: path.basename(n), sha: 'sha' })));
+    if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.entries()].map(([n, b]) => ({ name: path.basename(n), sha: blob(b) })));
     if (opts.method === 'PUT') {
       if (putStatus === 201) files.set(u.pathname, Buffer.from(JSON.parse(opts.body).content, 'base64'));
       return reply(putStatus, {});
@@ -494,4 +496,91 @@ test('job の定義：runtime-backup は owner・repo・deny-file を持ち、Se
   assert.match(c, /<string>scripts\/backup-run\.mjs<\/string>\s*<string>run<\/string>/);
   assert.match(c, /<key>Hour<\/key><integer>4<\/integer><key>Minute<\/key><integer>40<\/integer>/);
   assert.ok(!/passphrase|token/i.test(c));
+});
+
+// ─── 保存済みの検証（2026-11-05・Batch A／C）───
+
+const VDENY = 'zzdeny1\nzzdeny2\nzzdeny3\nzzdeny4\nzzdeny5\n';
+
+test('保存済みの検証：復号・hash・改ざんと鍵の誤りの拒否・除外の方針。結果は件数だけで平文を返さない', () => {
+  const dir = tree();
+  const root = tmp();
+  try {
+    const archive = pack(dir, PASS);
+    const scan = (rows) => policyViolations(rows, VDENY, root);
+    const r = verifyArchive({ bytes: archive, passphrase: PASS, scan });
+    assert.deepEqual(r, { files: 2, bytes: archive.length });
+    assert.ok(!JSON.stringify(r).includes('secret-note'));
+    assert.throws(() => verifyArchive({ bytes: archive, passphrase: 'other-passphrase-0123456789', scan }));
+    const flipped = Buffer.from(archive);
+    flipped[flipped.length - 3] ^= 1;
+    assert.throws(() => verifyArchive({ bytes: flipped, passphrase: PASS, scan }));
+  } finally {
+    clean(dir, root);
+  }
+});
+
+test('除外の方針：Trading Lab の言及・Secret の形・deny にあたる本文は違反に数える。名前も見る', () => {
+  const root = tmp();
+  try {
+    const row = (rel, text) => ({ rel, body: Buffer.from(text) });
+    assert.equal(policyViolations([row('a.md', 'ok')], VDENY, root), 0);
+    assert.equal(policyViolations([row('a.md', 'see trading lab')], VDENY, root), 1);
+    assert.equal(policyViolations([row('a.md', 'ghp_' + 'a'.repeat(36))], VDENY, root), 1);
+    assert.equal(policyViolations([row('a.md', 'has zzdeny3 inside')], VDENY, root), 1);
+    assert.equal(policyViolations([row('parallels.md', 'ok')], VDENY, root), 1);
+  } finally {
+    clean(root);
+  }
+});
+
+test('定期の回：token の期限を受領票に残す。古い世代の検証は 30 日に 1 回で、失敗しても今回の回は成功のまま', async () => {
+  const { home, src, base } = setup();
+  const root = tmp();
+  try {
+    const files = new Map();
+    const scan = (_tmp, rows) => policyViolations(rows, VDENY, root);
+    const calls = [];
+    const first = await runBackup({ ...base, scan, fetchImpl: fakeRepo({ files, calls }) });
+    assert.equal(first.history, 'verified');
+    assert.equal(receiptOf(home).token_expires_at, '2027-02-03T08:39:03.000Z');
+    assert.equal(receiptOf(home).history_verified_at, '2026-11-05T04:40:00.000Z');
+    const next = await runBackup({ ...base, scan, now: () => new Date('2026-11-06T04:40:00.000Z'), fetchImpl: fakeRepo({ files }) });
+    assert.equal(next.history, undefined, '30 日の間は検証しない');
+    assert.equal(receiptOf(home).history_verified_at, '2026-11-05T04:40:00.000Z', '毎回の受領票に持ち越す');
+    const later = new Date(Date.parse('2026-11-06T04:40:00.000Z') + VERIFY_EVERY_MS);
+    const bad = await runBackup({ ...base, scan: () => 1, now: () => later, fetchImpl: fakeRepo({ files }) });
+    assert.equal(bad.code, 0);
+    assert.equal(bad.history, 'failed');
+    assert.equal(receiptOf(home).history_failure, 'policy_violation');
+    assert.equal(receiptOf(home).consecutive_failures, 0);
+    const failed = await runBackup({ ...base, scan: () => 0, now: () => later, read: creds({ 'E-NEXUS/edl/backup-token': null }), fetchImpl: fakeRepo({ files }) });
+    assert.equal(failed.status, 'failed');
+    assert.equal(receiptOf(home).token_expires_at, '2027-02-03T08:39:03.000Z', '失敗の回も期限を残す');
+    assert.equal(receiptOf(home).history_failure, 'policy_violation');
+  } finally {
+    clean(home, src, root);
+  }
+});
+
+test('verify：送らない（PUT・DELETE なし）・読み直しが一覧の sha と違えば失敗・最新と最古を見る', async () => {
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    await runBackup({ ...base, fetchImpl: fakeRepo({ files }) });
+    await runBackup({ ...base, now: () => new Date('2026-11-06T04:40:00.000Z'), fetchImpl: fakeRepo({ files }) });
+    const calls = [];
+    const v = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files, calls }) });
+    assert.equal(v.status, 'verified');
+    assert.deepEqual(v.rows.map((x) => x.archive), ['2026-11-06T0440Z.edlbk', '2026-11-05T0440Z.edlbk']);
+    assert.ok(calls.every(([m]) => m === 'GET'));
+    const t = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files, tamper: true }) });
+    assert.deepEqual([t.status, t.failure], ['failed', 'read_back_mismatch']);
+    assert.equal(receiptOf(home).history_failure, 'read_back_mismatch');
+    const again = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files }) });
+    assert.equal(again.status, 'verified');
+    assert.equal(receiptOf(home).history_failure, null, '直れば消える');
+  } finally {
+    clean(home, src);
+  }
 });

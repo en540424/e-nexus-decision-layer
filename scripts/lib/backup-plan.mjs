@@ -149,6 +149,12 @@ export function planBackup({ sources, denyText, tmpRoot }) {
   return { files, excluded, bytes };
 }
 
+/** 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない） */
+export function policyViolations(rows, denyText, tmpRoot) {
+  const clean = (r) => !SKIP_NAME.test(r.rel) && !TRADING_LAB.test(r.rel) && !SECRET_PATTERNS.some((p) => p.test(r.body.toString('utf8'))) && !TRADING_LAB.test(r.body.toString('utf8'));
+  return rows.filter((r) => !clean(r)).length + deniedIndexes(rows, denyText, tmpRoot).size;
+}
+
 /** 世代：新しい 14 個と、月ごとの最新を 12 か月分。戻り値は消す名前。名前は YYYY-MM-DDTHHMMZ.edlbk（並びが時刻の順）。keep は必ず残す（今送ったもの） */
 export function retentionPlan(names, { daily = 14, monthly = 12, keep: pinned = null } = {}) {
   const sorted = names.filter((n) => /^\d{4}-\d{2}-\d{2}T\d{4}Z\.edlbk$/.test(n)).sort().reverse();

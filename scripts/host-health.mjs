@@ -39,8 +39,9 @@ import { readCredential, EDL_CREDENTIAL_PATTERN } from './lib/env-file.mjs';
 import { BURST, COOLDOWN_MS, FLAP, RECOVER_RUNS, REMIND_MS, alertLine, remindInterval, ruleOf } from './lib/alert-policy.mjs';
 import { QUARTERLY_RETRY, canAttempt, duePeriod, isPeriod, periodOf, previousPeriod, quarterlyText, summarizeQuarter } from './lib/quarterly-report.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
-import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
+import { GUARD_BINS, HERMES_LABEL, RELAY_REPO, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, relayMachine, summarizeRecords } from './lib/runtime-guard.mjs';
 import { STATUS_DIR, buildStatusSummary, writeStatusSummary } from './lib/runtime-status-summary.mjs';
+import { BRIEF_FILE, GUIDE_FILE, GUIDE_TEXT, boundaryViolations, buildBrief } from './lib/runtime-brief.mjs';
 import { heartbeatItem, nextHeartbeat, sendHeartbeat } from './lib/heartbeat.mjs';
 import { GITHUB_OWNER, collectGithub, evaluateGithub, evaluateGithubEvents, nextGithubState } from './lib/github-guard.mjs';
 
@@ -56,6 +57,9 @@ export const THRESHOLDS = Object.freeze({
   hermes_rss_gib: { warn: 3, crit: 4 },
   job_running_minutes: { warn: 30 },
 });
+/** 定期の間隔。launchd の runs がこの 1.25 倍の間増えなければ「起動していない」（monitor_watchdog が見る watchdog は入れない） */
+export const JOB_PERIOD_HOURS = Object.freeze({ 'com.e-nexus.runtime-backup': 24 });
+const JOB_MISSED_FACTOR = 1.25;
 /** DISABLED の間の通知の間隔 */
 export const DISABLED_REMIND_MS = 24 * 3_600_000;
 /** 回数を残せない時の通知の間隔。state が無いので時刻の枠で決める（6 時間ごとの最初の 30 分。30 分ごとの job がちょうど 1 回入る＝1 日 4 通） */
@@ -155,6 +159,8 @@ export function parseLaunchctlPrint({ code, stdout, timedOut }) {
     pid: pid && /^\d+$/.test(pid) ? Number(pid) : null,
     last_exit_code: exit && /^-?\d+$/.test(exit) ? Number(exit) : null,
     spawn_type: field('spawn type')?.split(' ')[0] ?? null,
+    runs: /^\d+$/.test(field('runs') ?? '') ? Number(field('runs')) : null,
+    last_signal: /(\d+)\s*$/.exec(field('last terminating signal') ?? '')?.[1] ?? null, // "Killed: 9" の形
   };
 }
 /** ps -o etime=：[[dd-]hh:]mm:ss */
@@ -242,8 +248,24 @@ export async function collect({ run, uid, dataDirs = [], hermesUser = null, guar
 
 const gib = (b) => (b == null ? null : Math.round((b / GiB) * 10) / 10);
 
-/** 状態の項目（ok／warn／crit／unknown）。値はシステム全体か Mac Runtime 自身のものだけ */
-export function evaluate(o, t = THRESHOLDS) {
+/** launchd の runs の変化を見て、定期の時刻に起動していない job を返す。{ label: 経過時間 } と次の基準。読めない回は基準を進めない */
+export function jobRunsCheck(jobs, prevRuns, now) {
+  const missed = {};
+  const next = {};
+  for (const [label, hours] of Object.entries(JOB_PERIOD_HOURS)) {
+    const j = jobs?.[label];
+    const p = prevRuns?.[label];
+    if (j?.loaded !== true || j.runs == null) { if (j != null) continue; if (p) next[label] = p; continue; }
+    if (p?.runs !== j.runs) { next[label] = { runs: j.runs, at: now }; continue; }
+    next[label] = p;
+    const age = (Date.parse(now) - Date.parse(p.at)) / 3_600_000;
+    if (age > hours * JOB_MISSED_FACTOR) missed[label] = Math.floor(age);
+  }
+  return { missed, next };
+}
+
+/** 状態の項目（ok／warn／crit／unknown）。値はシステム全体か Mac Runtime 自身のものだけ。missed は jobRunsCheck の結果 */
+export function evaluate(o, t = THRESHOLDS, { missed = {} } = {}) {
   const items = [];
   const add = (id, level, value) => items.push({ id, level, value, kind: 'state' });
   const disk = gib(o.disk_free_bytes);
@@ -261,9 +283,14 @@ export function evaluate(o, t = THRESHOLDS) {
   for (const [label, j] of Object.entries(o.jobs ?? {})) {
     const id = `job:${label.replace(/^com\.e-nexus\./, '')}`;
     if (j == null) add(id, 'unknown', null);
-    else if (!j.loaded) add(id, 'ok', 'not_loaded'); // 登録は Human。未登録は異常ではない
-    else if (j.running_seconds != null && j.running_seconds > t.job_running_minutes.warn * 60) add(id, 'warn', `running ${Math.round(j.running_seconds / 60)}m`); // launchd には時間上限が無い
+    else if (!j.loaded) {
+      // 登録は Human。未登録は異常ではない。定義があるのに読み込まれていなければ解除された（watchdog は monitor_watchdog が CRIT で見る）
+      const registered = label !== WATCHDOG_LABEL && o.guard?.residents?.includes(label);
+      add(id, registered ? 'warn' : 'ok', registered ? 'registered_not_loaded' : 'not_loaded');
+    } else if (j.running_seconds != null && j.running_seconds > t.job_running_minutes.warn * 60) add(id, 'warn', `running ${Math.round(j.running_seconds / 60)}m`); // launchd には時間上限が無い
+    else if (j.last_signal != null) add(id, 'warn', `signal ${j.last_signal}`);
     else if (j.last_exit_code != null && j.last_exit_code !== 0) add(id, 'warn', `exit ${j.last_exit_code}`);
+    else if (missed[label] != null) add(id, 'warn', `missed ${missed[label]}h`);
     else add(id, 'ok', j.state ?? 'loaded');
   }
   const data = gib(o.data_bytes);
@@ -423,13 +450,18 @@ const VALUE_SHAPES = Object.freeze([
   [/^network_default_route$/, /^(?:present|absent)$/],
   [/^rebooted$/, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/],
   [/^network_interface_changed$/, /^[a-z]{1,10}\d{0,3}->[a-z]{1,10}\d{0,3}$/],
-  [/^job:/, /^(?:not_loaded|loaded|running|not running|waiting|spawn scheduled|xpcproxy|exited|exit -?\d+|running \d+m)$/],
+  [/^job:/, /^(?:not_loaded|registered_not_loaded|loaded|running|not running|waiting|spawn scheduled|xpcproxy|exited|exit -?\d+|signal \d+|missed \d+h|running \d+m)$/],
   [/^repo:/, /^(?:clean|(?:dirty \d+)?(?: ?ahead \d+)?(?: ?no_upstream)?)$/],
+  [/^credential_backup_token$/, /^(?:ok|expiring|expired)$/],
+  [/^backup_history$/, /^(?:history_ok|history_stale|history_failed)$/],
   [/^backup_/, /^(?:not_configured|latest_unreadable|failed [a-z_]{1,40}|-?\d+d(?: restore (?:never|\d+d))?)$/],
   [/^hermes_service$/, /^(?:running|not_loaded|stopped exit (?:-?\d+|-))$/],
   [/^hermes_isolation$/, codes('ok', 'admin_group', 'hermes_home_open', 'operator_home_open', 'hermes_home_missing', 'operator_home_missing', '(?:config|plist|wrapper)_(?:not_root_only|missing)', 'share_open', 'share_missing')],
   [/^hermes_files_changed$/, codes('vault_copy', 'config', 'plist', 'wrapper')],
-  [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'human_only_policy', 'failure_policy')],
+  [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'backup_plist', 'backup_deny', 'repos_conf', 'human_only_policy', 'failure_policy')],
+  [/^monitor_args$/, codes('ok', 'monitor_no_webhook', 'monitor_no_heartbeat', 'monitor_no_github', 'watchdog_no_webhook')],
+  [/^monitor_webhook$/, /^(?:ok|no_webhook)$/],
+  [/^notify_channel$/, /^(?:ok|gone|unreachable|config_invalid)$/],
   [/^agent_scope$/, codes('ok', 'user_claude_md', 'user_rules')],
   [/^residents_changed$/, /^[+-][a-z0-9.-]{1,60}(?:,[+-][a-z0-9.-]{1,60})*$/],
   [/^github_api$/, /^(?:ok|unreachable|auth_failed|token_expiring)$/],
@@ -441,7 +473,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^monitor_alive$/, /^(?:ok|disabled|not_loaded|no_state|stale \d+m)$/],
   [/^monitor_watchdog$/, /^(?:ok|not_installed|not_loaded|no_state|stale \d+m)$/],
   [/^host_health$/, /^(?:disabled|state_unwritable)$/],
-  [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed)$/],
+  [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed|boundary_blocked)$/],
   [/^heartbeat$/, /^(?:sent|failed|rejected|config_invalid)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
@@ -469,6 +501,33 @@ export function webhookBodyOf(notify, format, at, text = null) {
   if (format === 'discord') return { content: text ?? alertText(notify, DISCORD_LIMIT), allowed_mentions: { parse: [] } };
   return { component: 'e-nexus-mac-runtime-host', at, ...(text ? { summary: text } : { alerts: cleanNotify(notify) }) };
 }
+/**
+ * Webhook が生きているかを、何も送らずに確かめる（Discord の GET。チャンネルに何も出ない）。静かな運用では失効が次の異常まで分からないので 1 日 1 回見る。
+ * 本文は読まない（URL の token を含む）。戻り値：ok／gone（失効・削除）／unreachable／config_invalid。監視の 1 回分は失敗にしない
+ */
+export async function checkWebhook({ spec, readCredentialImpl = readCredential, fetchImpl = globalThis.fetch, timeoutMs = 6000 }) {
+  let url;
+  try {
+    url = new URL(await readCredentialImpl(spec.slice('credential:'.length)));
+  } catch {
+    return 'config_invalid';
+  }
+  if (url.protocol !== 'https:' || !isDiscordWebhook(url)) return 'config_invalid';
+  try {
+    const res = await fetchImpl(url.href, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
+    return res.status === 200 ? 'ok' : [401, 403, 404].includes(res.status) ? 'gone' : 'unreachable';
+  } catch {
+    return 'unreachable';
+  }
+}
+/** 状態の項目。prev は state の webhook_check。失効は重大だが、その Webhook では知らせられないので要約と runtime-ops で見る */
+export function notifyChannelItem(prev) {
+  if (!prev?.code) return null;
+  return { id: 'notify_channel', level: ['gone', 'config_invalid'].includes(prev.code) ? 'warn' : 'ok', value: prev.code, kind: 'state' };
+}
+export const WEBHOOK_CHECK_MS = 24 * 3_600_000;
+const webhookCheckDue = (prev, at) => !(Date.parse(at) - Date.parse(prev?.at) < WEBHOOK_CHECK_MS);
+
 /** 取り違えた資格情報で別の宛先へ送らない（Discord の webhook の形だけ） */
 export function isDiscordWebhook(url) {
   return /^(?:(?:ptb|canary)\.)?discord(?:app)?\.com$/.test(url.hostname) && /^\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]+\/?$/.test(url.pathname);
@@ -582,12 +641,18 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
   return failures;
 }
 
-/** Hermes へ渡す要約を書く（statusDir の時だけ）。監視の本体を止めない。戻り値はコード */
-function publishStatus({ statusDir, stateDir, state, at, uid }) {
+/** Hermes へ渡す要約を書く（statusDir の時だけ）。入力境界に外れた時は書かない。監視の本体を止めない。戻り値はコード */
+export function publishStatus({ statusDir, stateDir, state, at, uid, items = [], facts = {} }) {
   if (!statusDir) return null;
   try {
-    const summary = buildStatusSummary(state, { now: new Date(at), paused: pauseState(stateDir, at).paused, disabled: existsSync(path.join(stateDir, 'DISABLED')) });
-    return writeStatusSummary(summary, { dir: statusDir, uid });
+    const flags = { now: new Date(at), paused: pauseState(stateDir, at).paused, disabled: existsSync(path.join(stateDir, 'DISABLED')) };
+    const summary = buildStatusSummary(state, flags);
+    const brief = buildBrief(state, { ...flags, ...facts, items });
+    if (boundaryViolations(summary).length || boundaryViolations(brief).length) return 'boundary_blocked';
+    const code = writeStatusSummary(summary, { dir: statusDir, uid });
+    if (code !== 'written') return code;
+    writeStatusSummary(null, { dir: statusDir, uid, name: GUIDE_FILE, text: GUIDE_TEXT });
+    return writeStatusSummary(brief, { dir: statusDir, uid, name: BRIEF_FILE });
   } catch {
     return 'write_failed';
   }
@@ -641,7 +706,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -662,10 +727,16 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     const { paused, expired } = pauseState(stateDir, at);
     const o = await collect({ run, uid, dataDirs, hermesUser, guard, github, nowIso: at });
     const gap = monitorGapEvent(prev, at);
-    const items = [...evaluate(o), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
+    const jobRuns = jobRunsCheck(o.jobs, prev?.job_runs, at);
+    const items = [...evaluate(o, THRESHOLDS, { missed: jobRuns.missed }), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS || Date.parse(at) - Date.parse(prev?.resumed_at) < GAP_MS }));
-    if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
+    if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed', 'boundary_blocked'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     if (heartbeat) { const h = heartbeatItem(prev?.heartbeat, at); if (h) items.push(h); }
+    const channel = notifyChannelItem(prev?.webhook_check);
+    if (channel) items.push(channel);
+    // 送った封筒のうち Vault の受領がまだの件数。記録だけで知らせない（取り込みは Windows のまとめ作業）
+    const relayUnacked = Array.isArray(o.github?.relay_acked) && Array.isArray(o.guard?.relay_sent) ? o.guard.relay_sent.filter((id) => !o.github.relay_acked.includes(id)).length : null;
+    if (relayUnacked != null) items.push({ id: 'relay_unacked', level: 'ok', value: relayUnacked, kind: 'state' });
     const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
     const githubRepos = o.github?.status === 'ok' ? o.github.repos : null;
     if (githubOn) items.push(...evaluateGithub(githubRepos, o.guard?.repos, prev?.github, at, { failure: o.github.status, expiresAt: o.github.expires_at ?? null }), ...evaluateGithubEvents(githubRepos, prev?.github));
@@ -704,18 +775,30 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       items: nextItems,
       bursts,
       quarterly: quarterly.state,
+      job_runs: jobRuns.next,
+      relay_unacked: relayUnacked ?? prev?.relay_unacked ?? null,
+      github_token_expires_at: Number.isFinite(o.github?.expires_at) ? new Date(o.github.expires_at).toISOString() : (prev?.github_token_expires_at ?? null),
+      ...(prev?.webhook_check ? { webhook_check: prev.webhook_check } : {}),
+      ...(prev?.heartbeat ? { heartbeat: prev.heartbeat } : {}),
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos, failure: o.github.status }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
       // 再開の後の watchdog の 1 回目を待つ（ログインが起動より遅い再開で、watchdog が回る前に古い記録を見ないように）
       ...(gap.length ? { resumed_at: at } : prev?.resumed_at ? { resumed_at: prev.resumed_at } : {}),
     };
-    const statusCode = publishStatus({ statusDir, stateDir, state: nextState, at, uid });
-    writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) });
+    const statusCode = publishStatus({ statusDir, stateDir, state: nextState, at, uid, items, facts: { githubTokenExpiresAt: o.github?.expires_at ?? null, backupTokenExpiresAt: o.guard?.backup_receipt?.token_expires_at ?? null } });
+    const saved = { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) };
+    writeState(stateDir, saved);
     if (heartbeat) {
       // 記録を残せた回だけ生存を伝える（止まった監視が生きているように見せない）。送信の結果は次の回の項目になる
       const code = await Promise.race([heartbeat(), new Promise((resolve) => { setTimeout(resolve, HEARTBEAT_BUDGET_MS, 'failed').unref(); })]).catch(() => 'failed');
-      writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}), heartbeat: nextHeartbeat(code, prev?.heartbeat, at) });
+      saved.heartbeat = nextHeartbeat(code, prev?.heartbeat, at);
+      writeState(stateDir, saved);
+    }
+    if (webhookCheck && webhookCheckDue(prev?.webhook_check, at)) {
+      const code = await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, HEARTBEAT_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable');
+      saved.webhook_check = { at, code };
+      writeState(stateDir, saved);
     }
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
     for (const x of items) levels[x.level] += 1;
@@ -774,6 +857,12 @@ export function reportOf(stateDir, { days = 7, now = new Date() } = {}) {
   return { component: 'edl-host-health', days, ...summarizeRecords(recordLines(stateDir), { since }) };
 }
 
+/** relay の受領を読む先。relay が見張りの repo に入っていて machine が読める時だけ */
+function relaySource(guard) {
+  const machine = guard?.repos?.includes(RELAY_REPO) ? relayMachine(guard.operatorHome) : null;
+  return machine ? { repo: RELAY_REPO, prefix: `acks/${machine}/` } : null;
+}
+
 async function main(argv) {
   let a;
   try { a = parseArgs(argv); } catch (e) { console.error(e.message); return 2; }
@@ -814,9 +903,10 @@ async function main(argv) {
     dataDirs: a.dataDirs.length ? a.dataDirs : [path.join(REPO, 'data')],
     hermesUser: a.hermesUser ?? null,
     guard,
-    github: a.githubOwner ? { credential: a.githubCredential.slice('credential:'.length), owner: a.githubOwner, repos: guard?.repos ?? [] } : null,
+    github: a.githubOwner ? { credential: a.githubCredential.slice('credential:'.length), owner: a.githubOwner, repos: guard?.repos ?? [], relay: relaySource(guard) } : null,
     statusDir: a.hermesUser ? STATUS_DIR : null,
     heartbeat: a.heartbeat ? () => sendHeartbeat() : null,
+    webhookCheck: webhook ? () => checkWebhook({ spec: webhook }) : null,
     webhook,
     webhookFormat,
     run: makeRunner(),

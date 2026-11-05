@@ -328,3 +328,33 @@ test('導入の道具：受け側は他の service を触らない・Human が�
   assert.match(readFileSync(connect, 'utf8'), /--heartbeat/, '登録済みの job が送らないなら始めない');
   assert.ok(FLAP.count >= 2);
 });
+
+test('隔離の通し試験：実の送り手と loopback の実 server で 70 分の途絶・重複の抑止・不正な署名の拒否・復旧（本番の信号は止めない）', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-hb-e2e-'));
+  const sent = [];
+  try {
+    let clock = T0;
+    const r = await startReceiver({ token: TOKEN, port: 0, stateFile: path.join(root, 'state.json'), send: async (text) => { sent.push(Object.keys(TEXT).find((k) => TEXT[k] === text)); return true; }, clock: () => clock });
+    // 送り手は https だけなので、宛先だけ loopback へ向ける（署名・header は本物）
+    const beat = () => sendHeartbeat({ read: async (t) => ({ [HEARTBEAT_URL]: 'https://receiver.invalid/hb', [HEARTBEAT_TOKEN]: TOKEN })[t], clock: () => clock, fetchImpl: (_u, o) => fetch(`http://127.0.0.1:${r.port}/hb`, o) });
+    assert.equal(await beat(), 'sent');
+    for (let m = 1; m <= 69; m += 1) { clock += MIN; await r.tick(); }
+    assert.deepEqual(sent, [], '69 分では鳴らない');
+    clock += MIN;
+    await r.tick();
+    assert.deepEqual(sent, ['down'], '70 分で 1 回');
+    for (let m = 0; m < 180; m += 1) { clock += MIN; await r.tick(); }
+    assert.deepEqual(sent, ['down'], '続いても重ねない');
+    const forged = await fetch(`http://127.0.0.1:${r.port}/hb`, { method: 'POST', headers: { 'x-edl-ts': String(clock), 'x-edl-sig': sign(clock, 'b'.repeat(64)) } });
+    assert.equal(forged.status, 404);
+    await r.tick();
+    assert.deepEqual(sent, ['down'], '偽の信号では復旧にしない');
+    assert.equal(await beat(), 'sent');
+    await r.tick();
+    assert.deepEqual(sent, ['down', 'up'], '本物の信号で復旧を 1 回');
+    assert.equal(await beat(), 'rejected', '同じ時刻の再送は拒む');
+    await new Promise((res) => { r.server.close(res); });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

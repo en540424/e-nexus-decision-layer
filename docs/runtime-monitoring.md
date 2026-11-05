@@ -15,6 +15,8 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
 | `scripts/lib/runtime-status-summary.mjs` | Hermes へ渡す要約（§6） | host-health の中で動く |
+| `scripts/lib/runtime-brief.mjs`・`ops-classify.mjs` | Hermes へ渡す整理済みの要約・入力境界・項目の仕分け（§6-1） | host-health の中で動く |
+| `scripts/runtime-ops.mjs` | 検収・原因調査・Human Required の集約（§11） | 手で実行する。読むだけ・常駐しない |
 | `scripts/runtime-status-summary.mjs` | 要約を手で見る | 標準出力か一時フォルダだけ |
 | `scripts/backup-*.mjs` | 暗号化バックアップ（§5） | 条件が揃うまで何も送らない・job の登録は Human |
 
@@ -89,12 +91,21 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。§3-1 の外部の死活監視の導入後は 70 分ほどで届く |
 | 回線断 | 監視は動き続けるが送れない。戻った回に通知（`recovered_missed` か続く CRIT） |
 | 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
-| Webhook の失効・Discord の障害 | 静かな運用では次の異常か四半期まで分からない。送ろうとした回の `notify_code` が記録に残る（`--report`） |
-| host-health の plist から `--webhook` を消す | `monitor_config_changed` は送る先が無く、基準だけ進む。記録の `NO_WEBHOOK` だけが残る |
+| Webhook の失効・Discord の障害 | 1 日 1 回 GET で確かめる（何も送らない・`notify_channel`）。失効はその Webhook では知らせられないので、要約と `runtime-ops human` に出る。回線の問題は `unreachable` で鳴らさない |
 | スリープの窓 | host-health の後に眠り、起床で watchdog が先に動くと、間が 90 分未満なら偽の CRIT が 1 度出る（この Mac は常時稼働の前提） |
 | `DISABLED` を :20〜:35 に消す | watchdog が先に回ると古い記録を見て偽の CRIT が 1 度出る |
 | `DISABLED` のまま job が起動しなくなる | watchdog は `DISABLED` を本体に任せるので、本体の 24 時間ごとの通知が止まっても知らせない |
-| watchdog の plist に `--webhook` が無い | 動いていても送れない。`connect-discord-alerts.sh` は host-health の job だけ確かめる |
+
+### job の失敗・欠落（2026-11-05 追加）
+
+| 止まり方 | 見つけ方 |
+|---|---|
+| 異常終了 | `job:<name>` の WARN（`exit N`・`signal N`。§2 のとおり 24 時間続けば 1 回） |
+| 定期の時刻に起動しない | launchd の `runs` が定期の間隔の 1.25 倍増えなければ `missed Nh`（毎日の job は 30 時間）。監視の 2 job は §3 の見張りが受け持つ |
+| 定義があるのに解除された | `registered_not_loaded`（未登録の job は異常にしない） |
+| `--webhook` の欠け | host-health の job の欠けは watchdog（`monitor_webhook`）が、watchdog の job の欠けは host-health（`monitor_args`）が待たずに知らせる。`--heartbeat`・`--github-owner` の欠けも `monitor_args` |
+
+監視の定義の変化（`monitor_config_changed`）は host-health・watchdog・バックアップの plist、バックアップの除外の条件（deny）、`repos.conf`、Human Gate の policy 2 つを見る。
 
 ### 3-1. 外部の死活監視（H6）
 
@@ -105,9 +116,19 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 - `DISABLED` の間は送らないので、途絶として届く
 - VPS・Cloudflare・Discord の停止は知らせられない
 
+**防御の範囲（2026-11-05 監査）**
+
+| 守り | 防ぐもの | 防がないもの |
+|---|---|---|
+| Cloudflare の WAF（専用 hostname の `POST /hb` 以外を遮断） | 受け側への探索・他の path への要求 | `POST /hb` への要求そのもの（無料の枠に回数の制限は無い）・WAF の設定を外された時 |
+| HMAC（時刻を署名・ずれ 5 分・同じか古い時刻は拒否） | 偽の生存信号・盗み見た信号の再送 | token の漏えい（生存を偽装できる。Mac の停止が隠れる）。送り手の確かさは token だけに依る |
+| loopback の待受・接続 32・5 秒の打ち切り | Tunnel を通らない接続・接続の溜め込み | 上限まで埋める要求（受信できなくなり、途絶の通知になる＝気づける側へ倒れる） |
+
+本文もホストの情報も送らないので、漏れて困るのは token だけ。token は Keychain と VPS の env と Human の控えの 3 か所で、更新は §10。
+
 ## 4. GitHub
 
-`--github-owner <owner> --github-credential credential:E-NEXUS/edl/github-monitor-token` の時だけ、GET で 6 repo を読む（1 回に repo ごと 4 通信まで）。
+`--github-owner <owner> --github-credential credential:E-NEXUS/edl/github-monitor-token` の時だけ、GET で 6 repo を読む（1 回に repo ごと 4 通信まで。relay の repo は受領の一覧のために 1 通信増える）。
 **無人 job は専用の読み取り token だけを使う**（2026-11-05 Human 決定）。`gh` のログインや classic token は読み書きの範囲が広いので受け取らない（`github_pat_` 以外は `auth_failed`）。Keychain に token が無い間は項目も通信も無い。
 
 | 項目 | 水準 |
@@ -122,6 +143,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | token が使えない（失効・権限不足） | `github_api=auth_failed` の WARN（監視自体の失敗） |
 | token の期限まで 14 日未満 | `github_api=token_expiring` の WARN |
 | Mac の HEAD と GitHub の差 | 別の PC の push で Mac が遅れるのは普通なので値だけ。7 日続けば WARN（未 push は除く） |
+| relay の未反映 | `relay_unacked`。送った封筒のうち Vault の受領（`acks` branch のファイル名。中身は読まない）がまだの件数。取り込みは Windows のまとめ作業なので記録だけで知らせない |
 
 未 commit・未 push は `repo:<name>`（runtime-guard・24 時間の猶予）が受け持つ。Trading Lab の repo は見ない。Vault の repo は token の範囲に入れない（中身の読み取りを渡さない）ので、公開範囲もここでは見ない。
 
@@ -142,7 +164,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 | `scripts/lib/backup-plan.mjs` | 選別（allowlist）・世代 |
 | `scripts/lib/backup-archive.mjs` | AES-256-GCM（改ざん検知）・鍵は passphrase から scrypt・パス名も暗号の中・gzip |
 | `scripts/backup-drill.mjs` | 合成データの予行 |
-| `scripts/backup-run.mjs` | `plan`・`check`・`run`・`attest-key`・`restore` |
+| `scripts/backup-run.mjs` | `plan`・`check`・`run`・`verify`・`attest-key`・`restore` |
 | `deploy/macos/connect-backup.sh` | Human の接続（鍵・token・初回・job の登録） |
 
 - 対象：`~/e-nexus-runtime` の作業メモ・rules・`mac-runtime-state`（Hermes の bundle を除く）・Claude の memory・relay の設定と未送信・host-health の記録
@@ -164,6 +186,8 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 ### 監視
 
 - 送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（`~/.enexus/backup/last.json`・`runtime-backup-receipt/v1`）に書く（Vault の「同期＝バックアップではない」：届いたことを別の経路で実証する）
+- 保存済みの検証（`verify`）：最新と最古を読み直し、一覧の blob の hash・復号・全ファイルの hash・1 byte の改ざんと別の passphrase が拒まれること・除外の方針（Secret の形・Trading Lab の言及・deny）を確かめる。平文はメモリの上だけで、方針の grep の間だけ `work`（0700）に置く。結果は件数だけ。定期の回の中で 30 日に 1 回動き、失敗しても今回の回は成功のまま `backup_history` の WARN になる（45 日より古くなっても WARN）
+- token の期限：応答の header を受領票の `token_expires_at` へ残し、14 日未満で `credential_backup_token` の WARN（切れたら CRIT）
 - host-health の `backup_archive`：受領票が無ければ `not_configured`（異常にしない）。2 回続けて失敗で CRIT（Discord へ 1 回。正常時は送らない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**
 
 ### 接続（Human の操作）
@@ -190,6 +214,26 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 渡さない：値・パス・hash・pid・回線名・repo 名、それと**見張りの項目**（隔離・固定ファイルの変化・常駐の増減・監視の定義・user 範囲）。見張られる側に検知の中身を渡さないため。allowlist なので、将来足した項目は既定で渡らない。
 
 監視が動いていない時（stale・paused・disabled）の `overall` と各群は `unknown`（古い「正常」を出さない）。項目の無い群も `unknown`。水準は通知の状態ではなく今の観測（`observed`）から取る（送れていない異常を ok と言わない）。
+
+### 6-1. 整理済みの要約（runtime-brief/v1・2026-11-05 Batch B）
+
+同じフォルダの `runtime-brief.json`。Hermes は terminal を持たない（`disabled_toolsets`）ので、読むだけで Human へ答えられる形にしてから渡す。読み方は同じフォルダの `README.txt`（固定の文）。
+
+| 区分 | 渡す |
+|---|---|
+| 全体 | 監視の動作・全体の水準・要確認の件数と担当の内訳・`valid_until`（生成から 90 分。過ぎたら信じない） |
+| GitHub | repo の数・要確認の数・CI の失敗の数・token の残り日数 |
+| バックアップ | 最後の成功と復元の確認の日数・失敗中か・古い世代の検証・token の残り日数 |
+| その他 | 生存信号のコード・通知の Webhook のコード・relay の未送信と Vault へ未反映の件数 |
+| 続く異常 | `open_items`：項目 id（repo・job・GitHub は群）・水準・日数・担当・原因の候補と次の一手（`lib/ops-classify.mjs` の固定の文） |
+
+**担当の分類**（`ops-classify.mjs`。承認の代わりではない）：`auto`＝監視が再試行や回復を待つ／`ai`＝Claude Code が調べて直せる／`human`＝認証・課金・VPS・Mac の設定・Hermes の権限など Human の操作か判断が要る。分類の無い項目は `human` へ倒す。
+
+**入力境界**（`boundaryViolations`）：書く前に鍵と文字列を allowlist で検査する（固定の語・固定の文・時刻だけ・整数だけ）。別にパス・IP・メール・Secret の形・Trading Lab の語を全文で見る。1 つでも外れれば何も書かず `status_summary=boundary_blocked` の WARN。古いファイルは `valid_until` で切れる。読む側も同じ検査と期限を確かめる（`readBrief`）。
+
+見張りの項目（隔離・固定ファイル・常駐・監視の定義・user 範囲）は §6 と同じく渡さない。
+
+**未確認**：Hermes の実際の読み取りは API を使うので、Console の計上先の確認（Human）まで試さない。OS の権限（group の読み取り）は確認済みで、読む側の手順は `runtime-ops brief` が API なしで同じ判定をする。
 
 ## 7. 役割の分担
 
@@ -222,7 +266,57 @@ App・Agent ──CLI／SDK／Gateway──▶ Decision Layer ──▶ Jev（Ad
 
 未契約なので**作らない・接続しない**。足す時の入口だけ決めておく。
 
-- 読むもの：§6 の要約だけ（承認が要る。Hermes とは別の読み手なので、読み手ごとに判断する）
+- 読むもの：`externalView`（`runtime-brief-external/v1`＝監視の動作・全体の水準・件数と時刻だけ）。文・日数・項目 id は渡さない。形は `node scripts/runtime-ops.mjs brief --external` で確かめられる。渡すには承認が要る（Hermes とは別の読み手なので、読み手ごとに判断する）
 - 知らせるもの：既存の webhook の契約（`credential:E-NEXUS/edl/<name>`）。Hermes の差し替えなしに足す
 - 持たないもの：Mac の操作・監視の設定・承認・Vault 全体・Trading Lab の情報・Secret
 - 外部 API への送信になるので、送る項目と保持の条件を契約の前に確かめる。契約・鍵の発行・接続は Human
+
+## 9. Hermes と Decision Layer・JEV・Human Gate の接続仕様
+
+**今は接続しない**（Hermes の権限・toolsets は変えない。開始は Human の判断）。つなぐ時の形だけ決めておく。
+
+```
+Human ──質問──▶ Hermes ──読むだけ──▶ runtime-brief.json
+                  │（将来）判定が要る時だけ
+                  ▼
+        Common Decision Gateway（HTTP loopback か MCP）──▶ Decision Layer ──▶ Rules → JEV（Adapter）→ Human Gate
+                  ▼
+        結果は Hermes が Human へ伝えるだけ。実行しない
+```
+
+| 項目 | 決め |
+|---|---|
+| 呼び出し | Gateway の Contract v1 だけ。`application_id=hermes`。JEV・core を直接呼ばない |
+| 入力 | `decision_type` ごとの schema に入る ID と固定のコードだけ。Secret・パス・プロンプト全文を入れない（`docs/gateway.md` §2） |
+| 結果の扱い | `human-required`・`deny` はそのまま Human へ伝える。Gateway が返せない時も同じで、fail-open はない |
+| 承認 | Decision Layer も Hermes も承認しない。`policies/safety/human-only.json` の範囲は Human だけ |
+| 監視との関係 | 監視から自動で判定を流さない（§7）。`open_items` の `class` は表示の分類で、Decision Layer の判定ではない |
+| 接続に要る変更 | Hermes の `connections` か MCP の有効化＝権限の変更なので Human-only。Gateway の常駐と token も Human-only（`docs/gateway.md`）。Console の計上先の確認が先 |
+
+## 10. 認証情報の期限と更新
+
+値はどこにも書かない。項目は全部 `E-NEXUS/edl/<name>`（Keychain）。Human が Mac の Terminal で実行する（Claude Code の `!` では実行しない）。
+
+| 項目 | 期限の見張り | 更新 |
+|---|---|---|
+| `github-monitor-token` | 応答の header。14 日未満で `github_api=token_expiring`、30 日未満で `runtime-ops human` | §4 の発行のとおり新しい token を作り `bash deploy/macos/connect-github-monitor.sh <owner>`。合格を確かめてから GitHub で古い token を消す |
+| `backup-token` | 受領票の `token_expires_at`。14 日未満で `credential_backup_token`、30 日未満で `runtime-ops human` | §5 の接続の 2 のとおり作り `bash deploy/macos/keychain-edl.sh set backup-token`、`node scripts/backup-run.mjs check …` が `ready` なら古い token を消す |
+| `backup-passphrase` | 期限なし | 変えると過去のアーカイブが読めなくなるので、Mac の外の控えと一緒に新旧を残す。変えた後は `connect-backup.sh` の確認をやり直す |
+| `heartbeat-token` | 期限なし | 漏えいの疑いがある時だけ。VPS の env を入れ替えて service を再起動（Human）→ `connect-heartbeat.sh`。順番の間は `rejected` で途絶の通知が出ることがある |
+| `heartbeat-url` | 期限なし | hostname を変えた時に `connect-heartbeat.sh` |
+| `host-health-webhook` | `notify_channel`（1 日 1 回の GET） | `bash deploy/macos/connect-discord-alerts.sh` |
+
+会話やログへ出た値は失効させて作り直す。古い値は使い回さない。
+
+## 11. 運用の道具（`scripts/runtime-ops.mjs`）
+
+記録を読むだけで、通信も Keychain も使わない。新しい job・常駐は無い。
+
+| 命令 | 使う場面 |
+|---|---|
+| `acceptance [--days 7]` | H2〜H6 と観察の判定（pass／pending／fail）。定期の回の結果を後から確かめる。fail があれば exit 1 |
+| `why <項目の id>` | 項目の経過・通知の有無・担当・確かめ方。異常の調査の入口 |
+| `human [--ledger <abs>]` | Human が要ることの一覧。台帳（公開 repo に置かない `mac-runtime-state/human-required.json`）＋今の異常＋token の期限 |
+| `brief [--external]` | Hermes が読む要約を読む側の手順で読み、答えの形にする |
+
+バックアップの検証は `backup-run.mjs verify`、監視の記録の要約は `host-health.mjs --report`。
