@@ -7,7 +7,7 @@
  * exit：本体の exit／1＝本体を読み込めない
  */
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,7 +15,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const BROKEN_TEXT = '[E-NEXUS Mac Runtime host]\n【重大】監視：プログラムを読み込めず、監視と見張りが両方止まっている → 要対応';
 export const REMIND_MS = 24 * 3_600_000;
 const SPEC = /^credential:(E-NEXUS\/edl\/[a-z0-9-]{1,64})$/;
-const DISCORD = /^https:\/\/discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]+$/;
+const DISCORD = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]+\/?$/;
 
 function argOf(argv, name) {
   const i = argv.indexOf(name);
@@ -35,19 +35,26 @@ export async function reportBroken({ argv, stateDir, read = readKeychain, fetchI
   try {
     last = JSON.parse(readFileSync(mark, 'utf8')).notified_at ?? 0;
   } catch { /* 初回 */ }
-  if (now() - last < REMIND_MS) return 'held';
+  if (now() - last < REMIND_MS || existsSync(path.join(stateDir, 'PAUSE'))) return 'held';
   const target = SPEC.exec(argOf(argv, '--webhook') ?? '')?.[1];
   if (!target) return 'no_webhook';
   const url = await read(target);
   if (!url || !DISCORD.test(url)) return 'no_webhook';
+  // 印を残せないなら送らない（書けない間に毎時重ねない）。送れなければ印を戻して次の回にもう一度
+  try {
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(mark, `${JSON.stringify({ notified_at: now() })}\n`, { mode: 0o600 });
+  } catch {
+    return 'unwritable';
+  }
+  const undo = () => { writeFileSync(mark, `${JSON.stringify({ notified_at: last })}\n`, { mode: 0o600 }); };
   try {
     const res = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: BROKEN_TEXT, allowed_mentions: { parse: [] } }) });
-    if (!res.ok) return 'failed';
+    if (!res.ok) { undo(); return 'failed'; }
   } catch {
+    undo();
     return 'failed';
   }
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  writeFileSync(mark, `${JSON.stringify({ notified_at: now() })}\n`, { mode: 0o600 });
   return 'sent';
 }
 

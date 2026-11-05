@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { GITHUB_LIMITS, ciOf, collectGithub, evaluateGithub, evaluateGithubEvents, nextGithubState, verifyMonitorToken } from '../scripts/lib/github-guard.mjs';
-import { parseArgs, runHostHealth, validateArgs } from '../scripts/host-health.mjs';
+import { decide, parseArgs, runHostHealth, validateArgs } from '../scripts/host-health.mjs';
 
 const NOW = '2026-11-04T09:00:00.000Z';
 const TOKEN = 'github_pat_SYNTHETIC0000';
@@ -60,11 +60,21 @@ test('collect：失敗の分類（401・権限不足＝auth／rate limit・5xx�
   assert.equal((await at(response(403))).status, 'auth');
   assert.equal((await at(response(403, {}, { 'x-ratelimit-remaining': '0' }))).status, 'failed');
   assert.equal((await at(response(429))).status, 'failed');
+  assert.equal((await at(response(403, {}, { 'retry-after': '60' }))).status, 'failed', 'secondary rate limit は権限の失敗ではない');
   assert.equal((await at(response(502))).status, 'failed');
   assert.equal((await collect({ fetchImpl: async () => { throw new Error(`boom ${TOKEN}`); } })).status, 'failed');
   assert.deepEqual((await collect({ fetchImpl: fakeGithub({ repos: { a: null } }) })).repos.a, { found: false });
   assert.equal((await collect({ owner: 'bad owner' })).status, 'failed');
   assert.equal((await collect({ repos: ['bad name'] })).status, 'failed');
+});
+
+test('CI の窓口だけの障害で公開範囲の見張りを止めない・権限の失敗はそのまま・Keychain の待ちも時間の予算に入る', async () => {
+  const onCi = (res) => fakeGithub({ fail: (url) => (/\/status$|actions\/runs/.test(url) ? res : null) });
+  const r = await collect({ fetchImpl: onCi(response(502)) });
+  assert.deepEqual([r.status, r.repos.a.visibility, r.repos.a.ci], ['ok', 'PRIVATE', null]);
+  assert.equal((await collect({ fetchImpl: onCi(response(403)) })).status, 'auth');
+  assert.equal((await collect({ read: () => new Promise(() => {}), timeoutMs: 20 })).status, 'failed');
+  assert.equal((await collect({ fetchImpl: () => new Promise(() => {}), timeoutMs: 20 })).status, 'failed');
 });
 
 test('collect：公開範囲は大文字へそろえ、token の期限を拾う', async () => {
@@ -130,6 +140,19 @@ test('監視自体の失敗：通信はしばらく unknown・続けば unreacha
   const soon = Date.parse(NOW) + 3 * 86_400_000;
   assert.deepEqual(evaluateGithub({}, {}, null, NOW, { expiresAt: soon }).map((x) => [x.level, x.value]), [['warn', 'token_expiring']]);
   assert.equal(evaluateGithub({}, {}, null, NOW, { expiresAt: soon + 30 * 86_400_000 })[0].level, 'ok');
+});
+
+test('見張りの失敗の値が変われば知らせ直す（token_expiring を知らせた後の失効を黙らない）', () => {
+  const at = (h) => new Date(Date.parse(NOW) + h * 3_600_000).toISOString();
+  const item = (value) => ({ id: 'github_api', level: 'warn', value, kind: 'state' });
+  let prev = null;
+  const notes = [];
+  for (const [h, v] of [[0, 'token_expiring'], [24, 'token_expiring'], [24.5, 'token_expiring'], [25, 'auth_failed'], [26, 'auth_failed']]) {
+    const d = decide([item(v)], prev, { now: at(h) });
+    prev = { items: d.items };
+    notes.push(...d.notify.map((n) => [h, n.value]));
+  }
+  assert.deepEqual(notes, [[24, 'token_expiring'], [25, 'auth_failed']]);
 });
 
 test('出来事：private → public は CRIT・既定 branch の変化は warn・最初の回は基準を取るだけ・送れなかった回は基準を残す', () => {
@@ -214,18 +237,27 @@ test('引数：owner と credential は両方必要（gh のログインへ落�
   assert.ok(!/opt\/homebrew\/bin\/gh|'gh'/.test(source), 'gh を起動しない');
 });
 
-test('token の検収：読める・書けない token だけ合格。書ける token・足りない token・classic は落とす。probe は不正な ref なので何も作らない', async () => {
+test('token の検収：範囲が 6 repo の中で、読める・書けない token だけ合格。広い token・書ける token・足りない token・classic は落とす', async () => {
   const verify = (fetchImpl, token = TOKEN) => verifyMonitorToken({ token, owner: 'o', repos: ['a'], now: NOW, fetchImpl });
-  const withProbe = (status, over) => fakeGithub({ ...over, fail: (url, opts) => (opts.method === 'POST' ? response(status) : null) });
+  const scoped = (status, { list = [{ name: 'a' }], listStatus = 200, keys = 403, ...over } = {}) => fakeGithub({ ...over, fail: (url, opts) => {
+    if (opts.method === 'POST') return response(status);
+    if (url.includes('/user/repos')) return response(listStatus, list);
+    if (url.endsWith('/keys')) return response(keys, []);
+    return null;
+  } });
   const calls = [];
-  const good = await verify(withProbe(403, { calls }));
+  const good = await verify(scoped(403, { calls }));
   assert.deepEqual([good.ok, good.code, good.repos], [true, 'OK', 1]);
   assert.deepEqual(calls.filter(([m]) => m !== 'GET').map(([m, u]) => [m, u]), [['POST', 'https://api.github.com/repos/o/a/git/refs']]);
-  assert.deepEqual([(await verify(withProbe(422))).code], ['TOKEN_CAN_WRITE']);
-  assert.deepEqual([(await verify(withProbe(201))).code], ['TOKEN_CAN_WRITE']);
-  assert.equal((await verify(withProbe(403), 'gho_x')).code, 'NOT_FINE_GRAINED');
-  assert.equal((await verify(withProbe(403), null)).code, 'NOT_FINE_GRAINED');
-  assert.deepEqual((await verify(withProbe(403, { repos: { a: null } }))).repos, ['a']);
+  assert.equal((await verify(scoped(422))).code, 'TOKEN_CAN_WRITE');
+  assert.equal((await verify(scoped(201))).code, 'TOKEN_CAN_WRITE');
+  assert.equal((await verify(scoped(503))).code, 'GITHUB_UNREACHABLE', '5xx を書けると言わない');
+  assert.equal((await verify(scoped(403, { list: [{ name: 'a' }, { name: 'other-private' }] }))).code, 'TOKEN_TOO_BROAD', 'All repositories の token');
+  assert.equal((await verify(scoped(403, { keys: 200 }))).code, 'TOKEN_TOO_BROAD', 'Administration の権限');
+  assert.equal((await verify(scoped(403, { listStatus: 403 }))).code, 'SCOPE_UNVERIFIED', '確かめられなければ合格にしない');
+  assert.equal((await verify(scoped(403), 'gho_x')).code, 'NOT_FINE_GRAINED');
+  assert.equal((await verify(scoped(403), null)).code, 'NOT_FINE_GRAINED');
+  assert.deepEqual((await verify(scoped(403, { repos: { a: null } }))).repos, ['a']);
   assert.equal((await verify(fakeGithub({ fail: () => response(401) }))).code, 'TOKEN_REJECTED');
   assert.equal((await verify(async () => { throw new Error('x'); })).code, 'GITHUB_UNREACHABLE');
 });

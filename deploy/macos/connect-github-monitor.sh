@@ -4,7 +4,7 @@
 #
 #   bash deploy/macos/connect-github-monitor.sh <owner>
 #
-# することは 2 つだけ：① token を Keychain へ入れる（マスクされたプロンプト）② 検収する（fine-grained か・6 repo を読めるか・書けないか）。
+# することは 2 つだけ：① token を Keychain へ入れる（マスクされたプロンプト）② 検収する（fine-grained か・6 repo だけか・読めるか・書けないか）。
 # 不合格の token は Keychain から消す。合格すれば次の :20／:50 から host-health が使う（job は登録済みで、token が入るまでは何もしない）。
 # Claude Code の `!` ではなく、Mac の Terminal で実行する（入力が会話に残らないように）。
 set -euo pipefail
@@ -20,7 +20,9 @@ NODE="$(command -v node || true)"
 [ -n "$NODE" ] || NODE=/opt/homebrew/bin/node
 
 bash deploy/macos/keychain-edl.sh set "$NAME"
+trap '/usr/bin/security delete-generic-password -s "$TARGET" -a e-nexus >/dev/null 2>&1 || true' INT TERM # 検収の途中で止めた token を残さない
 if "$NODE" scripts/github-monitor-check.mjs --owner "$OWNER"; then
+  trap - INT TERM
   if /usr/bin/grep -q "$TARGET" "$HOME/Library/LaunchAgents/com.e-nexus.host-health.plist" 2>/dev/null; then
     echo "OK：次の :20／:50 から GitHub の見張りが動きます（正常なら通知は来ません）"
   else
@@ -29,6 +31,6 @@ if "$NODE" scripts/github-monitor-check.mjs --owner "$OWNER"; then
   fi
 else
   /usr/bin/security delete-generic-password -s "$TARGET" -a e-nexus >/dev/null 2>&1 || true
-  echo "NG：token は Keychain から消しました。上のコードを Claude Code に伝えてください（TOKEN_CAN_WRITE＝書き込みの権限がある・REPO_NOT_READABLE＝repo の選択か権限が足りない・NOT_FINE_GRAINED＝classic か gh の token）" >&2
+  echo "NG：token は Keychain から消しました。上のコードを Claude Code に伝えてください（TOKEN_CAN_WRITE＝書き込みの権限がある・TOKEN_TOO_BROAD＝6 repo より広い・REPO_NOT_READABLE＝repo の選択か権限が足りない・NOT_FINE_GRAINED＝classic か gh の token・CHECK_FAILED＝Keychain が読めない）" >&2
   exit 1
 fi

@@ -39,7 +39,7 @@ export function makeGithubGet({ token, fetchImpl = globalThis.fetch, signal }) {
       throw new GithubFailure('failed');
     }
     if (res.status === 401) throw new GithubFailure('auth');
-    if (res.status === 429 || (res.status === 403 && res.headers?.get?.('x-ratelimit-remaining') === '0')) throw new GithubFailure('failed');
+    if (res.status === 429 || (res.status === 403 && (res.headers?.get?.('x-ratelimit-remaining') === '0' || res.headers?.get?.('retry-after')))) throw new GithubFailure('failed');
     if (res.status === 403) throw new GithubFailure('auth'); // 権限の足りない token
     if (res.status >= 500) throw new GithubFailure('failed');
     let json = null;
@@ -74,7 +74,9 @@ async function repoState(get, owner, name, now) {
   const branch = r.json.default_branch ?? null;
   const ref = branch ? await get(`${base}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`) : null;
   const oid = ref?.status === 200 ? (ref.json?.object?.sha ?? null) : null; // 空の repo は 404／409
-  const [status, runs] = oid ? await Promise.all([get(`${base}/commits/${oid}/status`), get(`${base}/actions/runs?head_sha=${oid}&per_page=30&exclude_pull_requests=true`)]) : [null, null];
+  // CI の窓口だけの障害で公開範囲の見張りまで止めない（権限の失敗はそのまま上げる）
+  const optional = (resource) => get(resource).catch((err) => { if (err.status === 'auth') throw err; return null; });
+  const [status, runs] = oid ? await Promise.all([optional(`${base}/commits/${oid}/status`), optional(`${base}/actions/runs?head_sha=${oid}&per_page=30&exclude_pull_requests=true`)]) : [null, null];
   return {
     found: true,
     visibility: String(r.json.visibility ?? (r.json.private ? 'private' : 'public')).toUpperCase(),
@@ -93,20 +95,23 @@ async function repoState(get, owner, name, now) {
  */
 export async function collectGithub({ credential, owner, repos, now, read = readCredential, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
   let token;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs); // Keychain の待ちも同じ予算に入れる
+  const aborted = new Promise((_, reject) => { controller.signal.addEventListener('abort', () => reject(new GithubFailure('failed'))); });
+  aborted.catch(() => {});
   try {
-    token = await read(credential);
+    token = await Promise.race([read(credential), aborted]);
   } catch {
+    clearTimeout(timer);
     return { status: 'failed' };
   }
-  if (!token) return { status: 'off' };
-  if (!token.startsWith(GITHUB_TOKEN_PREFIX)) return { status: 'auth' };
+  if (!token) { clearTimeout(timer); return { status: 'off' }; }
+  if (!token.startsWith(GITHUB_TOKEN_PREFIX)) { clearTimeout(timer); return { status: 'auth' }; }
   const names = repos.filter((n) => !TRADING_LAB.test(n));
-  if (!GITHUB_OWNER.test(owner) || !names.every((n) => REPO_NAME.test(n))) return { status: 'failed' };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (!GITHUB_OWNER.test(owner) || !names.every((n) => REPO_NAME.test(n))) { clearTimeout(timer); return { status: 'failed' }; }
   try {
     const get = makeGithubGet({ token, fetchImpl, signal: controller.signal });
-    const rows = await Promise.all(names.map(async (n) => [n, await repoState(get, owner, n, now)]));
+    const rows = await Promise.race([Promise.all(names.map(async (n) => [n, await repoState(get, owner, n, now)])), aborted]);
     const expires = rows.map(([, r]) => Date.parse(r.expires)).find(Number.isFinite) ?? null;
     return { status: 'ok', repos: Object.fromEntries(rows.map(([n, { expires: _e, ...r }]) => [n, r])), expires_at: expires };
   } catch (err) {
@@ -172,14 +177,27 @@ export function nextGithubState(gh, prev, now, { keepEvents = false, localRepos 
   return { repos, differ_since: differSince };
 }
 
-/** token の検収（connect-github-monitor.sh から）。書き込みの権限が無いことは、必ず失敗する要求への応答で確かめる（不正な ref は 422 で、何も作られない） */
+/** token の検収（connect-github-monitor.sh から）。範囲は見える private repo の一覧で、書き込みの権限が無いことは必ず失敗する要求への応答で確かめる（不正な ref は 422 で、何も作られない） */
 export async function verifyMonitorToken({ token, owner, repos, now, fetchImpl = globalThis.fetch, timeoutMs = GITHUB_TIMEOUT_MS }) {
   if (!token?.startsWith(GITHUB_TOKEN_PREFIX)) return { ok: false, code: 'NOT_FINE_GRAINED' };
   const r = await collectGithub({ credential: 'E-NEXUS/edl/x', owner, repos, now, read: async () => token, fetchImpl, timeoutMs });
   if (r.status !== 'ok') return { ok: false, code: r.status === 'auth' ? 'TOKEN_REJECTED' : 'GITHUB_UNREACHABLE' };
   const missing = Object.entries(r.repos).filter(([, x]) => !x.found || !x.oid).map(([n]) => n);
   if (missing.length) return { ok: false, code: 'REPO_NOT_READABLE', repos: missing };
-  const probe = await fetchImpl(`${GITHUB_API}/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'e-nexus-host-health', 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
-  if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };
+  const signal = AbortSignal.timeout(timeoutMs);
+  const headers = { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'e-nexus-host-health' };
+  const call = (resource, init = {}) => fetchImpl(`${GITHUB_API}${resource}`, { method: 'GET', redirect: 'error', signal, headers, ...init });
+  try {
+    const list = await call('/user/repos?visibility=private&per_page=100');
+    const seen = list.status === 200 ? await list.json() : null;
+    if (!Array.isArray(seen)) return { ok: false, code: 'SCOPE_UNVERIFIED' };
+    if (seen.some((x) => !repos.includes(x?.name))) return { ok: false, code: 'TOKEN_TOO_BROAD' };
+    if ((await call(`/repos/${owner}/${repos[0]}/keys`)).status === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' }; // Administration の権限
+    const probe = await call(`/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
+    if (probe.status >= 500) return { ok: false, code: 'GITHUB_UNREACHABLE' };
+    if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };
+  } catch {
+    return { ok: false, code: 'GITHUB_UNREACHABLE' };
+  }
   return { ok: true, code: 'OK', repos: Object.keys(r.repos).length, expires_at: r.expires_at };
 }

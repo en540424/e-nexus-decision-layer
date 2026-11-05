@@ -14,7 +14,7 @@ export const HEARTBEAT_LIMITS = Object.freeze({ fail_hours: 6 });
 const TOKEN = /^[0-9a-f]{64}$/;
 
 /** 戻り値：off／sent／config_invalid／rejected（認証が合わない）／failed */
-export async function sendHeartbeat({ read = readCredential, fetchImpl = globalThis.fetch, clock = Date.now, timeoutMs = 10_000 } = {}) {
+export async function sendHeartbeat({ read = readCredential, fetchImpl = globalThis.fetch, clock = Date.now, timeoutMs = 6000 } = {}) {
   let url;
   let token;
   try {

@@ -12,8 +12,8 @@ import { gzipSync } from 'node:zlib';
 import { MAGIC, manifestOf, pack, restore, unpack } from '../scripts/lib/backup-archive.mjs';
 import { runDrill } from '../scripts/backup-drill.mjs';
 import { catalog, inventory } from '../scripts/backup-inventory.mjs';
-import { backupSources, loadDenyPatterns, planBackup, retentionPlan } from '../scripts/lib/backup-plan.mjs';
-import { SIZE_LIMIT_KIB, attestKey, keyAttested, runBackup, validate } from '../scripts/backup-run.mjs';
+import { backupSources, denyLines, planBackup, retentionPlan } from '../scripts/lib/backup-plan.mjs';
+import { SIZE_LIMIT_KIB, attestKey, buildArchive, keyAttested, runBackup, validate, workRoot } from '../scripts/backup-run.mjs';
 import { BACKUP_RECEIPT_SCHEMA } from '../scripts/lib/runtime-guard.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
 
@@ -128,13 +128,15 @@ const creds = (over = {}) => async (t) => ({ 'E-NEXUS/edl/backup-passphrase': PA
 const reply = (status, json = null, bytes = null) => ({ status, json: async () => json, arrayBuffer: async () => bytes });
 
 /** 保存先の役。files に置いたものを読み直しで返す。tamper で読み直しの中身を変える */
-function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
+function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
   return async (url, opts) => {
     const u = new URL(url);
     calls.push([opts.method, u.pathname, opts.body ?? null, opts.headers.authorization]);
     if (u.hostname !== 'api.github.com') throw new Error('other host');
     if (u.pathname === '/repos/o/backup') return reply(repo ? 200 : 404, repo);
+    if (u.pathname === '/user/repos') return reply(list === 'denied' ? 403 : 200, list === 'denied' ? {} : list);
     if (u.pathname === '/repos/o/private-other') return reply(other, {});
+    if (u.pathname === '/repos/o/backup/keys') return reply(keys, []);
     if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.keys()].map((n) => ({ name: path.basename(n), sha: 'sha' })));
     if (opts.method === 'PUT') {
       if (putStatus === 201) files.set(u.pathname, Buffer.from(JSON.parse(opts.body).content, 'base64'));
@@ -154,8 +156,8 @@ function setup() {
   const src = tree();
   const stored = attestKey({ home, typed: PASS, stored: PASS, at: '2026-11-05T00:00:00.000Z' });
   assert.equal(stored, true);
-  const planFiles = () => ({ files: [{ id: 'notes', rel: 'a/x.md', src: path.join(src, 'a', 'x.md'), bytes: 12 }], excluded: { denied: 1 }, bytes: 12 });
-  return { home, src, planFiles, base: { owner: 'o', repo: 'backup', home, otherRepo: 'private-other', planFiles, read: creds(), now: () => new Date('2026-11-05T04:40:00.000Z') } };
+  const planFiles = () => ({ files: [{ id: 'notes', rel: 'a/x.md', body: readFileSync(path.join(src, 'a', 'x.md')), bytes: 12 }], excluded: { denied: 1 }, bytes: 12 });
+  return { home, src, planFiles, base: { owner: 'o', repo: 'backup', home, otherRepos: ['private-other'], planFiles, read: creds(), now: () => new Date('2026-11-05T04:40:00.000Z') } };
 }
 const clean = (...dirs) => dirs.forEach((d) => rmSync(d, { recursive: true, force: true }));
 const receiptOf = (home) => JSON.parse(readFileSync(path.join(home, '.enexus', 'backup', 'last.json'), 'utf8'));
@@ -195,6 +197,11 @@ test('送る条件：1 つでも欠ければ PUT しない（Public・鍵の控�
       ['repo_not_private', { fetchImpl: { repo: { private: true, visibility: 'internal', size: 1 } } }],
       ['repo_not_found', { fetchImpl: { repo: null } }],
       ['token_too_broad', { fetchImpl: { other: 200 } }],
+      ['token_too_broad', { fetchImpl: { list: [{ name: 'backup' }, { name: 'unlisted-private' }] } }],
+      ['token_too_broad', { fetchImpl: { keys: 200 } }],
+      ['scope_unverified', { fetchImpl: { list: 'denied' } }],
+      ['scope_unverified', { otherRepos: [] }],
+      ['scope_unverified', { otherRepos: undefined }],
       ['no_passphrase', { read: creds({ 'E-NEXUS/edl/backup-passphrase': null }) }],
       ['weak_passphrase', { read: creds({ 'E-NEXUS/edl/backup-passphrase': 'short' }) }],
       ['key_not_attested', { read: creds({ 'E-NEXUS/edl/backup-passphrase': `${PASS}-changed` }) }],
@@ -257,36 +264,131 @@ test('世代：新しい 14 と月ごとの最新 12 か月を残す。形の違
   assert.deepEqual(retentionPlan(names.slice(0, 5)), [], '少なければ消さない');
 });
 
-test('選別：allowlist の外・Secret の形・Trading Lab・deny・symlink・再生成できるものを落とす。中身を返さない', () => {
+const DENY = '# c\n\nacme-[[:alnum:]]+-id\n^ACCOUNT=\nSECRET_END$\n\\<acct\\>\nfiller-one\nfiller-two\n';
+const planOf = (dir, over = {}) => {
+  const work = tmp();
+  try {
+    return planBackup({ sources: [{ id: 's', dir, exclude: /^hermes\/bundle-/ }], denyText: DENY, tmpRoot: work, ...over });
+  } finally {
+    clean(work);
+  }
+};
+const put = (dir) => (rel, body) => { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), body); };
+
+test('選別：allowlist の外・Secret の形・Trading Lab・deny・symlink・再生成できるものを落とす。記録に本文を出さないのは呼ぶ側', () => {
   const dir = tmp();
   try {
-    const put = (rel, body) => { mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); writeFileSync(path.join(dir, rel), body); };
-    put('keep.md', 'plain note\n');
-    put('sub/state.json', '{}\n');
-    put('photo.png', 'x');
-    put('.env.local', 'A=1\n');
-    put('private.key', 'x\n');
-    put('leak-pat.md', `token ${'github_pat_'}${'A'.repeat(30)}\n`);
-    put('leak-key.md', '-----BEGIN OPENSSH PRIVATE KEY-----\n');
-    put('leak-hook.md', `https://discord.com/api/webhooks/123/${'a'.repeat(30)}\n`);
-    put('oanda-notes.md', 'x\n');
-    put('customer.md', 'ACME-SYNTHETIC-ID\n');
-    put('hermes/bundle-1/x.md', 'x\n');
+    const w = put(dir);
+    w('keep.md', 'plain note\n');
+    w('sub/state.json', '{}\n');
+    w('photo.png', 'x');
+    w('.env.local', 'A=1\n');
+    w('private.key', 'x\n');
+    w('leak-pat.md', `token ${'github_pat_'}${'A'.repeat(30)}\n`);
+    w('leak-key.md', '-----BEGIN OPENSSH PRIVATE KEY-----\n');
+    w('leak-hook.md', `https://discord.com/api/webhooks/123/${'a'.repeat(30)}\n`);
+    w('trading-lab-notes.md', 'x\n');
+    w('customer.md', 'ACME-SYNTHETIC-ID\n');
+    w('hermes/bundle-1/x.md', 'x\n');
     symlinkSync('/etc/hosts', path.join(dir, 'link.md'));
-    const p = planBackup({ sources: [{ id: 's', dir, exclude: /^hermes\/bundle-/ }, { id: 'gone', dir: path.join(dir, 'missing') }], deny: loadDenyPatterns('# c\n\nacme-[[:alnum:]]+-id\n') });
+    const p = planOf(dir);
     assert.deepEqual(p.files.map((f) => f.rel), ['keep.md', 'sub/state.json']);
-    assert.deepEqual(p.excluded, { file_type: 3, secret: 3, trading_lab: 1, denied: 1, regenerable: 1, source_missing: 1 });
-    assert.ok(!JSON.stringify(p).includes('plain note'));
+    assert.deepEqual(p.excluded, { file_type: 3, secret: 3, trading_lab: 1, denied: 1, regenerable: 1 });
   } finally {
     clean(dir);
   }
 });
 
-test('deny のファイル：空・壊れた行・知らない class は止まる（既定で通さない）。grep -E の class を読む', () => {
-  assert.throws(() => loadDenyPatterns('# only comment\n'), /empty/);
-  assert.throws(() => loadDenyPatterns('(unclosed\n'));
-  assert.throws(() => loadDenyPatterns('[[:punct:]]\n'), /unknown class/);
-  assert.ok(loadDenyPatterns('a[[:space:]]b\n')[0].test('A B'));
+test('deny は grep -E のとおりに効く（行頭・行末・語の境界・class。途中の行でも）。名前にも効く', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('a.md', 'first line\nACCOUNT=1\n');
+    w('b.md', 'x SECRET_END\nnext line\n');
+    w('c.md', 'the acct here\n');
+    w('d.md', 'Acme-Abc1-ID\n');
+    w('filler-one.md', 'name only\n');
+    w('e.md', 'NOTACCOUNT=1 account\n');
+    const p = planOf(dir);
+    assert.deepEqual(p.files.map((f) => f.rel), ['e.md']);
+    assert.equal(p.excluded.denied, 5);
+  } finally {
+    clean(dir);
+  }
+});
+
+test('文字列でないファイルは入れない（UTF-16・bplist・NUL は検査をすり抜ける）', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('u16.txt', Buffer.from(`token ghp_${'A'.repeat(36)}`, 'utf16le'));
+    w('bin.plist', Buffer.concat([Buffer.from('bplist00'), Buffer.from([0xff, 0xfe, 0, 1])]));
+    w('nul.md', 'a\0b\n');
+    assert.deepEqual([planOf(dir).files.length, planOf(dir).excluded.binary], [0, 3]);
+  } finally {
+    clean(dir);
+  }
+});
+
+test('Secret の形と名前の抜けを塞ぐ', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    const shapes = ['-----BEGIN PGP PRIVATE KEY BLOCK-----', `sk-proj-${'a'.repeat(30)}`, `sk-or-v1-${'a'.repeat(30)}`, `xai-${'a'.repeat(30)}`, `AIza${'a'.repeat(35)}`, `https://hooks.slack.com/services/${'A'.repeat(30)}`, `eyJhbGciOiJI.${'b'.repeat(20)}.${'c'.repeat(20)}`, `HEARTBEAT_TOKEN=${'a'.repeat(64)}`, `{"api_key":"${'a'.repeat(24)}"}`, `password: ${'a'.repeat(20)}`];
+    shapes.forEach((v, i) => w(`s${i}.md`, `${v}\n`));
+    for (const n of ['id_rsa.txt', 'x.pem.md', 'credentials.json', 'token.txt', 'trading_lab_notes.md', 'Trading Lab.md', 'trading.lab.md']) w(n, 'x\n');
+    w('mention.md', 'Trading Lab の話\n');
+    w('ok.md', 'token の話だけ\n');
+    assert.deepEqual(planOf(dir).files.map((f) => f.rel), ['ok.md']);
+  } finally {
+    clean(dir);
+  }
+});
+
+test('検査の後の差し替えは入らない：検査した本文を持つ・symlink に変えられたファイルは開かない', async () => {
+  const dir = tmp();
+  const home = tmp();
+  try {
+    const w = put(dir);
+    w('a.md', 'clean\n');
+    const p = planOf(dir);
+    writeFileSync(path.join(dir, 'a.md'), `ghp_${'A'.repeat(36)}\n`);
+    const archive = buildArchive({ files: p.files, passphrase: PASS, tmpRoot: workRoot(home) });
+    assert.equal(Buffer.from(unpack(archive, PASS)[0].data, 'base64').toString(), 'clean\n');
+  } finally {
+    clean(dir, home);
+  }
+});
+
+test('平文の写しの置き場：0700・前の回の残りを消す', () => {
+  const home = tmp();
+  try {
+    const dir = workRoot(home);
+    writeFileSync(path.join(dir, 'leftover'), 'x');
+    workRoot(home);
+    assert.ok(!existsSync(path.join(dir, 'leftover')));
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+  } finally {
+    clean(home);
+  }
+});
+
+test('世代：今送ったものは時計が戻っても消さない', () => {
+  const names = Array.from({ length: 40 }, (_, i) => `${new Date(Date.UTC(2030, i, 1)).toISOString().slice(0, 10)}T0440Z.edlbk`);
+  const current = '2026-11-05T0440Z.edlbk';
+  assert.ok(!retentionPlan([...names, current], { keep: current }).includes(current));
+});
+
+test('deny のファイル：無いのと同じ（少なすぎる・空）は止まる・grep が読めない行も止まる', () => {
+  assert.throws(() => denyLines('# only comment\n'), /too few/);
+  assert.throws(() => denyLines('harmless\n'), /too few/);
+  const dir = tmp();
+  try {
+    put(dir)('a.md', 'x\n');
+    assert.throws(() => planOf(dir, { denyText: '(unclosed\nb\nc\nd\ne\n' }), /deny check failed/);
+  } finally {
+    clean(dir);
+  }
 });
 
 test('対象の一覧：Keychain・Hermes の home・Vault の写し・REA・sent を含まない。Hermes の bundle は再生成として外す', () => {

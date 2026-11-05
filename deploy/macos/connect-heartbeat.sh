@@ -12,6 +12,7 @@ cd "$(dirname "$0")/../.."
 NODE="$(command -v node || true)"
 [ -n "$NODE" ] || NODE=/opt/homebrew/bin/node
 
+/usr/bin/grep -q -- '--heartbeat' "$HOME/Library/LaunchAgents/com.e-nexus.host-health.plist" 2>/dev/null || { echo "NG：登録済みの job が --heartbeat を持っていません。Claude Code に job の登録し直しを頼んでください（何も変えていません）" >&2; exit 1; }
 echo "URL は https://<Cloudflare に足した hostname>/hb の形です"
 bash deploy/macos/keychain-edl.sh set heartbeat-url
 echo "token は VPS の install.sh が出した 64 文字です"

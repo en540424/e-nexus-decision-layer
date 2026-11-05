@@ -85,8 +85,8 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 | 止まり方 | 残る手がかり |
 |---|---|
-| host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと。§3-1 の導入後は 60 分で途絶として届く |
-| Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。§3-1 の外部の死活監視の導入後は 60 分で届く |
+| host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと。§3-1 の導入後は 70 分ほどで途絶として届く |
+| Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。§3-1 の外部の死活監視の導入後は 70 分ほどで届く |
 | 回線断 | 監視は動き続けるが送れない。戻った回に通知（`recovered_missed` か続く CRIT） |
 | 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
 | Webhook の失効・Discord の障害 | 静かな運用では次の異常か四半期まで分からない。送ろうとした回の `notify_code` が記録に残る（`--report`） |
@@ -98,7 +98,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 ### 3-1. 外部の死活監視（H6）
 
-`--heartbeat` の時、host-health の 1 回分が記録を残した後に、VPS の受け側へ時刻と署名だけを送る（`scripts/lib/heartbeat.mjs`）。受け側は 60 分途絶えたら Discord へ 1 回、戻ったら 1 回知らせる（原因は断定しない。24 時間に 2 回途絶えたら「反復」を 1 通）。受け側と導入は `deploy/vps-heartbeat/README.md`（導入は Human）。
+`--heartbeat` の時、host-health の 1 回分が記録を残した後に、VPS の受け側へ時刻と署名だけを送る（`scripts/lib/heartbeat.mjs`）。受け側は最後の信号から 70 分途絶えたら Discord へ 1 回（信号は 30 分ごとなので、1 回の抜けでは鳴らない）、戻ったら 1 回知らせる（原因は断定しない。24 時間に 2 回途絶えたら「反復」を 1 通）。受け側と導入は `deploy/vps-heartbeat/README.md`（導入は Human）。
 
 - Keychain の `heartbeat-url`・`heartbeat-token` が無い間は何も送らない
 - 送れない状態が 6 時間続けば `heartbeat` の WARN（§2 のとおり続いた時に 1 回）。送った先で署名が合わない時も同じ
@@ -129,7 +129,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 1. GitHub の Settings → Developer settings → Fine-grained tokens → Generate new token。Resource owner は自分、Repository access は **Only select repositories で管理対象の 6 repo だけ**、期限は 1 年以内
 2. Repository permissions は **Metadata・Contents・Actions・Commit statuses をすべて Read-only**。それ以外は No access（Contents の読み取りは既定 branch の先頭を見るため）
-3. Mac の Terminal で `bash deploy/macos/connect-github-monitor.sh <owner>`。token を Keychain へ入れて検収する（書き込みができる token は不合格で、Keychain から消える）
+3. Mac の Terminal で `bash deploy/macos/connect-github-monitor.sh <owner>`。token を Keychain へ入れて検収する（書き込みができる token・6 repo より広い token は不合格で、Keychain から消える）
 4. 合格すれば次の回から動く。job の定義は登録済みなので launchd の操作は要らない。戻す時は `bash deploy/macos/keychain-edl.sh delete github-monitor-token`
 
 ## 5. バックアップ
@@ -146,12 +146,13 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 | `deploy/macos/connect-backup.sh` | Human の接続（鍵・token・初回・job の登録） |
 
 - 対象：`~/e-nexus-runtime` の作業メモ・rules・`mac-runtime-state`（Hermes の bundle を除く）・Claude の memory・relay の設定と未送信・host-health の記録
-- 除外：コード（GitHub にある）・Keychain の Secret（再発行で戻す）・再生成できるもの・Hermes の home（読めない）・Secret の形のあるファイル・Trading Lab の領域・deny のパターンにあたるファイル（`--deny-file`。公開 repo に置けない識別子を含むのでローカルのファイル。無ければ動かない）
+- 除外：コード（GitHub にある）・Keychain の Secret（再発行で戻す）・再生成できるもの・Hermes の home（読めない）・文字列でないファイル・Secret の形か名前のファイル・Trading Lab の名前か言及のあるファイル・deny のパターンにあたるファイル（`--deny-file`。公開 repo に置けない識別子を含むのでローカルのファイル。無いか 5 行未満なら動かない。判定は Hermes の写しと同じ本物の `grep`）
+- 検査した本文そのものをアーカイブへ入れる（検査の後の差し替えは入らない）。平文の写しは `~/.enexus/backup/work`（0700）で、毎回の始めに前の残りを消す
 
 ### 本番データを送る条件（1 つでも欠ければ送らない・毎回確かめる）
 
 1. 保存先が Private（API の `private`・`visibility`）
-2. token が fine-grained で、他の private repo が見えない（1 repo だけの権限）
+2. token が fine-grained で、見える private repo が保存先だけ（`/user/repos` の一覧と、管理対象の repo の個別の確認の両方。確かめられなければ送らない）・Administration の権限が無い
 3. passphrase が Keychain にあり、**Mac の外の控えから打ち直して一致した記録がある**（passphrase を変えると無効）
 4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
 
@@ -173,7 +174,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 
 ### 復元（Mac を失った時）
 
-どの PC でも：① decision-layer を clone ② Private repo の `archives/` から最新を取る ③ `node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>`（標準入力に passphrase。Keychain は使わない）。Keychain の Secret は再発行する。
+どの PC でも：① decision-layer を clone ② Private repo の `archives/` から最新を取る ③ `IFS= read -r -s P; printf '%s\n' "$P" | node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>`（標準入力に passphrase。Keychain は使わない）。Keychain の Secret は再発行する。
 
 ## 6. Hermes へ渡す状態の要約（A2・2026-11-05 Human 承認）
 

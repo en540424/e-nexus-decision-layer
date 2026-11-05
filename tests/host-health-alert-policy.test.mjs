@@ -429,3 +429,25 @@ test('再開の後の 2 回目でも watchdog の古い記録で偽の CRIT を�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('隔離：回復の後でも 24 時間に知らせていないコードは上限を待たない。2 つのコードの交互は重ねない', () => {
+  const lvl = (v) => (v ? 'crit' : 'ok');
+  const run = (vals) => playSending(vals.map((v, i) => [i * 30 * MIN, [state('hermes_isolation', lvl(v), v || 'ok')]]));
+  const out = run(['share_open', 'share_open,hermes_home_open', '', '', 'admin_group']);
+  assert.equal(out.at(-1)[0], 2 * HOUR, '新しいコードはすぐ');
+  const alt = run(Array.from({ length: 48 }, (_, i) => (i % 2 ? 'share_open' : 'hermes_home_open')));
+  assert.ok(alt.length <= 3, `${alt.length} 通`);
+});
+
+test('WARN の行き来は反復に数えない：最初の本物の CRIT は値つきのふつうの通知', () => {
+  const seq = ['warn', 'ok', 'ok', 'warn', 'ok', 'ok', 'warn', 'ok', 'ok', 'crit'];
+  const out = playSending(seq.map((level, i) => [i * 30 * MIN, [state('memory_pressure', level, 4)]]));
+  assert.deepEqual(out.map(([, , change, repeat]) => [change, repeat]), [['new', null]]);
+});
+
+test('時計が未来へ飛んだ回の記録で、戻った後の重大を黙らせない', () => {
+  const later = 16 * 365 * 24 * HOUR;
+  const seq = [[later, 'crit'], [later + HOUR, 'ok'], [later + 2 * HOUR, 'ok'], [later + 3 * HOUR, 'crit'], [later + 4 * HOUR, 'ok'], [later + 5 * HOUR, 'ok'], [0, 'ok'], [HOUR, 'crit']];
+  const out = playSending(seq.map(([ms, level]) => [ms, [state('power', level, 'ups 90%')]]));
+  assert.ok(out.some(([ms]) => ms === HOUR), JSON.stringify(out));
+});

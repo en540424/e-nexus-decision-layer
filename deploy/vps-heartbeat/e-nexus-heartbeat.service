@@ -18,8 +18,12 @@ ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6
-MemoryMax=64M
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=128M
 CPUQuota=10%
 TasksMax=32
 

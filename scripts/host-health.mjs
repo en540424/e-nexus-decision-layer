@@ -71,6 +71,8 @@ export const GAP_MS = 90 * 60_000;
 export const PAUSE_MAX_MS = 72 * 3_600_000;
 export const COMMAND_TIMEOUT_MS = 5000;
 export const RUN_DEADLINE_MS = 60_000;
+/** 全体の予算の内訳：GitHub 20 秒＋コマンド＋通知 25 秒＋生存信号。生存信号の遅れで 1 回分を失敗にしない */
+const HEARTBEAT_BUDGET_MS = 8000;
 const MAX_FAILURES = 3;
 /** Trading Lab の領域（見ない・引数に取らない） */
 export const TRADING_LAB_PATH = /parallels|trading-?lab|mac-mini-migration-kit/i;
@@ -303,9 +305,9 @@ export function decide(items, prev, { now, paused = false }) {
   const t = Date.parse(now);
   const elapsed = (at) => t - Date.parse(at);
   const codesOf = (v) => String(v ?? '').split(',');
-  const recent = (hits) => (hits ?? []).filter((h) => elapsed(h) < FLAP.window_ms);
+  const recent = (hits) => (hits ?? []).filter((h) => elapsed(h) >= 0 && elapsed(h) < FLAP.window_ms); // 時計が戻っても未来の記録で黙らない
   const quietEnd = new Date(t + FLAP.window_ms).toISOString();
-  const quiet = (until) => Boolean(until) && t < Date.parse(until);
+  const quiet = (until) => Boolean(until) && t < Date.parse(until) && Date.parse(until) - t <= FLAP.window_ms;
   for (const it of items) {
     if (paused) continue;
     const rule = ruleOf(it.id);
@@ -347,7 +349,7 @@ export function decide(items, prev, { now, paused = false }) {
         since: now,
         last_notified_at: change ? now : p.last_notified_at,
         recovered_at: change === 'recovered' ? now : (p.recovered_at ?? null), // 「知らせられなかった」の後の戻りは待たせない
-        ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
+        ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null), flap_in: false, ...(p.flap_codes ? { flap_codes: p.flap_codes } : {}) } : {}),
       };
       if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change, ...(repeat ? { repeat } : {}) });
       continue;
@@ -355,16 +357,19 @@ export function decide(items, prev, { now, paused = false }) {
     const since = p.level === 'ok' ? now : p.since;
     const held = elapsed(since) >= rule.hold;
     const level = it.level === 'crit' || (rule.promote && held) ? 'crit' : 'warn';
-    const grew = rule.codes && p.notified && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c));
+    // 上限のある項目は 24 時間に知らせたコードも見る（回復で notified が消えても新しいコードは待たせない・2 つのコードの交互で重ねない）
+    const seenCodes = rule.flap && spent.length ? (p.flap_codes ?? []) : [];
+    const grew = rule.codes && (p.notified || rule.flap) && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c) && !seenCodes.includes(c));
     let change = null;
     if (grew) change = 'new';
     else if (level === 'crit' && p.notified === 'crit') {
       // 長く WARN へ下がった後に重大へ戻った時は、広がった間隔を待たない（境で行き来するだけなら広げたまま）
       const longLow = it.level === 'crit' && p.lowered_at && elapsed(p.lowered_at) >= REMIND_MS.first;
-      change = elapsed(p.last_notified_at) >= (longLow ? REMIND_MS.first : remindInterval(p.reminders)) ? 'reminder' : null;
+      const since = elapsed(p.last_notified_at);
+      change = since < 0 || since >= (longLow ? REMIND_MS.first : remindInterval(p.reminders)) ? 'reminder' : null; // 時計が戻った時は待たない
     } else if (level === 'crit') change = !rule.noCooldown && p.recovered_at && elapsed(p.recovered_at) < COOLDOWN_MS ? null : 'new';
     else if (!p.notified && held) change = 'new';
-    const onset = rule.flap && (p.level === 'ok' || (p.ok_runs ?? 0) > 0); // 回復を待っている間の戻りも 1 回の行き来
+    const onset = rule.flap && level === 'crit' && (!p.flap_in || (p.ok_runs ?? 0) > 0); // 重大への入りだけ数える。回復を待っている間の戻りも 1 回の行き来
     const hits = rule.flap ? [...recent(p.flap_hits), ...(onset ? [now] : [])] : null;
     if (change && hushed && !grew) change = null; // 隔離の新しいコードは待たない
     const repeat = change === 'new' && !grew && rule.flap && hits.length >= FLAP.count ? hits.length : null;
@@ -378,7 +383,7 @@ export function decide(items, prev, { now, paused = false }) {
       recovered_at: p.recovered_at ?? null,
       missed_at: change && level === 'crit' ? null : (p.missed_at ?? null),
       lowered_at: it.level === 'crit' ? null : (p.lowered_at ?? now),
-      ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
+      ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null), flap_in: level === 'crit', ...(rule.codes ? { flap_codes: change ? [...new Set([...seenCodes, ...codesOf(it.value)])] : seenCodes } : {}) } : {}),
     };
     if (change) notify.push({ id: it.id, level, value: it.value, change, ...(repeat ? { repeat } : {}) });
   }
@@ -562,7 +567,7 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
   try {
     writeState(stateDir, state);
   } catch {
-    // 回数を残せない＝数えられないので、黙らないよう知らせ続ける（時刻の枠。6 時間ごとの最初の 1 時間）。残っていない回数で DISABLED にはしない（一瞬の書き込み失敗で監視を止めない）
+    // 回数を残せない＝数えられないので、黙らないよう知らせ続ける（時刻の枠。6 時間ごとの最初の 30 分）。残っていない回数で DISABLED にはしない（一瞬の書き込み失敗で監視を止めない）
     await noticeDisabled({ stateDir, state, webhook, webhookFormat, at, post, value: 'state_unwritable' });
     return failures;
   }
@@ -709,7 +714,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) });
     if (heartbeat) {
       // 記録を残せた回だけ生存を伝える（止まった監視が生きているように見せない）。送信の結果は次の回の項目になる
-      const code = await heartbeat().catch(() => 'failed');
+      const code = await Promise.race([heartbeat(), new Promise((resolve) => { setTimeout(resolve, HEARTBEAT_BUDGET_MS, 'failed').unref(); })]).catch(() => 'failed');
       writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}), heartbeat: nextHeartbeat(code, prev?.heartbeat, at) });
     }
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };

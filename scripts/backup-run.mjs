@@ -9,7 +9,8 @@
  *   node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>   標準入力の passphrase で復元する（Keychain を使わない。どの PC でも）
  *
  * 本番データを外へ送る条件（**1 つでも欠ければ送らない**・毎回確かめる）：
- *   1. 保存先が Private（API の private と visibility）  2. token が fine-grained で、他の private repo が見えない（1 repo だけの権限）
+ *   1. 保存先が Private（API の private と visibility）
+ *   2. token が fine-grained で、見える private repo が保存先だけ（一覧と、管理対象の private repo の個別の確認の両方）・Administration の権限が無い
  *   3. passphrase が Keychain にあり、Mac の外の控えの確認が済んでいる（passphrase を変えると確認も無効）
  *   4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
  * 届いたことの実証：送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（~/.enexus/backup/last.json）に restore_verified_at を書く。
@@ -19,12 +20,12 @@
  * exit：0＝成功／1＝失敗／2＝引数／3＝条件が揃っていない（送っていない）
  */
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAX_BYTES, manifestOf, pack, restore, unpack } from './lib/backup-archive.mjs';
-import { backupSources, loadDenyPatterns, planBackup, retentionPlan } from './lib/backup-plan.mjs';
+import { backupSources, planBackup, retentionPlan } from './lib/backup-plan.mjs';
 import { readCredential } from './lib/env-file.mjs';
 import { GITHUB_API, GITHUB_OWNER, GITHUB_TOKEN_PREFIX } from './lib/github-guard.mjs';
 import { BACKUP_RECEIPT_SCHEMA, defaultGuard } from './lib/runtime-guard.mjs';
@@ -40,6 +41,13 @@ const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const MAX_DELETES = 5;
 const HTTP_TIMEOUT_MS = 30_000;
 const backupDir = (home) => path.join(home, '.enexus', 'backup');
+/** 平文の写しを置く場所。0700。始める時に前の回の残りを消す（強制終了の残骸を残さない） */
+export function workRoot(home) {
+  const dir = path.join(backupDir(home), 'work');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const n of readdirSync(dir)) rmSync(path.join(dir, n), { recursive: true, force: true });
+  return dir;
+}
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
 class Stop extends Error {
@@ -93,7 +101,7 @@ function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
 }
 
 /** 条件 1・2・3。戻り値は送るのに使うもの。揃わなければ notReady を投げる */
-export async function checkGates({ owner, repo, home, otherRepo, read = readCredential, fetchImpl = globalThis.fetch }) {
+export async function checkGates({ owner, repo, home, otherRepos, read = readCredential, fetchImpl = globalThis.fetch }) {
   const passphrase = await read(PASSPHRASE_CREDENTIAL).catch(() => null);
   if (!passphrase) throw notReady('no_passphrase');
   if (passphrase.length < MIN_PASSPHRASE) throw notReady('weak_passphrase');
@@ -106,23 +114,30 @@ export async function checkGates({ owner, repo, home, otherRepo, read = readCred
   if (r.status === 401 || r.status === 403) throw notReady('token_rejected');
   if (r.status !== 200) throw notReady('repo_not_found');
   if (r.json?.private !== true || r.json?.visibility !== 'private') throw notReady('repo_not_private');
-  const other = await api('GET', `/repos/${owner}/${otherRepo}`);
-  if (other.status !== 404) throw notReady('token_too_broad');
+  if (!otherRepos?.length) throw notReady('scope_unverified');
+  // 見える repo の一覧で確かめる（標本の確認だけでは他の repo が見える token を通す）。読めなければ確かめられないので送らない
+  const list = await api('GET', '/user/repos?visibility=private&per_page=100');
+  if (list.status !== 200 || !Array.isArray(list.json)) throw notReady('scope_unverified');
+  if (list.json.some((x) => x?.name !== repo)) throw notReady('token_too_broad');
+  for (const name of otherRepos) {
+    const other = await api('GET', `/repos/${owner}/${name}`);
+    if (other.status === 200 && other.json?.private !== false) throw notReady('token_too_broad');
+  }
+  if ((await api('GET', `/repos/${owner}/${repo}/keys`)).status === 200) throw notReady('token_too_broad'); // Administration の権限
   if (r.json.size > SIZE_LIMIT_KIB) throw new Stop('repo_too_large');
   return { passphrase, api, branch: r.json.default_branch ?? 'main', empty: !r.json.pushed_at || r.json.size === 0 };
 }
 
 /** 選別したファイルを一時フォルダへ写してアーカイブにし、手元で復元して一致を確かめる（条件 4）。files は planBackup の結果 */
-export function buildArchive({ files, passphrase, drill = runDrill }) {
+export function buildArchive({ files, passphrase, tmpRoot, drill = runDrill }) {
   if (!drill().ok) throw notReady('drill_failed');
-  const root = mkdtempSync(path.join(tmpdir(), 'edl-backup-run-'));
+  const root = mkdtempSync(path.join(tmpRoot, 'run-'));
   try {
     const stage = path.join(root, 'stage');
     for (const f of files) {
       const dst = path.join(stage, f.id, f.rel);
       mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
-      copyFileSync(f.src, dst);
-      chmodSync(dst, 0o600);
+      writeFileSync(dst, f.body, { mode: 0o600 }); // 検査した本文そのもの
     }
     const archive = pack(stage, passphrase);
     if (archive.length > MAX_ARCHIVE_BYTES || archive.length > MAX_BYTES) throw new Stop('archive_too_large');
@@ -147,12 +162,12 @@ async function upload({ api, owner, repo, name, archive, passphrase }) {
 }
 
 /** 世代の整理。失敗しても 1 回分は成功のまま（次の回にもう一度） */
-async function prune({ api, owner, repo }) {
+async function prune({ api, owner, repo, current }) {
   const list = await api('GET', `/repos/${owner}/${repo}/contents/archives`);
   if (list.status !== 200 || !Array.isArray(list.json)) return 0;
   const sha = new Map(list.json.map((e) => [e.name, e.sha]));
   let deleted = 0;
-  for (const name of retentionPlan([...sha.keys()]).slice(0, MAX_DELETES)) {
+  for (const name of retentionPlan([...sha.keys()], { keep: current }).slice(0, MAX_DELETES)) {
     const d = await api('DELETE', `/repos/${owner}/${repo}/contents/archives/${name}`, { body: { message: `prune ${name.slice(0, 10)}`, sha: sha.get(name), committer: { name: 'E-NEXUS backup', email: 'noreply@users.noreply.github.com' } } });
     if (d.status === 200) deleted += 1;
   }
@@ -174,18 +189,19 @@ function writeReceipt(file, body) {
 }
 
 /** 1 回分。plan・read・fetchImpl・now を差し替えて test する（実データも GitHub も使わずに回せる） */
-export async function runBackup({ owner, repo, home, otherRepo, planFiles, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date(), drill = runDrill }) {
+export async function runBackup({ owner, repo, home, otherRepos, planFiles, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date(), drill = runDrill }) {
   const at = now().toISOString();
   const receipt = path.join(backupDir(home), 'last.json');
   const prev = readReceipt(receipt);
   try {
-    const { passphrase, api } = await checkGates({ owner, repo, home, otherRepo, read, fetchImpl });
-    const plan = planFiles();
+    const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl });
+    const tmpRoot = workRoot(home);
+    const plan = planFiles(tmpRoot);
     if (!plan.files.length) throw new Stop('nothing_to_back_up');
-    const archive = buildArchive({ files: plan.files, passphrase, drill });
+    const archive = buildArchive({ files: plan.files, passphrase, tmpRoot, drill });
     const name = archiveName(at);
     await upload({ api, owner, repo, name, archive, passphrase });
-    const pruned = await prune({ api, owner, repo }).catch(() => 0);
+    const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
     writeReceipt(receipt, { finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null });
     return { code: 0, status: 'ok', archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, pruned };
@@ -244,17 +260,17 @@ async function main(argv) {
     return ok ? 0 : 1;
   }
   const g = defaultGuard(REPO);
-  const planFiles = () => planBackup({ sources: backupSources({ base: g.base, home, repoRoot: REPO }), deny: loadDenyPatterns(readFileSync(a.denyFile, 'utf8')) });
+  const planFiles = (tmpRoot) => planBackup({ sources: backupSources({ base: g.base, home, repoRoot: REPO }), denyText: readFileSync(a.denyFile, 'utf8'), tmpRoot });
   if (a.command === 'plan') {
-    const p = planFiles();
+    const p = planFiles(workRoot(home));
     log({ status: 'planned', files: p.files.length, bytes: p.bytes, excluded: p.excluded, by_source: Object.fromEntries(Object.entries(Object.groupBy(p.files, (f) => f.id)).map(([k, v]) => [k, v.length])), ...(a.json ? { rels: p.files.map((f) => `${f.id}/${f.rel}`) } : {}) });
     return 0;
   }
-  const otherRepo = g.repos.find((r) => r !== 'e-nexus-decision-layer' && r !== a.repo); // 公開の repo は誰でも見えるので確かめにならない
+  const otherRepos = g.repos.filter((r) => r !== a.repo);
   if (a.command === 'check') {
     try {
-      await checkGates({ owner: a.owner, repo: a.repo, home, otherRepo });
-      const p = planFiles();
+      await checkGates({ owner: a.owner, repo: a.repo, home, otherRepos });
+      const p = planFiles(workRoot(home));
       log({ status: 'ready', files: p.files.length, bytes: p.bytes, excluded: p.excluded });
       return 0;
     } catch (err) {
@@ -262,7 +278,7 @@ async function main(argv) {
       return err instanceof Stop ? err.exit : 1;
     }
   }
-  const r = await runBackup({ owner: a.owner, repo: a.repo, home, otherRepo, planFiles });
+  const r = await runBackup({ owner: a.owner, repo: a.repo, home, otherRepos, planFiles });
   log(Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'code')));
   return r.code;
 }

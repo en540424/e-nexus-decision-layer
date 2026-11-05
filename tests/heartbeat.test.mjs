@@ -5,10 +5,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { FLAP, LIMIT_MS, RETRY_MS, SKEW_MS, TEXT, discordSender, flush, initialState, onBeat, onTick, startReceiver, verifyBeat } from '../deploy/vps-heartbeat/receiver.mjs';
+import { FLAP, LIMIT_MS, OUTAGE_MS, RETRY_MS, SKEW_MS, TEXT, discordSender, flush, initialState, onBeat, onTick, settle, startReceiver, verifyBeat } from '../deploy/vps-heartbeat/receiver.mjs';
 import { HEARTBEAT_LIMITS, HEARTBEAT_TOKEN, HEARTBEAT_URL, heartbeatItem, nextHeartbeat, sendHeartbeat } from '../scripts/lib/heartbeat.mjs';
 import { parseArgs, runHostHealth, safeValue, validateArgs } from '../scripts/host-health.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
@@ -46,10 +46,16 @@ test('正常：30 分ごとの信号なら 1 週間通知しない', async () =>
   assert.deepEqual(await simulate(7 * 24 * 60, () => true), []);
 });
 
-test('途絶：60 分で 1 回だけ・続いても重ねない・戻れば 1 回', async () => {
+test('途絶：60 分以上で 1 回だけ・続いても重ねない・戻れば 1 回', async () => {
   const out = await simulate(24 * 60, (m) => m < 60 || m > 600);
-  assert.deepEqual(out, [[90 + 30 - 1 + 1 - 30 + 0, 'down'], [630, 'up']].map(([m, k], i) => (i === 0 ? [out[0][0], k] : [m, k])));
-  assert.ok(out[0][0] >= 60 + 30 && out[0][0] <= 30 + 60 + 30, '最後の信号から 60 分');
+  assert.deepEqual(out, [[30 + 70, 'down'], [630, 'up']], '最後の信号（30 分）から 70 分');
+  assert.ok(LIMIT_MS >= 60 * MIN);
+});
+
+test('1 回の抜けと実行時間の揺れでは鳴らない（信号は実行の最後に送るので間隔が揺れる）', async () => {
+  let s = onBeat(initialState(T0), { now: T0 + 20_000, ts: T0 + 20_000 });
+  s = onTick(s, { now: T0 + 60 * MIN + 45_000 });
+  assert.equal(s.pending, null);
 });
 
 test('一時的な欠け：1 回抜けただけでは知らせない', async () => {
@@ -65,7 +71,28 @@ test('反復：行き来しても 1 日 3 通を超えない・落ち着けば�
   assert.deepEqual(out.slice(0, 3).map(([, k]) => k), ['down', 'up', 'repeat']);
 });
 
-test('送れない時：RETRY_MS ごとにもう一度・送れるまで消えない・回線が戻る前に Mac が戻れば途絶の通知は捨てる', async () => {
+test('静かな間に始まった本当の停止：明けた時に続いていれば知らせる（電源が不安定なまま最後に落ちる場面で黙らない）', async () => {
+  const out = await simulate(14 * 24 * 60, (m) => m < 240 ? m < 120 || m >= 210 : m < 300 ? false : m < 330);
+  assert.deepEqual(out.map(([, k]) => k).slice(0, 3), ['down', 'up', 'repeat']);
+  assert.ok(out.length >= 4 && ['down', 'repeat'].includes(out[3][1]), JSON.stringify(out));
+  assert.ok(out.length <= 5);
+});
+
+test('反復の後に安定すれば復旧を 1 回（「控える」の 1 通で終わらない）', async () => {
+  const out = await simulate(5 * 24 * 60, (m) => !((m >= 60 && m < 180) || (m >= 240 && m < 360)));
+  assert.deepEqual(out.map(([, k]) => k), ['down', 'up', 'repeat', 'up']);
+  assert.ok(out[3][0] >= out[2][0] + 24 * 60, '静かな間が明けてから');
+});
+
+test('送信の間の受信を失わない：途絶を送っている間に戻れば復旧も届く・失敗しても途絶へ戻さない', () => {
+  const now = T0;
+  const sending = { ...initialState(T0), pending: 'up', down: false };
+  assert.equal(settle(sending, { attempted: 'down', ok: true, now }).pending, 'up', '送っている間に復旧へ変わった');
+  assert.equal(settle(sending, { attempted: 'down', ok: false, now }).pending, 'up');
+  assert.equal(settle({ ...sending, pending: 'down' }, { attempted: 'down', ok: true, now }).pending, null);
+});
+
+test('送れない時：RETRY_MS ごとにもう一度・送れるまで消えない・途絶を送れないうちに戻れば復旧へ置き換える', async () => {
   let s = onBeat(initialState(T0), { now: T0, ts: T0 });
   const now = T0 + LIMIT_MS + 1;
   s = onTick(s, { now });
@@ -95,7 +122,7 @@ test('VPS の再起動：起動から 60 分は知らせない。一度も受信
     const res = await fetch(`http://127.0.0.1:${a.port}/hb`, { method: 'POST', headers: { 'x-edl-ts': String(clock), 'x-edl-sig': sign(clock) } });
     assert.equal(res.status, 204);
     await new Promise((r) => { a.server.close(r); });
-    clock += 5 * LIMIT_MS; // VPS が止まっていた
+    clock += 5 * LIMIT_MS; // VPS が止まっていた（OUTAGE_MS より長い）
     const b = await startReceiver(opts);
     await b.tick();
     assert.deepEqual(sent, [], '起動の直後は待つ');
@@ -103,6 +130,51 @@ test('VPS の再起動：起動から 60 分は知らせない。一度も受信
     await b.tick();
     assert.deepEqual(sent, [TEXT.down], '起動から 60 分たっても来なければ知らせる');
     await new Promise((r) => { b.server.close(r); });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('再起動が続くだけなら待ち直さない（crash loop の間に黙らない）・壊れた state でも止まらない', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-hb-'));
+  try {
+    const stateFile = path.join(root, 'state.json');
+    let clock = T0;
+    const sent = [];
+    const opts = { token: TOKEN, port: 0, stateFile, send: async (t) => { sent.push(t); return true; }, clock: () => clock };
+    let r = await startReceiver(opts);
+    await fetch(`http://127.0.0.1:${r.port}/hb`, { method: 'POST', headers: { 'x-edl-ts': String(clock), 'x-edl-sig': sign(clock) } });
+    for (let i = 0; i < 80 && !sent.length; i += 1) {
+      await new Promise((res) => { r.server.close(res); });
+      clock += OUTAGE_MS - MIN; // 落ちてはすぐ戻る
+      r = await startReceiver(opts);
+      await r.tick();
+    }
+    assert.deepEqual(sent, [TEXT.down]);
+    await new Promise((res) => { r.server.close(res); });
+    writeFileSync(stateFile, JSON.stringify({ hits: null, last_ts: Number.MAX_SAFE_INTEGER, pending: 'evil', last_seen: 'x' }));
+    const b = await startReceiver(opts);
+    await b.tick();
+    const res = await fetch(`http://127.0.0.1:${b.port}/hb`, { method: 'POST', headers: { 'x-edl-ts': String(clock), 'x-edl-sig': sign(clock) } });
+    assert.equal(res.status, 404, '未来の last_ts は now＋ずれまでに切る');
+    clock += SKEW_MS + 1000;
+    const again = await fetch(`http://127.0.0.1:${b.port}/hb`, { method: 'POST', headers: { 'x-edl-ts': String(clock + SKEW_MS - 500), 'x-edl-sig': sign(clock + SKEW_MS - 500) } });
+    assert.equal(again.status, 204, '時間がたてば受ける');
+    await new Promise((res2) => { b.server.close(res2); });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('認証の前に接続を溜めさせない：上限と時間切れを持つ・拒否は接続を閉じる', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-hb-'));
+  try {
+    const r = await startReceiver({ token: TOKEN, port: 0, stateFile: path.join(root, 's.json'), send: async () => true });
+    assert.deepEqual([r.server.maxConnections <= 64, r.server.requestTimeout <= 10_000, r.server.headersTimeout <= 10_000], [true, true, true]);
+    const res = await fetch(`http://127.0.0.1:${r.port}/x`, { method: 'POST', body: 'x'.repeat(1024) });
+    assert.equal(res.status, 404);
+    assert.equal(res.headers.get('connection'), 'close');
+    await new Promise((res2) => { r.server.close(res2); });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -200,7 +272,6 @@ test('host-health の 1 回分：記録の後に 1 回送る・失敗しても 1
     assert.equal(next.items.find((x) => x.id === 'heartbeat').value, 'failed');
     await runHostHealth({ ...base, now: at(60) });
     assert.equal(calls, 1, '--heartbeat が無ければ送らない');
-    const { writeFileSync } = await import('node:fs');
     writeFileSync(path.join(root, 'DISABLED'), 'x');
     await runHostHealth({ ...base, heartbeat, now: at(90) });
     assert.equal(calls, 1, 'DISABLED の間は送らない＝途絶として届く');
@@ -225,10 +296,14 @@ test('導入の道具：受け側は他の service を触らない・Human が�
   const stateChanging = body.split('\n').filter((l) => /systemctl\s+(?:enable|disable|start|stop|restart|reload)/.test(l));
   assert.ok(stateChanging.length && stateChanging.every((l) => l.includes('$UNIT')), '状態を変える systemctl は自分の unit だけ');
   assert.ok(!/ufw|iptables|tailscale (?:serve|funnel)|apt(?:-get)? |docker /.test(body.replace(/^#.*$/gm, '')));
+  assert.match(body, /\[ -t 0 \]/, 'URL の入力は端末でだけ');
+  assert.match(body, /--delivery-test/, '導入の時に Discord へ届くことを確かめる');
+  assert.ok(!/8791/.test(body), 'VPS staging の候補の port を使わない');
   const unit = readFileSync(new URL('../deploy/vps-heartbeat/e-nexus-heartbeat.service', import.meta.url), 'utf8');
-  for (const k of ['User=edl-heartbeat', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'MemoryMax=64M', 'CPUQuota=10%']) assert.ok(unit.includes(k), k);
+  for (const k of ['User=edl-heartbeat', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'MemoryMax=128M', 'CPUQuota=10%']) assert.ok(unit.includes(k), k);
   const connect = new URL('../deploy/macos/connect-heartbeat.sh', import.meta.url);
   assert.equal(spawnSync('bash', ['-n', connect.pathname], { timeout: 10_000 }).status, 0);
   assert.equal(spawnSync('bash', [connect.pathname], { input: '', timeout: 10_000, encoding: 'utf8' }).status, 2);
+  assert.match(readFileSync(connect, 'utf8'), /--heartbeat/, '登録済みの job が送らないなら始めない');
   assert.ok(FLAP.count >= 2);
 });

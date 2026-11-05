@@ -148,8 +148,15 @@ test('入口：repo の他のファイルに依存しない・本体を読み込
     assert.ok(!existsSync(path.join(dir, 'watchdog-broken.json')), '直れば印を消す');
     assert.equal(await reportBroken({ argv: [], stateDir: dir, read: async () => url, fetchImpl }), 'no_webhook');
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => 'https://evil.invalid/x', fetchImpl }), 'no_webhook', 'Discord 以外へ送らない');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => 'https://ptb.discord.com/api/webhooks/1/x/', fetchImpl }), 'sent', 'host-health が受ける形の URL は送れる');
+    rmSync(path.join(dir, 'watchdog-broken.json'));
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl: async () => ({ ok: false }) }), 'failed');
-    assert.ok(!existsSync(path.join(dir, 'watchdog-broken.json')), '送れなければ次の回にもう一度');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'sent', '送れなければ次の回にもう一度');
+    rmSync(path.join(dir, 'watchdog-broken.json'));
+    writeFileSync(path.join(dir, 'PAUSE'), '');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'held', 'PAUSE の間は知らせない');
+    rmSync(path.join(dir, 'PAUSE'));
+    assert.equal(await reportBroken({ argv, stateDir: path.join(dir, 'state.json-is-not-a-dir', 'x'), read: async () => url, fetchImpl: async () => { throw new Error('no'); } }).catch(() => 'x') !== 'sent', true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

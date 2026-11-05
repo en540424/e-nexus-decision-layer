@@ -20,15 +20,25 @@ DIR="$PWD"
 NODE="$(command -v node || true)"
 [ -n "$NODE" ] || NODE=/opt/homebrew/bin/node
 
+# job の定義は最初に作る（deny のパスが使えない時は、鍵を入れる前・送る前に止める）
+PLIST_TMP="$(/usr/bin/mktemp)"
+trap '/bin/rm -f "$PLIST_TMP"' EXIT
+"$NODE" scripts/scheduled-job-service.mjs --job runtime-backup --target launchd --dir "$DIR" --node "$NODE" --owner "$OWNER" --repo "$REPO" --deny-file "$DENY" --hour 4 --minute 40 | /usr/bin/sed -e '1d' -e '/^# 登録/,$d' > "$PLIST_TMP"
+/usr/bin/plutil -lint "$PLIST_TMP" >/dev/null
+
 bash deploy/macos/keychain-edl.sh set backup-passphrase
 echo "Mac の外に控えた passphrase を、控えを見ながらもう一度入力してください（Keychain と同じかを確かめます）"
-read -r -s -p "passphrase: " typed; echo
+IFS= read -r -s -p "passphrase: " typed; echo
 printf '%s\n' "$typed" | "$NODE" scripts/backup-run.mjs attest-key || { unset typed; echo "NG：控えと一致しません。もう一度やり直してください" >&2; exit 1; }
 unset typed
 bash deploy/macos/keychain-edl.sh set backup-token
-"$NODE" scripts/backup-run.mjs check --owner "$OWNER" --repo "$REPO" --deny-file "$DENY" || { echo "NG：上の failure のコードを Claude Code に伝えてください（何も送っていません）" >&2; exit 1; }
+"$NODE" scripts/backup-run.mjs check --owner "$OWNER" --repo "$REPO" --deny-file "$DENY" || {
+  /usr/bin/security delete-generic-password -s E-NEXUS/edl/backup-token -a e-nexus >/dev/null 2>&1 || true
+  echo "NG：token は Keychain から消しました。上の failure のコードを Claude Code に伝えてください（何も送っていません）" >&2
+  exit 1
+}
 "$NODE" scripts/backup-run.mjs run --owner "$OWNER" --repo "$REPO" --deny-file "$DENY" || { echo "NG：初回が失敗しました。上の failure のコードを Claude Code に伝えてください" >&2; exit 1; }
-"$NODE" scripts/scheduled-job-service.mjs --job runtime-backup --target launchd --dir "$DIR" --node "$NODE" --owner "$OWNER" --repo "$REPO" --deny-file "$DENY" --hour 4 --minute 40 | /usr/bin/sed -e '1d' -e '/^# 登録/,$d' > "$HOME/Library/LaunchAgents/$LABEL.plist"
-/usr/bin/plutil -lint "$HOME/Library/LaunchAgents/$LABEL.plist" >/dev/null
+/bin/launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true # やり直しの時
+/bin/cp "$PLIST_TMP" "$HOME/Library/LaunchAgents/$LABEL.plist"
 /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$LABEL.plist"
 echo "OK：初回を送り、読み直して確かめました。毎日 4:40 に動きます（正常なら通知は来ません）。常駐の増加の通知が 1 回届きます"
