@@ -12,6 +12,7 @@
  *   Mac Runtime 自身の定期 job（com.e-nexus.<job> の LaunchAgent）、Mac Runtime のデータ量、（導入後）Hermes ユーザーの資源。
  *   既定で lib/runtime-guard.mjs の見張りも回す（2026-11-04。Hermes の常駐と隔離・repo の未 push・relay の未送信・Time Machine。--no-guard で外す）。
  *   --github-owner と --github-credential を付けた時だけ lib/github-guard.mjs の見張りも回す（GitHub の公開範囲・CI。GET だけ。Keychain に token が無ければ通信しない）。
+ *   --hermes-user の時は 1 回分の最後に Hermes へ状態の要約を 1 ファイル書く（lib/runtime-status-summary.mjs。水準と件数だけ。2026-11-05 H4）。
  * 見ないもの：Trading Lab の process・VM・MT5・状態ファイル・Monitor。LIVE の状態は Trading Lab の Monitor の担当で、ここでは報告しない。
  *   process の一覧・command line・パス・IP・ホスト名は記録にも通知にも出さない（load・メモリはシステム全体の値だけ）。
  * することは 3 つだけ：記録（<state-dir>/state.json・YYYY-MM.jsonl）／状態が変わった時の通知／DEGRADED の印（起動ディスクかメモリが
@@ -38,6 +39,7 @@ import { BURST, COOLDOWN_MS, FLAP, RECOVER_RUNS, REMIND_MS, alertLine, remindInt
 import { QUARTERLY_RETRY, canAttempt, duePeriod, isPeriod, periodOf, previousPeriod, quarterlyText, summarizeQuarter } from './lib/quarterly-report.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
 import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
+import { STATUS_DIR, buildStatusSummary, writeStatusSummary } from './lib/runtime-status-summary.mjs';
 import { GITHUB_OWNER, collectGithub, evaluateGithub, evaluateGithubEvents, nextGithubState } from './lib/github-guard.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -429,6 +431,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^monitor_alive$/, /^(?:ok|disabled|not_loaded|no_state|stale \d+m)$/],
   [/^monitor_watchdog$/, /^(?:ok|not_installed|not_loaded|no_state|stale \d+m)$/],
   [/^host_health$/, /^(?:disabled|state_unwritable)$/],
+  [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
 export function safeValue(id, v) {
@@ -559,6 +562,17 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
   return failures;
 }
 
+/** Hermes へ渡す要約を書く（statusDir の時だけ）。監視の本体を止めない。戻り値はコード */
+function publishStatus({ statusDir, stateDir, state, at, uid }) {
+  if (!statusDir) return null;
+  try {
+    const summary = buildStatusSummary(state, { now: new Date(at), paused: pauseState(stateDir, at).paused, disabled: existsSync(path.join(stateDir, 'DISABLED')) });
+    return writeStatusSummary(summary, { dir: statusDir, uid });
+  } catch {
+    return 'write_failed';
+  }
+}
+
 /** watchdog は host-health を見て、host-health は watchdog を見る（片方が止まればもう片方が知らせる。同時の停止はどちらからも見えない）。未登録は異常にしない */
 export function watchdogItem({ installed, job, updatedAt, now, gap = false }) {
   const item = (level, value) => ({ id: 'monitor_watchdog', level, value, kind: 'state' });
@@ -607,7 +621,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -615,6 +629,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
   let prev = readState(stateDir);
   if (existsSync(path.join(stateDir, 'DISABLED'))) {
     const notifyCode = await noticeDisabled({ stateDir, state: prev, webhook, webhookFormat, at, post });
+    publishStatus({ statusDir, stateDir, state: prev, at, uid });
     return { code: 3, status: 'disabled', notifyCode };
   }
   try {
@@ -629,6 +644,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     const gap = monitorGapEvent(prev, at);
     const items = [...evaluate(o), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS }));
+    if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
     const githubRepos = o.github?.status === 'ok' ? o.github.repos : null;
     if (githubOn) items.push(...evaluateGithub(githubRepos, o.guard?.repos, prev?.github, at, { failure: o.github.status, expiresAt: o.github.expires_at ?? null }), ...evaluateGithubEvents(githubRepos, prev?.github));
@@ -654,7 +670,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     // 基準を進めない回は同じ出来事が次の回にまた出るので、繰り返しの回数に足さない
     const bursts = eventsUnsent ? (prev?.bursts ?? {}) : d.bursts;
     const quarterly = await runQuarterly({ stateDir, prev, at, paused, webhook, webhookFormat, post });
-    writeState(stateDir, {
+    const nextState = {
       schema: STATE_SCHEMA,
       updated_at: at,
       last_success_at: at,
@@ -670,7 +686,9 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
-    });
+    };
+    const statusCode = publishStatus({ statusDir, stateDir, state: nextState, at, uid });
+    writeState(stateDir, { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) });
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
     for (const x of items) levels[x.level] += 1;
     appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), `${JSON.stringify({ at, paused, degraded, levels, items: items.map(({ id, level, value }) => ({ id, level, value })), notify: d.notify.map(({ id, level, change }) => ({ id, level, change })), notify_code: notifyCode, ...(quarterly.code ? { quarterly: { period: quarterly.period, code: quarterly.code } } : {}) })}\n`, { mode: 0o600 });
@@ -768,6 +786,7 @@ async function main(argv) {
     hermesUser: a.hermesUser ?? null,
     guard,
     github: a.githubOwner ? { credential: a.githubCredential.slice('credential:'.length), owner: a.githubOwner, repos: guard?.repos ?? [] } : null,
+    statusDir: a.hermesUser ? STATUS_DIR : null,
     webhook,
     webhookFormat,
     run: makeRunner(),

@@ -13,7 +13,8 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/lib/alert-policy.mjs` | 知らせる基準と本文の文（§2） | host-health の中で動く |
 | `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
-| `scripts/runtime-status-summary.mjs` | Hermes へ渡す要約のモック（§6） | 一時フォルダにしか書けない |
+| `scripts/lib/runtime-status-summary.mjs` | Hermes へ渡す要約（§6） | host-health の中で動く |
+| `scripts/runtime-status-summary.mjs` | 要約を手で見る | 標準出力か一時フォルダだけ |
 | `scripts/backup-*.mjs` | バックアップの棚卸しと復元の予行（§5） | 合成データだけ・外へ送らない |
 
 監視は決定的なコードで回す。理由：常時の見回りに課金を載せない・判定を再現できる・Hermes の権限を増やさない。
@@ -128,9 +129,13 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 - 守らないもの：Keychain の Secret（再発行で戻す）・再生成できるもの（REA の導入・Hermes の Vault の写し）・Trading Lab の領域
 - Vault の「同期＝バックアップではない」に従い、保存先へ届いたことは別の場所からの確認で実証する（フォルダがあるだけでは数えない）
 
-## 6. Hermes へ渡す状態の要約（A2・未承認）
+## 6. Hermes へ渡す状態の要約（A2・2026-11-05 Human 承認）
 
-`runtime-status-summary/v1`。**承認まで本番へ出さない。書き先の制限はコードにあり、引数では開けない。**
+`runtime-status-summary/v1`。host-health の 1 回分の最後に `/Users/Shared/e-nexus-hermes/status/runtime-status.json` を置き換える（`--hermes-user` の時だけ・AI／API なし）。Hermes の OS 権限・toolsets・Human Gate は変えない：読めるのは既存の group（`e-nexus-hermes-read`）で、ファイルは 0640、フォルダは 0750。
+
+- フォルダは host-health が作らない。無ければ何もしない（`status_summary=not_configured`）。**戻す時はフォルダを消すだけ**
+- 書けない・フォルダが他人のもの・symlink は `status_summary` の WARN（24 時間続けば 1 回。監視の本体は止めない）
+- 監視が止まると更新されないので、Hermes は `generated_at` を見て、古い要約を信じない
 
 渡す：監視の動作（running／paused／stale／disabled）・全体の水準・群ごとの水準と件数（host・hermes・backup・jobs・repos・github）・host／hermes／backup の項目 id と水準。
 
@@ -155,7 +160,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 ```
 host-health ──記録──▶ data/host-health/（state.json・YYYY-MM.jsonl）
-     │                    └─(A2 の承認後)─▶ 要約ファイル ─読むだけ─▶ Hermes
+     │                    └─(§6)─▶ 要約ファイル ─読むだけ─▶ Hermes
      └──重大と続く異常だけ──▶ Discord（Human）
 Claude Code ──作業の記録──▶ devlog relay ──▶ Vault（Windows）
 App・Agent ──CLI／SDK／Gateway──▶ Decision Layer ──▶ Jev（Adapter）

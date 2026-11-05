@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Hermes 用の状態の要約のモック（2026-11-04・A2）。READ-ONLY。既定は標準出力、--out は一時フォルダの中だけ。Hermes の共有へは書けない（承認の後のコード変更）。
+ * Hermes 用の状態の要約を手で見る（2026-11-04・A2）。READ-ONLY。既定は標準出力、--out は一時フォルダの中だけ。本番のファイルは host-health の 1 回分が書く（lib/runtime-status-summary.mjs）。
  *
  *   node scripts/runtime-status-summary.mjs [--state-dir <abs>] [--out <一時フォルダの中のファイル>]
  *

@@ -1,19 +1,21 @@
 /**
- * Hermes へ渡す状態の要約（2026-11-04・A2 の設計とモック。**本番の共有は Human の承認まで行わない**）。
+ * Hermes へ渡す状態の要約（2026-11-04・A2 の設計。2026-11-05 H4 の Human 承認で本番の共有を開始）。
  *
  * host-health の state.json から、許可した項目の「水準」だけを取り出す（allowlist。知らない項目は落ちる）。
  * 渡さない：値（空き容量・回線名・repo の差分）・パス・hash・pid、それと Hermes を見張る項目（隔離・固定ファイルの変化・常駐の増減・
  *   監視の定義）＝見張られる側に検知の中身を渡さない。Trading Lab の情報はそもそも state に無い。
  * Hermes の権限は増えない（読むだけの 1 ファイル）が、Hermes が見る情報は増える。
+ * 本番の置き場は STATUS_DIR の固定 1 か所。host-health の 1 回分の最後に書く。フォルダは作らない（Human の承認の後に 1 回だけ作ったもの。消せば書くのが止まる）。
+ * Hermes は generated_at を見る（監視が止まると更新されないので、古い要約は信じない）。
  */
-import { lstatSync, realpathSync } from 'node:fs';
+import { chmodSync, lstatSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { HERMES_SHARE } from './runtime-guard.mjs';
 
 export const SUMMARY_SCHEMA = 'runtime-status-summary/v1';
-/**
- * 書いてよいのは macOS の一時フォルダだけ。本番の置き場へ切り替えるのは A2 の承認の後のコード変更（引数でも環境変数でも開けない。
- * だから tmpdir() は使わない＝TMPDIR で動く）。
- */
+export const STATUS_DIR = path.join(HERMES_SHARE, 'status');
+export const STATUS_FILE = 'runtime-status.json';
+/** 手で試す --out は macOS の一時フォルダだけ（引数でも環境変数でも開けない。だから tmpdir() は使わない＝TMPDIR で動く） */
 export const MOCK_OUT_ROOTS = Object.freeze(['/private/tmp', '/private/var/folders']);
 /** 項目の id が分かっても機密にならない群だけ attention に出す。repo・job・github は件数だけ */
 const GROUPS = Object.freeze({
@@ -57,10 +59,34 @@ export function buildStatusSummary(state, { now = new Date(), paused = false, di
   };
 }
 
+/**
+ * 本番の 1 ファイルを置き換える。戻り値は記録用のコード：written／not_configured（フォルダが無い）／dir_unsafe（symlink・他人のもの・他人が書ける）／write_failed。
+ * Hermes が読むので group の読み取りだけ（0640）。group はフォルダから継ぐ。途中の状態を読ませないよう rename で置き換える。
+ */
+export function writeStatusSummary(summary, { dir = STATUS_DIR, uid = process.getuid() } = {}) {
+  let s;
+  try {
+    s = lstatSync(dir);
+  } catch {
+    return 'not_configured';
+  }
+  if (!s.isDirectory() || s.uid !== uid || s.mode & 0o027) return 'dir_unsafe';
+  const file = path.join(dir, STATUS_FILE);
+  const tmp = `${file}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o640 });
+    chmodSync(tmp, 0o640);
+    renameSync(tmp, file);
+    return 'written';
+  } catch {
+    return 'write_failed';
+  }
+}
+
 /** symlink で外へ出られないよう、親フォルダの実パスで確かめる。ファイルの symlink（切れたものも）は lstat で拒み、書く時は wx（既にあるものへ書かない） */
 export function assertMockOut(out) {
   const p = path.resolve(out);
-  const refused = new Error('A2 is not approved: the mock writes only under the temp folder');
+  const refused = new Error('--out writes only under the temp folder');
   const real = (x) => {
     try {
       return realpathSync(x);
