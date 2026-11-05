@@ -304,3 +304,78 @@ test('state を書けない間は同じ CRIT を毎回送らない（送れた�
   assert.deepEqual([...new Set(posted.map((n) => `${n.id}:${n.value}`))], ['host_health:state_unwritable']);
   assert.ok(posted.length <= 2, String(posted.length));
 }));
+
+/** 送れない回を混ぜて回す。sendable(ms) が false の回は rollbackUnsent で戻す（回線断は送信も失敗する） */
+function playSending(runs, sendable = () => true) {
+  let prev = null;
+  const out = [];
+  for (const [ms, items] of runs) {
+    const d = decide(items, prev, { now: iso(ms) });
+    const ok = !d.notify.length || sendable(ms);
+    if (ok) for (const n of d.notify) out.push([ms, n.id, n.change, n.repeat ?? null]);
+    const itemsNext = ok ? d.items : rollbackUnsent(d.notify, prev?.items, d.items, iso(ms));
+    prev = { items: itemsNext, bursts: ok ? d.bursts : (prev?.bursts ?? {}) };
+  }
+  return out;
+}
+const perDay = (out) => out.reduce((m, [ms]) => { const k = Math.floor(ms / (24 * HOUR)); m[k] = (m[k] ?? 0) + 1; return m; }, {});
+
+test('電源の行き来：1 回目はふつうに、2 回目で「反復」を 1 通。明けるまで静かで、落ち着けば回復を 1 回', () => {
+  const flapping = (i) => (i < 48 ? i % 3 === 0 : false); // 1.5 時間ごとに 24 時間行き来して、その後は安定
+  const out = playSending(every30(72, (i) => [state('power', flapping(i) ? 'crit' : 'ok', 'ups 90%')]));
+  assert.deepEqual(out.slice(0, 3), [[0, 'power', 'new', null], [HOUR, 'power', 'recovered', null], [1.5 * HOUR, 'power', 'new', 2]]);
+  assert.deepEqual(out.at(-1).slice(1, 3), ['power', 'recovered']);
+  assert.ok(out.length <= 5, `3 日で ${out.length} 通`);
+});
+
+test('電源と回線が 3 週間行き来し続けても、1 日に 3 通を超えない', () => {
+  for (const id of ['power', 'network_default_route']) {
+    for (const period of [3, 4, 5, 7, 13]) {
+      const out = playSending(every30(24 * 21, (i) => [state(id, i % period === 0 ? 'crit' : 'ok', 'absent')]));
+      assert.ok(Math.max(...Object.values(perDay(out))) <= 3, `${id} 周期 ${period}：${JSON.stringify(perDay(out))}`);
+      assert.ok(out.some(([, , , r]) => r), '反復は知らせる');
+    }
+  }
+});
+
+test('回線の行き来で送信も失敗する：「知らせられなかった」も数えて、毎回の通知にしない', () => {
+  const lost = (ms) => Math.round(ms / (30 * MIN)) % 3 === 0; // 既定経路が無い回は送れない
+  const out = playSending(every30(24 * 7, (i) => [state('network_default_route', i % 3 === 0 ? 'crit' : 'ok', 'absent')]), (ms) => !lost(ms));
+  assert.deepEqual(out.slice(0, 2).map(([, , change, repeat]) => [change, repeat]), [['recovered_missed', null], ['recovered_missed', 2]]);
+  assert.ok(Math.max(...Object.values(perDay(out))) <= 2, JSON.stringify(perDay(out)));
+});
+
+test('行き来が 1 回だけの停電は今までどおり：すぐ 1 回・回復 1 回。24 時間あけば別の異常として知らせる', () => {
+  const out = playSending(every30(60, (i) => [state('power', i < 4 || (i >= 60 && i < 64) ? 'crit' : 'ok', 'ups 80%')]));
+  assert.deepEqual(out.map(([ms, , change, repeat]) => [ms / HOUR, change, repeat]), [[0, 'new', null], [2.5 * HOUR / HOUR, 'recovered', null], [30, 'new', null], [32.5, 'recovered', null]]);
+});
+
+test('反復の後も重大が続くなら、明けた回に再通知する（行き来の後の長い停電を黙らせない）', () => {
+  const out = playSending(every30(60, (i) => [state('power', i === 0 || i >= 3 ? 'crit' : 'ok', 'ups 50%')]));
+  assert.deepEqual(out.map(([ms, , change, repeat]) => [ms / HOUR, change, repeat]), [[0, 'new', null], [1, 'recovered', null], [1.5, 'new', 2], [25.5, 'reminder', null]]);
+});
+
+test('再起動・監視の空白の繰り返し：1 回目は 1 通、2 回目で「反復」、24 時間は静か。繰り返す間も 1 日 1 通まで', () => {
+  for (const id of ['rebooted', 'monitor_gap']) {
+    const runs = Array.from({ length: 24 * 7 }, (_, i) => [i * HOUR, [event(id, '1h0m')]]);
+    const out = playSending(runs);
+    assert.deepEqual(out.slice(0, 2).map(([ms, , change, repeat]) => [ms / HOUR, change, repeat]), [[0, 'event', null], [1, 'event', 2]]);
+    assert.ok(Math.max(...Object.values(perDay(out))) <= 2, JSON.stringify(perDay(out)));
+    assert.ok(Object.keys(perDay(out)).length >= 6, '止まり続けるなら毎日知らせる');
+  }
+  assert.deepEqual(playSending([[0, [event('rebooted')]], [25 * HOUR, [event('rebooted')]]]).map(([, , change, repeat]) => [change, repeat]), [['event', null], ['event', null]], '別の日の 1 回は反復ではない');
+});
+
+test('反復の本文：固定の文と回数だけ・値は出さない・回数が数でなければ付けない', () => {
+  const text = alertText([{ id: 'power', level: 'crit', value: 'ups 80%', change: 'new', repeat: 3 }, { id: 'rebooted', level: 'warn', value: '2026-11-05T00:00:00.000Z', change: 'event', repeat: 2 }]);
+  assert.match(text, /【反復】電源：AC との行き来を繰り返している（24 時間に 3 回）→ 要対応。落ち着くまで通知を控える/);
+  assert.match(text, /【反復】Mac：再起動を繰り返している（24 時間に 2 回）→ 心当たりがなければ確認/);
+  assert.ok(!text.includes('ups 80%'));
+  assert.doesNotMatch(alertText([{ id: 'power', level: 'crit', value: 'ups', change: 'new', repeat: 'x' }]), /反復/);
+});
+
+test('行き来を数えない項目の state は変わらない（ディスクなどに flap の欄を足さない）', () => {
+  const d = decide([state('disk_free_gib', 'crit', 10)], null, { now: iso(0) });
+  assert.ok(!('flap_hits' in d.items.disk_free_gib));
+  assert.equal(d.notify[0].repeat, undefined);
+});

@@ -7,6 +7,8 @@
  *   出来事：1 回。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
  *   codes：値がコードの一覧の項目は、知らせた後に新しいコードが増えれば知らせ直す
  *   noCooldown：回復の直後の戻りも待たない（セキュリティ・電源・回線・監視の停止）
+ *   flap：行き来を数える（電源・回線・再起動・監視の空白）。1 回目はふつうに知らせ、FLAP.window_ms の間に FLAP.count 回に達したら「反復」を 1 通だけ送り、
+ *     FLAP.window_ms の間は静かにする。明けた時に続いていれば再通知、落ち着いていれば回復を 1 回。1 日の通知の上限はおよそ 2〜3 通
  * 本文は 1 行に「対象：何が起きたか → 対応」だけ。文言はここの固定文で、値は host-health の関所（VALUE_SHAPES）を通ったものだけ足す。
  */
 const HOUR = 3_600_000;
@@ -18,6 +20,7 @@ export const COOLDOWN_MS = 6 * HOUR;
 /** 回復とするまでに ok が続く回数（30 分ごとなので 30 分遅れる。行き来する項目で通知を重ねない） */
 export const RECOVER_RUNS = 2;
 export const BURST = Object.freeze({ window_ms: 24 * HOUR, count: 3 });
+export const FLAP = Object.freeze({ window_ms: 24 * HOUR, count: 2 });
 const HOLD_MS = 24 * HOUR;
 /** 30 分ごとの job の 2 回先（時刻の揺れで 1 回延びないよう 1 時間より短く） */
 const TWO_RUNS_MS = 45 * 60_000;
@@ -34,8 +37,8 @@ const RULES = Object.freeze([
   [/^swap_used_gib$/, { target: 'swap', what: '使用量が多い状態が続いている', action: CHECK }],
   [/^load_15m$/, { target: 'CPU の負荷', what: '高い状態が続いている', action: CHECK }],
   [/^thermal$/, { target: '発熱', what: '警告が続いている', action: CHECK }],
-  [/^power$/, { target: '電源', what: 'AC 以外で動いている', action: ACT, noCooldown: true }],
-  [/^network_default_route$/, { target: 'ネットワーク', what: '既定経路が無い', action: ACT, noCooldown: true }],
+  [/^power$/, { target: '電源', what: 'AC 以外で動いている', action: ACT, noCooldown: true, flap: 'AC との行き来を繰り返している' }],
+  [/^network_default_route$/, { target: 'ネットワーク', what: '既定経路が無い', action: ACT, noCooldown: true, flap: '断続を繰り返している' }],
   [/^job:/, { target: (id) => `定期 job ${name(id)}`, what: '失敗か長時間の実行が続いている', action: CHECK }],
   [/^data_gib$/, { target: 'Mac Runtime のデータ量', what: '基準を超えている', action: CHECK }],
   [/^hermes_rss_gib$/, { target: 'Hermes のメモリ', what: '使用量が多い', action: ACT }],
@@ -46,7 +49,7 @@ const RULES = Object.freeze([
   [/^monitor_config_changed$/, { target: '監視の定義か安全 policy', what: '変更された', action: IF_UNKNOWN }],
   [/^residents_changed$/, { target: 'E-NEXUS の常駐', what: '増減した', action: IF_UNKNOWN }],
   [/^agent_scope$/, { target: 'Claude Code の user 範囲', what: 'E-NEXUS の指示が置かれた', action: ACT, hold: 0, codes: true }],
-  [/^rebooted$/, { target: 'Mac', what: '再起動した', action: '心当たりがなければ確認' }],
+  [/^rebooted$/, { target: 'Mac', what: '再起動した', action: '心当たりがなければ確認', flap: '再起動を繰り返している' }],
   [/^network_interface_changed$/, { target: 'ネットワーク', what: '回線の切替を繰り返している', action: CHECK, burst: true }],
   [/^repo:/, { target: (id) => `repo ${name(id)}`, what: '未 commit か未 push が続いている', action: CHECK }],
   [/^relay_outbox$/, { target: 'devlog relay', what: '未送信が残っている', action: CHECK }],
@@ -55,7 +58,7 @@ const RULES = Object.freeze([
   [/^github_visibility_changed$/, { target: 'GitHub の公開範囲', what: '変わった', action: IF_UNKNOWN }],
   [/^github_default_branch_changed$/, { target: 'GitHub の既定 branch', what: '変わった', action: IF_UNKNOWN }],
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
-  [/^monitor_gap$/, { target: '監視', what: '間があいた', action: CHECK }],
+  [/^monitor_gap$/, { target: '監視', what: '間があいた', action: CHECK, flap: '止まっては戻るを繰り返している' }],
   [/^monitor_pause$/, { target: '監視の PAUSE', what: '期限を過ぎて残っている', action: CHECK }],
   [/^monitor_alive$/, { target: '監視', what: '止まっている', action: ACT, noCooldown: true }],
   [/^monitor_watchdog$/, { target: '監視の見張り', what: '止まっている', action: ACT, noCooldown: true }],
@@ -78,6 +81,7 @@ export function remindInterval(reminders = 0) {
 export function alertLine(n) {
   const rule = ruleOf(n.id);
   const target = typeof rule.target === 'function' ? rule.target(n.id) : rule.target;
+  if (n.repeat) return `【反復】${target}：${rule.flap}（24 時間に ${n.repeat} 回）→ ${rule.action}。落ち着くまで通知を控える`;
   if (n.change === 'recovered') return `【復旧】${target}：正常に戻った → 対応不要`;
   if (n.change === 'recovered_missed') return `【復旧】${target}：重大な異常があったが通知できなかった。今は正常 → 確認`;
   const tag = { crit: '重大', warn: '警告' }[n.level] ?? '通知';

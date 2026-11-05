@@ -12,7 +12,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/lib/github-guard.mjs` | GitHub の公開範囲・CI・repo の異常 | `--github-owner` の時だけ |
 | `scripts/lib/alert-policy.mjs` | 知らせる基準と本文の文（§2） | host-health の中で動く |
 | `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
-| `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 生成だけ（登録は Human） |
+| `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 毎時 :35。監視専用で何も再起動しない |
 | `scripts/runtime-status-summary.mjs` | Hermes へ渡す要約のモック（§6） | 一時フォルダにしか書けない |
 | `scripts/backup-*.mjs` | バックアップの棚卸しと復元の予行（§5） | 合成データだけ・外へ送らない |
 
@@ -34,6 +34,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | 行き来する CRIT | 間引く | 回復を知らせてから 6 時間は重ねない。続いていれば明けた回に知らせる（隔離・電源・回線・監視の停止は待たない） |
 | 重大な出来事 | すぐ 1 回 | 再起動・監視の空白・Hermes の固定ファイルの変化・監視の定義と安全 policy の変化・常駐の増減・GitHub の公開範囲と既定 branch の変化 |
 | 軽微な出来事 | 送らない | 回線の切替・Hermes の再起動。24 時間に 3 回繰り返した時だけ 1 回 |
+| 電源・回線・再起動・監視の空白の行き来 | 「反復」を 1 通 | 1 回目はふつうに知らせる。24 時間に 2 回目で「反復」を 1 通送り、24 時間は静かにする。明けた時に重大が続けば再通知、落ち着けば回復を 1 回。行き来が続いても 1 日 3 通まで。回線断で送れなかった回も数える。原因は断定しない |
 | 監視の停止 | すぐ 1 回 | §3。止まっている間は 24 時間ごと |
 | 運用要約 | 四半期に 1 通 | §2-1 |
 
@@ -72,8 +73,10 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | 記録を書けない | 回数を残せないので時刻の枠で CRIT を知らせる（6 時間ごとの最初の 1 時間。他の通知は送らない） |
 | 全体の時間切れ（60 秒） | 失敗に数える（上と同じ） |
 | 一時的に止まって再開した | 再開した回に `monitor_gap`（最後の成功から 90 分を超えた空白。再開の回が失敗しても持ち越す） |
-| job の解除・ハング・記録の途絶 | `host-health-watchdog`（別の job・登録は Human。`DISABLED` は本体の担当で重ねない）。**未登録の間は再開するまで見えない** |
+| job の解除・ハング・記録の途絶 | `host-health-watchdog`（別の job。`DISABLED` は本体の担当で重ねない）。Mac の再開の直後（起動から 90 分以内・自分の前の回から 90 分超）は判定しない＝偽の CRIT を出さず、次の回に判定する |
 | watchdog の解除・ハング | host-health の `monitor_watchdog`（解除＝CRIT・記録が 3 時間途絶＝CRIT・plist を消せば `residents_changed`）。未登録なら `not_installed` で異常にしない |
+
+watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起動しない。戻し方は `launchctl bootout gui/$(id -u)/com.e-nexus.host-health-watchdog` の後に plist を消す（1 回だけ `residents_changed` と `monitor_config_changed` が届く）。
 
 ### 未カバー（Mac の上の監視では知らせられない）
 

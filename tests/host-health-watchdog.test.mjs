@@ -80,6 +80,38 @@ test('解除された job を知らせる・PAUSE の間は知らせない・web
   }
 });
 
+test('Mac の再開の直後は判定しない：起動から間もない・自分の前の回から間があいた時は偽の CRIT を出さず、host-health が回った後に判定する', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-watchdog-'));
+  try {
+    const state = path.join(dir, 'state.json');
+    writeFileSync(state, JSON.stringify({ updated_at: iso(0) }));
+    const posted = [];
+    const post = async (n) => { posted.push(n[0]); return { sent: true, code: 'SENT' }; };
+    let bootSec = T0 / 1000 - 86_400;
+    const run = async (bin) => (bin === '/usr/sbin/sysctl' ? { code: 0, stdout: `{ sec = ${bootSec}, usec = 0 }\n`, timedOut: false } : LOADED);
+    const tick = (m) => runWatchdog({ stateDir: dir, webhook: 'credential:E-NEXUS/edl/h', webhookFormat: 'discord', run, uid: 501, now: () => new Date(iso(m)), post });
+    await tick(35);
+    // 停電：Mac が止まり、180 分後に再起動した直後に watchdog が先に動く
+    bootSec = (T0 + 212 * 60_000) / 1000;
+    const r = await tick(215);
+    assert.deepEqual([r.level, r.notify.length, posted.length], ['unknown', 0, 0], '起動の直後');
+    // スリープの再開：起動時刻は古いが自分の前の回から間があいている
+    bootSec = T0 / 1000 - 86_400;
+    const r2 = await tick(600);
+    assert.deepEqual([r2.level, posted.length], ['unknown', 0], '自分の前の回から間があいた');
+    writeFileSync(state, JSON.stringify({ updated_at: iso(630) }));
+    assert.equal((await tick(660)).level, 'ok', 'host-health が回った後は ok');
+    const r3 = await tick(725);
+    assert.deepEqual([r3.level, r3.notify.length], ['crit', 1], 'host-health が戻らなければ次の回に知らせる');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('解除された job は再開の直後でも知らせる（起動の直後を理由に黙らない）', () => {
+  assert.deepEqual(monitorState({ state: null, disabled: false, job: { loaded: false }, now: iso(1), resumed: true }), { level: 'crit', value: 'not_loaded' });
+});
+
 test('接続の道具（Human が実行）：端末でなければ何もしない・URL を引数で受けない・値を出さない', () => {
   const file = new URL('../deploy/macos/connect-discord-alerts.sh', import.meta.url);
   const body = readFileSync(file, 'utf8');

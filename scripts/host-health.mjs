@@ -19,7 +19,7 @@
  * 通知：--webhook を付けた時だけ（usage-digest と同じ契約：URL は OS 資格情報ストアからだけ・https 必須。discord は宛先も discord.com の webhook に限る）。
  *   普段は静かに見て、本当に必要な時だけ知らせる（2026-11-05 Human 決定。基準は lib/alert-policy.mjs）。正常と軽微な異常は記録だけ。
  *   CRIT は即時（続けば 24 時間後から間隔を広げて再通知）、WARN は続いた時に 1 回、回復は CRIT を知らせた項目だけ 2 回続けて ok になってから 1 回、
- *   再起動・監視の空白・設定の変化は出来事として 1 回。送れなかった分は次の回にもう一度。四半期に 1 回だけ集計の要約を送る（lib/quarterly-report.mjs）。
+ *   再起動・監視の空白・設定の変化は出来事として 1 回。電源・回線・再起動・監視の空白の繰り返しは「反復」にまとめる。送れなかった分は次の回にもう一度。四半期に 1 回だけ集計の要約を送る（lib/quarterly-report.mjs）。
  *   本文は固定の文と値だけで、値は項目ごとの形（VALUE_SHAPES）に合うものしか通さない。Discord の mention は全部無効。
  *   <state-dir>/PAUSE があれば記録だけして通知せず、状態も出来事の基準も進めない（保守窓。明けた後に変化として知らせる）。
  *   PAUSE は 72 時間で効かなくなる（消し忘れで全部の通知が黙らないように。monitor_pause=expired）。
@@ -34,7 +34,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCredential, EDL_CREDENTIAL_PATTERN } from './lib/env-file.mjs';
-import { BURST, COOLDOWN_MS, RECOVER_RUNS, REMIND_MS, alertLine, remindInterval, ruleOf } from './lib/alert-policy.mjs';
+import { BURST, COOLDOWN_MS, FLAP, RECOVER_RUNS, REMIND_MS, alertLine, remindInterval, ruleOf } from './lib/alert-policy.mjs';
 import { QUARTERLY_RETRY, canAttempt, duePeriod, isPeriod, periodOf, previousPeriod, quarterlyText, summarizeQuarter } from './lib/quarterly-report.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
 import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
@@ -298,10 +298,22 @@ export function decide(items, prev, { now, paused = false }) {
   const t = Date.parse(now);
   const elapsed = (at) => t - Date.parse(at);
   const codesOf = (v) => String(v ?? '').split(',');
+  const recent = (hits) => (hits ?? []).filter((h) => elapsed(h) < FLAP.window_ms);
+  const quietEnd = new Date(t + FLAP.window_ms).toISOString();
+  const quiet = (until) => Boolean(until) && t < Date.parse(until);
   for (const it of items) {
     if (paused) continue;
     const rule = ruleOf(it.id);
     if (it.kind === 'event') {
+      if (rule.flap) {
+        const b = bursts[it.id];
+        const hits = [...recent(b?.hits), now];
+        const hushed = quiet(b?.quiet_until);
+        const repeat = !hushed && hits.length >= FLAP.count ? hits.length : null;
+        bursts[it.id] = { hits, quiet_until: repeat ? quietEnd : (b?.quiet_until ?? null) };
+        if (!hushed) notify.push({ id: it.id, level: it.level, value: it.value, change: 'event', ...(repeat ? { repeat } : {}) });
+        continue;
+      }
       if (!rule.burst) { notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' }); continue; }
       const b = bursts[it.id];
       const hits = [...(b?.hits ?? []).filter((h) => elapsed(h) < BURST.window_ms), now];
@@ -312,14 +324,25 @@ export function decide(items, prev, { now, paused = false }) {
     }
     if (it.level === 'unknown') continue;
     const p = prevItems[it.id] ?? { level: 'ok', since: now, last_notified_at: null };
+    const hushed = rule.flap && quiet(p.flap_quiet_until);
     if (it.level === 'ok') {
       if (p.level !== 'ok') {
         const okRuns = (p.ok_runs ?? 0) + 1;
-        if (okRuns < RECOVER_RUNS) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
+        if (okRuns < RECOVER_RUNS || hushed) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
       } else if (!p.missed_at) { next[it.id] = p; continue; }
-      const change = p.notified === 'crit' ? 'recovered' : p.missed_at ? 'recovered_missed' : null;
-      next[it.id] = { level: 'ok', since: now, last_notified_at: change ? now : p.last_notified_at, recovered_at: change === 'recovered' ? now : (p.recovered_at ?? null) }; // 「知らせられなかった」の後の戻りは待たせない
-      if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change });
+      let change = p.notified === 'crit' ? 'recovered' : p.missed_at ? 'recovered_missed' : null;
+      // 回線断は送信も失敗するので、行き来は「知らせられなかった」の回数でも数える
+      const hits = rule.flap ? [...recent(p.flap_hits), ...(change === 'recovered_missed' ? [now] : [])] : null;
+      if (change === 'recovered_missed' && hushed) change = null;
+      const repeat = change === 'recovered_missed' && rule.flap && hits.length >= FLAP.count ? hits.length : null;
+      next[it.id] = {
+        level: 'ok',
+        since: now,
+        last_notified_at: change ? now : p.last_notified_at,
+        recovered_at: change === 'recovered' ? now : (p.recovered_at ?? null), // 「知らせられなかった」の後の戻りは待たせない
+        ...(rule.flap ? { flap_hits: hits, flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
+      };
+      if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change, ...(repeat ? { repeat } : {}) });
       continue;
     }
     const since = p.level === 'ok' ? now : p.since;
@@ -334,6 +357,10 @@ export function decide(items, prev, { now, paused = false }) {
       change = elapsed(p.last_notified_at) >= (longLow ? REMIND_MS.first : remindInterval(p.reminders)) ? 'reminder' : null;
     } else if (level === 'crit') change = !rule.noCooldown && p.recovered_at && elapsed(p.recovered_at) < COOLDOWN_MS ? null : 'new';
     else if (!p.notified && held) change = 'new';
+    const onset = rule.flap && (p.level === 'ok' || (p.ok_runs ?? 0) > 0); // 回復を待っている間の戻りも 1 回の行き来
+    const hits = rule.flap ? [...recent(p.flap_hits), ...(onset ? [now] : [])] : null;
+    if (change === 'new' && hushed) change = null;
+    const repeat = change === 'new' && rule.flap && hits.length >= FLAP.count ? hits.length : null;
     next[it.id] = {
       level: it.level,
       since,
@@ -344,8 +371,9 @@ export function decide(items, prev, { now, paused = false }) {
       recovered_at: p.recovered_at ?? null,
       missed_at: change && level === 'crit' ? null : (p.missed_at ?? null),
       lowered_at: it.level === 'crit' ? null : (p.lowered_at ?? now),
+      ...(rule.flap ? { flap_hits: hits, flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null) } : {}),
     };
-    if (change) notify.push({ id: it.id, level, value: it.value, change });
+    if (change) notify.push({ id: it.id, level, value: it.value, change, ...(repeat ? { repeat } : {}) });
   }
   return { notify, items: next, bursts };
 }
@@ -407,7 +435,7 @@ export function safeValue(id, v) {
   if (v == null || typeof v === 'number' || typeof v === 'boolean') return v ?? null;
   return VALUE_SHAPES.find(([key]) => key.test(id))?.[1].test(String(v)) ? String(v) : '[redacted]';
 }
-const cleanNotify = (notify) => notify.map(({ id, level, value, change }) => ({ id: SAFE_ID.test(id) ? id : '[redacted]', level, value: safeValue(id, value), change }));
+const cleanNotify = (notify) => notify.map(({ id, level, value, change, repeat }) => ({ id: SAFE_ID.test(id) ? id : '[redacted]', level, value: safeValue(id, value), change, ...(Number.isInteger(repeat) ? { repeat } : {}) }));
 
 export function alertText(notify, limit = Infinity) {
   const rows = cleanNotify(notify).sort((a, b) => (LEVEL_ORDER[a.level] ?? 3) - (LEVEL_ORDER[b.level] ?? 3));
