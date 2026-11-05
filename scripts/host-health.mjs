@@ -354,12 +354,12 @@ export function decide(items, prev, { now, paused = false }) {
       if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change, ...(repeat ? { repeat } : {}) });
       continue;
     }
-    const since = p.level === 'ok' ? now : p.since;
+    const since = p.level === 'ok' || elapsed(p.since) < 0 ? now : p.since; // 時計が戻った時は未来の始まりを持ち越さない
     const held = elapsed(since) >= rule.hold;
     const level = it.level === 'crit' || (rule.promote && held) ? 'crit' : 'warn';
     // 上限のある項目は 24 時間に知らせたコードも見る（回復で notified が消えても新しいコードは待たせない・2 つのコードの交互で重ねない）
     const seenCodes = rule.flap && spent.length ? (p.flap_codes ?? []) : [];
-    const grew = rule.codes && (p.notified || rule.flap) && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c) && !seenCodes.includes(c));
+    const grew = rule.codes && (p.notified || (rule.flap && level === 'crit')) && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c) && !seenCodes.includes(c));
     let change = null;
     if (grew) change = 'new';
     else if (level === 'crit' && p.notified === 'crit') {
@@ -367,7 +367,7 @@ export function decide(items, prev, { now, paused = false }) {
       const longLow = it.level === 'crit' && p.lowered_at && elapsed(p.lowered_at) >= REMIND_MS.first;
       const since = elapsed(p.last_notified_at);
       change = since < 0 || since >= (longLow ? REMIND_MS.first : remindInterval(p.reminders)) ? 'reminder' : null; // 時計が戻った時は待たない
-    } else if (level === 'crit') change = !rule.noCooldown && p.recovered_at && elapsed(p.recovered_at) < COOLDOWN_MS ? null : 'new';
+    } else if (level === 'crit') change = !rule.noCooldown && p.recovered_at && elapsed(p.recovered_at) >= 0 && elapsed(p.recovered_at) < COOLDOWN_MS ? null : 'new';
     else if (!p.notified && held) change = 'new';
     const onset = rule.flap && level === 'crit' && (!p.flap_in || (p.ok_runs ?? 0) > 0); // 重大への入りだけ数える。回復を待っている間の戻りも 1 回の行き来
     const hits = rule.flap ? [...recent(p.flap_hits), ...(onset ? [now] : [])] : null;
@@ -705,7 +705,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       bursts,
       quarterly: quarterly.state,
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
-      ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos }) } : prev?.github ? { github: prev.github } : {}),
+      ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos, failure: o.github.status }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
       // 再開の後の watchdog の 1 回目を待つ（ログインが起動より遅い再開で、watchdog が回る前に古い記録を見ないように）
       ...(gap.length ? { resumed_at: at } : prev?.resumed_at ? { resumed_at: prev.resumed_at } : {}),

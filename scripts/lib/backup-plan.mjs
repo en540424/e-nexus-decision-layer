@@ -12,10 +12,10 @@ import { spawnSync } from 'node:child_process';
 import { closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 64 * 1024 ** 2, min_deny_lines: 5 });
+export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000 });
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
 const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|token)[^/]*)$/i;
-const TRADING_LAB = /trading[\s._-]?lab|parallels|mac-mini-migration-kit/i;
+const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
 /** Secret の形。ファイルに 1 つでもあれば丸ごと除外する（暗号の中でも鍵を持ち出さない） */
 export const SECRET_PATTERNS = Object.freeze([
   /-----BEGIN [A-Z ]*PRIVATE KEY/,
@@ -27,10 +27,10 @@ export const SECRET_PATTERNS = Object.freeze([
   /\bxox[abprs]-[A-Za-z0-9-]{20,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, // JWT
-  /\b[MN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/, // Discord の bot token
+  /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/, // Discord の bot token
   /discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]{20,}/i,
   /hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/i,
-  /["']?\b[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)["']?\s*[:=]\s*["']?[A-Za-z0-9_+/=-]{16,}/i, // 名前＝値の形
+  /(?:token|secret|password|passwd|api[_-]?key)["']?\s*[:=]\s*["']?[A-Za-z0-9_+/=-]{16,}/i, // 名前＝値の形
 ]);
 
 /** 対象の一覧。exclude は対象の中の相対パスの形（再生成できるもの） */
@@ -43,12 +43,13 @@ export function backupSources({ base, home, repoRoot }) {
     { id: 'claude_memory', dir: memory },
     { id: 'relay_config', dir: path.join(home, '.enexus'), topLevelOnly: true },
     { id: 'relay_outbox', dir: path.join(home, '.enexus', 'devlog-relay', 'outbox') }, // 送信済みは relay の repo にある
-    { id: 'host_health_records', dir: path.join(repoRoot, 'data', 'host-health') },
+    { id: 'host_health_records', dir: path.join(repoRoot, 'data', 'host-health'), recentMonths: 2 }, // 毎月 約 2.5 MB 増えるので新しい 2 か月だけ
   ];
 }
 
 /** deny のファイルの有効な行（# と空行を除く）。無い・少なすぎる時は投げる＝止まる（無害な 1 行で通さない） */
 export function denyLines(text) {
+  if (text.includes('\r')) throw new Error('deny patterns have CR'); // 行末の CR であたらなくなる（vault-copy.sh と同じく止める）
   const lines = text.split('\n').filter((l) => !/^\s*(?:#|$)/.test(l));
   if (lines.length < BACKUP_LIMITS.min_deny_lines) throw new Error('deny patterns are too few');
   return lines;
@@ -56,7 +57,7 @@ export function denyLines(text) {
 
 /** grep の exit：0＝あたった・1＝無し・それ以外は読めない＝止まる（通さない） */
 function grep(args, input = undefined) {
-  const r = spawnSync('/usr/bin/grep', args, { input, encoding: 'utf8', env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' }, timeout: 30_000, maxBuffer: 16 * 1024 ** 2 });
+  const r = spawnSync('/usr/bin/grep', args, { input, encoding: 'utf8', env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' }, timeout: BACKUP_LIMITS.grep_timeout_ms, maxBuffer: 16 * 1024 ** 2 });
   if (r.error || (r.status !== 0 && r.status !== 1)) throw new Error('deny check failed');
   return r.stdout.split('\n').filter(Boolean);
 }
@@ -72,8 +73,7 @@ export function deniedIndexes(rows, denyText, tmpRoot) {
     writeFileSync(deny, `${lines.join('\n')}\n`, { mode: 0o600 });
     rows.forEach((f, i) => writeFileSync(path.join(stage, String(i)), f.body, { mode: 0o600 }));
     const hit = new Set(grep(['-rlai', '-E', '-f', deny, stage]).map((p) => Number(path.basename(p))));
-    const names = rows.map((f, i) => `${i}\t${f.rel}`);
-    for (const l of grep(['-ai', '-E', '-f', deny], `${names.join('\n')}\n`)) hit.add(Number(l.split('\t')[0]));
+    if (rows.length) for (const l of grep(['-ain', '-E', '-f', deny], `${rows.map((f) => f.rel).join('\n')}\n`)) hit.add(Number(l.split(':')[0]) - 1); // 名前は改行を含まない（planBackup が落とす）
     return hit;
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -113,9 +113,12 @@ export function planBackup({ sources, denyText, tmpRoot }) {
       count('unreadable');
       continue;
     }
+    const months = names.filter((n) => /^\d{4}-\d{2}\.jsonl$/.test(n)).sort().reverse();
+    const oldMonths = new Set(s.recentMonths ? months.slice(s.recentMonths) : []);
     for (const rel of names.sort()) {
       if (s.exclude?.test(rel)) { count('regenerable'); continue; }
-      if (!TEXT.test(rel) || SKIP_NAME.test(rel)) { count('file_type'); continue; }
+      if (oldMonths.has(rel)) { count('old_records'); continue; }
+      if (!TEXT.test(rel) || SKIP_NAME.test(rel) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
       if (TRADING_LAB.test(rel)) { count('trading_lab'); continue; }
       let body;
       try {
@@ -138,11 +141,11 @@ export function planBackup({ sources, denyText, tmpRoot }) {
       rows.push({ id: s.id, rel, body, bytes: body.length });
     }
   }
+  if (rows.reduce((n, f) => n + f.bytes, 0) > BACKUP_LIMITS.total_bytes) throw new Error('backup is larger than the limit');
   const denied = deniedIndexes(rows, denyText, tmpRoot);
   if (denied.size) excluded.denied = denied.size;
   const files = rows.filter((_, i) => !denied.has(i));
   const bytes = files.reduce((n, f) => n + f.bytes, 0);
-  if (bytes > BACKUP_LIMITS.total_bytes) throw new Error('backup is larger than the limit');
   return { files, excluded, bytes };
 }
 

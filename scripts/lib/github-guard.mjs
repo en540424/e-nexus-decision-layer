@@ -164,8 +164,8 @@ export function evaluateGithubEvents(gh, prev) {
 }
 
 /** 次の state。keepEvents＝出来事を送れなかった回は前の値を残し、次の回にもう一度判定させる */
-export function nextGithubState(gh, prev, now, { keepEvents = false, localRepos = null } = {}) {
-  if (gh == null) return { ...(prev ?? {}), fail_since: prev?.fail_since ?? now };
+export function nextGithubState(gh, prev, now, { keepEvents = false, localRepos = null, failure = null } = {}) {
+  if (gh == null) return failure === 'auth' ? { ...(prev ?? {}) } : { ...(prev ?? {}), fail_since: prev?.fail_since ?? now }; // 認証の失敗の間は通信の失敗の時間を進めない
   const differSince = {};
   for (const [name, r] of Object.entries(gh)) {
     const local = localRepos?.[name];
@@ -191,8 +191,11 @@ export async function verifyMonitorToken({ token, owner, repos, now, fetchImpl =
     const list = await call('/user/repos?visibility=private&per_page=100');
     const seen = list.status === 200 ? await list.json() : null;
     if (!Array.isArray(seen)) return { ok: false, code: 'SCOPE_UNVERIFIED' };
+    if (seen.length === 0) return { ok: false, code: 'SCOPE_UNVERIFIED' }; // 6 repo に private があるので、空は確かめられていない
     if (seen.some((x) => !repos.includes(x?.name))) return { ok: false, code: 'TOKEN_TOO_BROAD' };
-    if ((await call(`/repos/${owner}/${repos[0]}/keys`)).status === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' }; // Administration の権限
+    const keys = (await call(`/repos/${owner}/${repos[0]}/keys`)).status; // Administration の権限
+    if (keys === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' };
+    if (keys !== 403 && keys !== 404) return { ok: false, code: 'SCOPE_UNVERIFIED' };
     const probe = await call(`/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
     if (probe.status >= 500) return { ok: false, code: 'GITHUB_UNREACHABLE' };
     if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };

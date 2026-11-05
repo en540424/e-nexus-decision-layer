@@ -155,8 +155,16 @@ test('入口：repo の他のファイルに依存しない・本体を読み込
     rmSync(path.join(dir, 'watchdog-broken.json'));
     writeFileSync(path.join(dir, 'PAUSE'), '');
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'held', 'PAUSE の間は知らせない');
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl, now: () => Date.now() + 73 * 3_600_000 }), 'sent', '消し忘れの PAUSE で黙らない');
     rmSync(path.join(dir, 'PAUSE'));
-    assert.equal(await reportBroken({ argv, stateDir: path.join(dir, 'state.json-is-not-a-dir', 'x'), read: async () => url, fetchImpl: async () => { throw new Error('no'); } }).catch(() => 'x') !== 'sent', true);
+    writeFileSync(path.join(dir, 'watchdog-broken.json'), JSON.stringify({ notified_at: Date.now() + 365 * 86_400_000 }));
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'sent', '未来の印で黙らない');
+    rmSync(path.join(dir, 'watchdog-broken.json'));
+    writeFileSync(path.join(dir, 'file'), 'x');
+    const unwritable = (t) => reportBroken({ argv, stateDir: path.join(dir, 'file', 'x'), read: async () => url, fetchImpl, now: () => t });
+    const slot = 6 * 3_600_000;
+    assert.equal(await unwritable(slot * 1000 + 60_000), 'sent', '印を書けなくても時刻の枠では送る');
+    assert.equal(await unwritable(slot * 1000 + 2 * 3_600_000), 'held', '枠の外は送らない');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

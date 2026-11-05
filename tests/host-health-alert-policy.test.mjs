@@ -451,3 +451,13 @@ test('時計が未来へ飛んだ回の記録で、戻った後の重大を黙�
   const out = playSending(seq.map(([ms, level]) => [ms, [state('power', level, 'ups 90%')]]));
   assert.ok(out.some(([ms]) => ms === HOUR), JSON.stringify(out));
 });
+
+test('時計が未来へ飛んだ間に回復した項目でも、戻った後の重大は知らせる（recovered_at・since の未来の値で黙らない）', () => {
+  const later = 16 * 365 * 24 * HOUR;
+  for (const id of ['memory_pressure', 'disk_free_gib', 'hermes_rss_gib']) {
+    const seq = [[later, 'crit'], [later + HOUR, 'ok'], [later + 2 * HOUR, 'ok'], [HOUR, 'crit'], [2 * HOUR, 'crit']];
+    assert.ok(playSending(seq.map(([ms, level]) => [ms, [state(id, level, 4)]])).some(([ms]) => ms <= 2 * HOUR), id);
+  }
+  const held = [[later, 'warn'], [HOUR, 'warn'], [2 * HOUR, 'warn'], [3 * HOUR, 'warn']];
+  assert.ok(playSending(held.map(([ms, level]) => [ms, [state('hermes_service', level, 'not_loaded')]])).some(([ms]) => ms <= 3 * HOUR), '未来の since を持ち越さない');
+});

@@ -20,7 +20,7 @@
  * exit：0＝成功／1＝失敗／2＝引数／3＝条件が揃っていない（送っていない）
  */
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,12 +40,18 @@ export const SIZE_LIMIT_KIB = 800 * 1024;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const MAX_DELETES = 5;
 const HTTP_TIMEOUT_MS = 30_000;
+const STALE_WORK_MS = 3_600_000;
 const backupDir = (home) => path.join(home, '.enexus', 'backup');
-/** 平文の写しを置く場所。0700。始める時に前の回の残りを消す（強制終了の残骸を残さない） */
-export function workRoot(home) {
+/** 平文の写しを置く場所。0700。強制終了の残骸は 1 時間たったものだけ消す（別の process の回の写しを消さない）。各回は下に自分の一時フォルダを作る */
+export function workRoot(home, now = Date.now()) {
   const dir = path.join(backupDir(home), 'work');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const n of readdirSync(dir)) rmSync(path.join(dir, n), { recursive: true, force: true });
+  for (const n of readdirSync(dir)) {
+    const p = path.join(dir, n);
+    try {
+      if (now - statSync(p).mtimeMs > STALE_WORK_MS) rmSync(p, { recursive: true, force: true });
+    } catch { /* 別の回が消した */ }
+  }
   return dir;
 }
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
@@ -117,13 +123,17 @@ export async function checkGates({ owner, repo, home, otherRepos, read = readCre
   if (!otherRepos?.length) throw notReady('scope_unverified');
   // 見える repo の一覧で確かめる（標本の確認だけでは他の repo が見える token を通す）。読めなければ確かめられないので送らない
   const list = await api('GET', '/user/repos?visibility=private&per_page=100');
-  if (list.status !== 200 || !Array.isArray(list.json)) throw notReady('scope_unverified');
+  if (list.status !== 200 || !Array.isArray(list.json) || !list.json.some((x) => x?.name === repo)) throw notReady('scope_unverified');
   if (list.json.some((x) => x?.name !== repo)) throw notReady('token_too_broad');
   for (const name of otherRepos) {
     const other = await api('GET', `/repos/${owner}/${name}`);
-    if (other.status === 200 && other.json?.private !== false) throw notReady('token_too_broad');
+    if (other.status === 200 && other.json?.private === false) continue; // 公開の repo は誰でも見える
+    if (other.status === 200) throw notReady('token_too_broad');
+    if (other.status !== 404) throw notReady('scope_unverified'); // 確かめられなければ送らない
   }
-  if ((await api('GET', `/repos/${owner}/${repo}/keys`)).status === 200) throw notReady('token_too_broad'); // Administration の権限
+  const keys = (await api('GET', `/repos/${owner}/${repo}/keys`)).status; // Administration の権限
+  if (keys === 200) throw notReady('token_too_broad');
+  if (keys !== 403 && keys !== 404) throw notReady('scope_unverified');
   if (r.json.size > SIZE_LIMIT_KIB) throw new Stop('repo_too_large');
   return { passphrase, api, branch: r.json.default_branch ?? 'main', empty: !r.json.pushed_at || r.json.size === 0 };
 }
@@ -143,7 +153,8 @@ export function buildArchive({ files, passphrase, tmpRoot, drill = runDrill }) {
     if (archive.length > MAX_ARCHIVE_BYTES || archive.length > MAX_BYTES) throw new Stop('archive_too_large');
     const out = path.join(root, 'restored');
     restore(archive, passphrase, out);
-    if (JSON.stringify(manifestOf(stage)) !== JSON.stringify(manifestOf(out))) throw notReady('local_restore_mismatch');
+    const restored = manifestOf(out);
+    if (restored.length !== files.length || JSON.stringify(manifestOf(stage)) !== JSON.stringify(restored)) throw notReady('local_restore_mismatch');
     return archive;
   } finally {
     rmSync(root, { recursive: true, force: true });

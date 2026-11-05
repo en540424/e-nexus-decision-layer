@@ -155,6 +155,23 @@ test('見張りの失敗の値が変われば知らせ直す（token_expiring �
   assert.deepEqual(notes, [[24, 'token_expiring'], [25, 'auth_failed']]);
 });
 
+test('認証の失敗と通信の失敗の交互で通知を重ねない（認証の失敗の間は通信の失敗の時間を進めない・2 つのコードは 24 時間に 1 回ずつ）', () => {
+  const at = (h) => new Date(Date.parse(NOW) + h * 3_600_000).toISOString();
+  let items = null;
+  let gh = null;
+  const notes = [];
+  for (let i = 0; i < 96; i += 1) {
+    const now = at(i * 0.5);
+    const failure = i % 2 ? 'failed' : 'auth';
+    const d = decide(evaluateGithub(null, {}, gh, now, { failure }), { items }, { now });
+    items = d.items;
+    gh = nextGithubState(null, gh, now, { failure });
+    notes.push(...d.notify);
+  }
+  assert.equal(gh?.fail_since ? Date.parse(at(47.5)) - Date.parse(gh.fail_since) < 49 * 3_600_000 : true, true);
+  assert.ok(notes.length <= 4, `2 日で ${notes.length} 通`);
+});
+
 test('出来事：private → public は CRIT・既定 branch の変化は warn・最初の回は基準を取るだけ・送れなかった回は基準を残す', () => {
   assert.deepEqual(evaluateGithubEvents({ a: parsed({ visibility: 'PUBLIC' }) }, null), []);
   const prev = nextGithubState({ a: parsed(), b: parsed({ visibility: 'PUBLIC' }) }, null, NOW);
@@ -255,6 +272,9 @@ test('token の検収：範囲が 6 repo の中で、読める・書けない to
   assert.equal((await verify(scoped(403, { list: [{ name: 'a' }, { name: 'other-private' }] }))).code, 'TOKEN_TOO_BROAD', 'All repositories の token');
   assert.equal((await verify(scoped(403, { keys: 200 }))).code, 'TOKEN_TOO_BROAD', 'Administration の権限');
   assert.equal((await verify(scoped(403, { listStatus: 403 }))).code, 'SCOPE_UNVERIFIED', '確かめられなければ合格にしない');
+  assert.equal((await verify(scoped(403, { list: [] }))).code, 'SCOPE_UNVERIFIED');
+  assert.equal((await verify(scoped(403, { keys: 500 }))).code, 'SCOPE_UNVERIFIED');
+  assert.equal((await verify(scoped(403, { keys: 429 }))).code, 'SCOPE_UNVERIFIED');
   assert.equal((await verify(scoped(403), 'gho_x')).code, 'NOT_FINE_GRAINED');
   assert.equal((await verify(scoped(403), null)).code, 'NOT_FINE_GRAINED');
   assert.deepEqual((await verify(scoped(403, { repos: { a: null } }))).repos, ['a']);

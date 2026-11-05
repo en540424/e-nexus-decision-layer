@@ -104,20 +104,22 @@ function load(file, now) {
   } catch {
     return fresh;
   }
+  if (saved === null || typeof saved !== 'object') return fresh;
   const num = (v, fallback) => (Number.isSafeInteger(v) && v >= 0 ? v : fallback);
-  const aliveAt = num(saved.alive_at, 0);
+  const past = (v, fallback) => { const n = num(v, fallback); return n != null && n > now ? fallback : n; }; // 未来の時刻で黙らない
+  const aliveAt = past(saved.alive_at, 0);
   return {
     ...fresh,
-    started_at: now - aliveAt > OUTAGE_MS ? now : num(saved.started_at, now), // VPS が止まっていた時だけ待ち直す
-    last_seen: saved.last_seen == null ? null : num(saved.last_seen, null),
+    started_at: now - aliveAt > OUTAGE_MS ? now : past(saved.started_at, now), // VPS が止まっていた時だけ待ち直す
+    last_seen: saved.last_seen == null ? null : past(saved.last_seen, now),
     last_ts: Math.min(num(saved.last_ts, 0), now + SKEW_MS),
     down: saved.down === true,
     alerted: saved.alerted === true,
     owed_up: saved.owed_up === true,
     hits: Array.isArray(saved.hits) ? saved.hits.filter((h) => Number.isSafeInteger(h)) : [],
-    quiet_until: num(saved.quiet_until, 0),
+    quiet_until: Math.min(num(saved.quiet_until, 0), now + FLAP.window_ms),
     pending: Object.hasOwn(TEXT, saved.pending ?? '') ? saved.pending : null,
-    next_try: num(saved.next_try, 0),
+    next_try: Math.min(num(saved.next_try, 0), now + RETRY_MS),
   };
 }
 function save(file, s) {
@@ -135,7 +137,7 @@ export function startReceiver({ token, port, host = '127.0.0.1', stateFile, send
   let state = load(stateFile, clock());
   const update = (s) => { state = s; save(stateFile, s); };
   update({ ...state, alive_at: clock() });
-  const server = createServer((req, res) => {
+  const server = createServer({ connectionsCheckingInterval: 2000 }, (req, res) => {
     const deny = () => { res.writeHead(404, { connection: 'close' }).end(() => req.destroy()); };
     if (req.method !== 'POST' || req.url !== '/hb') return deny();
     const now = clock();

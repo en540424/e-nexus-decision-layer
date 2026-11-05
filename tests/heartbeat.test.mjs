@@ -166,6 +166,27 @@ test('再起動が続くだけなら待ち直さない（crash loop の間に黙
   }
 });
 
+test('state の未来の値と null で黙らない・落ちない', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-hb-'));
+  try {
+    const stateFile = path.join(root, 'state.json');
+    let clock = T0;
+    const sent = [];
+    const opts = { token: TOKEN, port: 0, stateFile, send: async (t) => { sent.push(t); return true; }, clock: () => clock };
+    writeFileSync(stateFile, 'null');
+    const a = await startReceiver(opts);
+    await new Promise((r) => { a.server.close(r); });
+    const far = T0 + 365 * 86_400_000;
+    writeFileSync(stateFile, JSON.stringify({ last_seen: far, started_at: far, quiet_until: far, alive_at: far, last_ts: 0, hits: [] }));
+    const b = await startReceiver(opts);
+    for (let i = 0; i < 26 * 60; i += 1) { clock += MIN; await b.tick(); }
+    assert.ok(sent.length >= 1, '未来の quiet_until で永久に黙らない');
+    await new Promise((r) => { b.server.close(r); });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('認証の前に接続を溜めさせない：上限と時間切れを持つ・拒否は接続を閉じる', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'edl-hb-'));
   try {

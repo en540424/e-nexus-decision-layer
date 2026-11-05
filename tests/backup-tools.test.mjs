@@ -200,6 +200,12 @@ test('送る条件：1 つでも欠ければ PUT しない（Public・鍵の控�
       ['token_too_broad', { fetchImpl: { list: [{ name: 'backup' }, { name: 'unlisted-private' }] } }],
       ['token_too_broad', { fetchImpl: { keys: 200 } }],
       ['scope_unverified', { fetchImpl: { list: 'denied' } }],
+      ['scope_unverified', { fetchImpl: { list: [] } }],
+      ['scope_unverified', { fetchImpl: { other: 500 } }],
+      ['scope_unverified', { fetchImpl: { other: 403 } }],
+      ['scope_unverified', { fetchImpl: { other: 429 } }],
+      ['scope_unverified', { fetchImpl: { keys: 500 } }],
+      ['scope_unverified', { fetchImpl: { keys: 429 } }],
       ['scope_unverified', { otherRepos: [] }],
       ['scope_unverified', { otherRepos: undefined }],
       ['no_passphrase', { read: creds({ 'E-NEXUS/edl/backup-passphrase': null }) }],
@@ -336,6 +342,8 @@ test('Secret の形と名前の抜けを塞ぐ', () => {
     const w = put(dir);
     const shapes = ['-----BEGIN PGP PRIVATE KEY BLOCK-----', `sk-proj-${'a'.repeat(30)}`, `sk-or-v1-${'a'.repeat(30)}`, `xai-${'a'.repeat(30)}`, `AIza${'a'.repeat(35)}`, `https://hooks.slack.com/services/${'A'.repeat(30)}`, `eyJhbGciOiJI.${'b'.repeat(20)}.${'c'.repeat(20)}`, `HEARTBEAT_TOKEN=${'a'.repeat(64)}`, `{"api_key":"${'a'.repeat(24)}"}`, `password: ${'a'.repeat(20)}`];
     shapes.forEach((v, i) => w(`s${i}.md`, `${v}\n`));
+    w('mention2.md', 'Trading  Lab の話\n');
+    w('mention3.md', 'トレーディングラボ\n');
     for (const n of ['id_rsa.txt', 'x.pem.md', 'credentials.json', 'token.txt', 'trading_lab_notes.md', 'Trading Lab.md', 'trading.lab.md']) w(n, 'x\n');
     w('mention.md', 'Trading Lab の話\n');
     w('ok.md', 'token の話だけ\n');
@@ -360,16 +368,62 @@ test('検査の後の差し替えは入らない：検査した本文を持つ�
   }
 });
 
-test('平文の写しの置き場：0700・前の回の残りを消す', () => {
+test('平文の写しの置き場：0700・古い残骸だけ消す（別の process の回を消さない）・復元の件数が足りなければ成功にしない', () => {
   const home = tmp();
   try {
     const dir = workRoot(home);
-    writeFileSync(path.join(dir, 'leftover'), 'x');
+    writeFileSync(path.join(dir, 'running'), 'x');
     workRoot(home);
-    assert.ok(!existsSync(path.join(dir, 'leftover')));
+    assert.ok(existsSync(path.join(dir, 'running')), '動いている回の写しを消さない');
+    workRoot(home, Date.now() + 2 * 3_600_000);
+    assert.ok(!existsSync(path.join(dir, 'running')), '強制終了の残骸は消す');
     assert.equal(statSync(dir).mode & 0o777, 0o700);
+    const same = { id: 's', rel: 'x.md', body: Buffer.from('x'), bytes: 1 };
+    assert.throws(() => buildArchive({ files: [same, same], passphrase: PASS, tmpRoot: dir }), /local_restore_mismatch/, '同じパスの 2 件は 1 件に潰れる');
   } finally {
     clean(home);
+  }
+});
+
+test('host-health の記録は新しい 2 か月だけ（古い月で容量の上限に近づかない）', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    for (const m of ['2026-09', '2026-10', '2026-11']) w(`${m}.jsonl`, '{}\n');
+    w('state.json', '{}\n');
+    const work = tmp();
+    const p = planBackup({ sources: [{ id: 's', dir, recentMonths: 2 }], denyText: DENY, tmpRoot: work });
+    clean(work);
+    assert.deepEqual(p.files.map((f) => f.rel), ['2026-10.jsonl', '2026-11.jsonl', 'state.json']);
+    assert.equal(p.excluded.old_records, 1);
+  } finally {
+    clean(dir);
+  }
+});
+
+test('名前の判定：行頭のパターンが名前にも効く・数字のパターンが添字にあたらない・改行入りの名前は落とす', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('acct-note.md', 'x\n');
+    w('b.md', 'x\n');
+    w('c\nd.md', 'x\n');
+    const denyText = '^acct\nzz1\nzz2\nzz3\n[0-9]{1}zz\n';
+    assert.deepEqual(planOf(dir, { denyText }).files.map((f) => f.rel), ['b.md']);
+  } finally {
+    clean(dir);
+  }
+});
+
+test('Secret の判定は長い入力でも時間が延びない', () => {
+  const dir = tmp();
+  try {
+    put(dir)('a.md', `${'a-'.repeat(64 * 1024)}\n`);
+    const t = Date.now();
+    planOf(dir);
+    assert.ok(Date.now() - t < 5000);
+  } finally {
+    clean(dir);
   }
 });
 
@@ -382,6 +436,7 @@ test('世代：今送ったものは時計が戻っても消さない', () => {
 test('deny のファイル：無いのと同じ（少なすぎる・空）は止まる・grep が読めない行も止まる', () => {
   assert.throws(() => denyLines('# only comment\n'), /too few/);
   assert.throws(() => denyLines('harmless\n'), /too few/);
+  assert.throws(() => denyLines('a\r\nb\r\nc\r\nd\r\ne\r\n'), /CR/, 'CRLF は黙って効かなくなる');
   const dir = tmp();
   try {
     put(dir)('a.md', 'x\n');
