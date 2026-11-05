@@ -25,6 +25,7 @@ test('判定：解除・記録の途絶は CRIT。launchctl が読めない・DI
   assert.equal(monitorState({ state, disabled: true, job: { loaded: false }, now: iso(1) }).value, 'not_loaded', '解除されていれば本体は知らせられない');
   assert.deepEqual(monitorState({ state, disabled: false, job: { loaded: false }, now: iso(1) }), { level: 'crit', value: 'not_loaded' });
   assert.equal(monitorState({ state, disabled: false, job: null, now: iso(1) }).level, 'unknown');
+  assert.deepEqual(monitorState({ state, disabled: false, job: null, now: iso(200) }), { level: 'crit', value: 'stale 200m' }, 'launchctl が読めない間も記録の途絶は見る');
   assert.deepEqual(monitorState({ state: null, disabled: false, job, now: iso(1) }), { level: 'crit', value: 'no_state' }, '登録されているのに記録が無いのは黙らない');
   assert.equal(monitorState({ state: { updated_at: 'broken' }, disabled: false, job, now: iso(1) }).value, 'no_state');
 });

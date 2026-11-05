@@ -39,6 +39,23 @@ test('続く異常：群にまとめ、日数・誰が動くか・次の一手�
   assert.deepEqual(boundaryViolations(b), []);
 });
 
+test('群の外の異常も全体の水準に入る。token の失効は Human の担当で、CI の失敗と混ぜない', () => {
+  const items = [...OK_ITEMS.filter((x) => x.id !== 'github_api'), item('credential_backup_token', 'crit', 'expired'), item('backup_history', 'warn', 'history_failed'), item('github_api', 'warn', 'auth_failed')];
+  const b = buildBrief(stateOf(items), { items, now: NOW });
+  assert.equal(b.overall, 'crit');
+  assert.deepEqual([b.sections.backup.level, b.sections.backup.not_ok], ['crit', 2]);
+  const gh = b.open_items.find((o) => o.id === 'github_api');
+  assert.equal(gh.class, 'human');
+  assert.deepEqual(boundaryViolations(b), []);
+});
+
+test('送れなかった異常：通知の状態が ok の時のままでも、古い since を日数に使わない', () => {
+  const items = [...OK_ITEMS.filter((x) => x.id !== 'disk_free_gib'), item('disk_free_gib', 'crit', 10)];
+  const state = stateOf(items);
+  state.items.disk_free_gib = { level: 'ok', since: '2026-07-01T00:00:00.000Z' };
+  assert.equal(buildBrief(state, { items, now: NOW }).open_items[0].days, 0);
+});
+
 test('見張りの項目は渡さない（隔離・固定ファイル・常駐・監視の定義・user 範囲）', () => {
   const items = [...OK_ITEMS, item('hermes_isolation', 'crit', 'admin_group'), item('monitor_args', 'warn', 'monitor_no_webhook'), item('agent_scope', 'warn', 'user_rules')];
   const b = buildBrief(stateOf(items), { items, now: NOW });
@@ -95,7 +112,7 @@ test('読む側：壊れ・違う schema・境界の外れ・期限切れ・監�
   const r = readBrief(text, { now: NOW });
   assert.equal(r.ok, true);
   assert.match(renderReply(r.brief), /異常はありません/);
-  assert.match(renderReply(r.brief), /Vault へ未反映 6/);
+  assert.match(renderReply(r.brief), /Vault の受領待ち 6/);
   assert.deepEqual(Object.keys(externalView(r.brief)).sort(), ['counts', 'generated_at', 'monitor', 'overall', 'schema', 'valid_until']);
 });
 

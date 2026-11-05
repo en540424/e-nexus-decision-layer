@@ -12,7 +12,7 @@ export const OPS_CLASSES = Object.freeze(['auto', 'ai', 'human']);
 
 const TABLE = Object.freeze([
   [/^disk_free_gib$/, { class: 'human', cause: '起動ディスクの空きが基準を下回っている', next: '何を消すかは Human が決める', checks: ['node scripts/runtime-ops.mjs why disk_free_gib', 'df -h /'] }],
-  [/^memory_pressure$/, { class: 'human', cause: 'メモリの逼迫。Hermes か同居の負荷の増加', next: '続くなら Human が負荷の元を確かめる', checks: ['node scripts/host-health.mjs --report --days 1'] }],
+  [/^memory_pressure$/, { class: 'human', cause: 'メモリの逼迫', next: '続くなら Human が負荷の元を確かめる', checks: ['node scripts/host-health.mjs --report --days 1'] }],
   [/^swap_used_gib$/, { class: 'auto', cause: '一時的な負荷の増加', next: '続く時だけ通知が出るので待つ', checks: ['node scripts/host-health.mjs --report --days 1'] }],
   [/^load_15m$/, { class: 'auto', cause: '一時的な負荷の増加', next: '続く時だけ通知が出るので待つ', checks: ['node scripts/host-health.mjs --report --days 1'] }],
   [/^thermal$/, { class: 'human', cause: '発熱の警告。設置環境か負荷', next: '続くなら Human が設置環境を確かめる', checks: ['pmset -g therm'] }],
@@ -20,7 +20,7 @@ const TABLE = Object.freeze([
   [/^network_default_route$/, { class: 'human', cause: '回線の断か経路の変化', next: 'Human が回線を確かめる', checks: ['route -n get default'] }],
   [/^data_gib$/, { class: 'ai', cause: 'Mac Runtime の記録の増加', next: 'Claude Code が古い記録の整理を提案する', checks: ['du -sh data'] }],
   [/^hermes_rss_gib$/, { class: 'human', cause: 'Hermes のメモリ使用量の増加', next: 'Human が Hermes の停止か継続を判断する', checks: ['node scripts/host-health.mjs --report --days 1'] }],
-  [/^hermes_service$/, { class: 'human', cause: 'Hermes が止まっている。wrapper のメモリ停止か STOP の印の可能性', next: 'Human が再開を判断する（AI は再起動しない）', checks: ['launchctl print system/com.e-nexus.hermes'] }],
+  [/^hermes_service$/, { class: 'human', cause: 'Hermes が止まっている', next: 'Human が再開を判断する（AI は再起動しない）', checks: ['launchctl print system/com.e-nexus.hermes'] }],
   [/^job:/, { class: 'ai', cause: '定期 job の失敗か未起動。認証・引数・launchd の登録のどれか', next: 'Claude Code が記録を確かめる。登録の変更は Human', checks: ['node scripts/runtime-ops.mjs acceptance', 'launchctl print gui/$(id -u)/com.e-nexus.<job>'] }],
   [/^repo:/, { class: 'ai', cause: '未 commit か未 push が続いている', next: 'Claude Code が差分を確かめて commit するか、捨てるかを Human に聞く', checks: ['git status --short', 'git log --oneline @{u}..'] }],
   [/^relay_outbox$/, { class: 'ai', cause: '作業ログの封筒が送られていない', next: 'Claude Code が check の後に send する', checks: ['node kit/devlog-relay-sender.mjs status --fetch'] }],

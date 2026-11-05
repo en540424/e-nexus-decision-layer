@@ -64,7 +64,8 @@ export function acceptanceOf({ state, watchdog, receipt, records, jobs, briefAge
   // H2：相互の見張りと、正常時に送っていないこと（送ったのは出来事か異常だけ）
   const wdAge = hoursAgo(watchdog?.updated_at, now);
   const wdItem = itemOf(last, 'monitor_watchdog');
-  const noisy = records.filter((r) => r.notify_code === 'SENT' && (r.notify ?? []).length === 0).length;
+  // 正常の項目を送っていないこと（送ってよいのは異常・出来事・回復だけ）
+  const noisy = records.filter((r) => r.notify_code === 'SENT').flatMap((r) => r.notify ?? []).filter((n) => n.level === 'ok' && !['recovered', 'recovered_missed'].includes(n.change)).length;
   const wdOk = jobs[WATCHDOG_LABEL]?.loaded === true && wdAge <= WATCHDOG_STALE_MS / HOUR && wdItem?.level === 'ok';
   out.push(check('H2', 'watchdog と host-health の相互の見張り', !last ? 'pending' : wdOk && noisy === 0 ? 'pass' : 'fail', { records: records.length, watchdog_age_hours: Number.isFinite(wdAge) ? Math.round(wdAge * 10) / 10 : null, monitor_watchdog: wdItem?.level ?? null, monitor_alive: watchdog?.items?.monitor_alive?.level ?? null, discord_sent: sent }));
   // H3：launchd の回で GitHub を読めていること
@@ -113,7 +114,7 @@ export function whyOf(id, records) {
 const PRIORITY = { 1: '高', 2: '中', 3: '低' };
 /** Human が要ることの一覧。台帳（手で足した判断待ち）＋今の異常のうち human のもの＋期限の近い token。優先度と期限の順 */
 export function humanRequired({ ledger = [], last = null, state = null, receipt = null, now }) {
-  const rows = (ledger ?? []).filter((x) => !x.done).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
+  const rows = (Array.isArray(ledger) ? ledger : []).filter((x) => !x.done).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
   for (const it of last?.items ?? []) {
     if (it.level !== 'warn' && it.level !== 'crit') continue;
     const rule = classify(it.id);

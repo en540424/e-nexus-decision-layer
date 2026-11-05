@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createCipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -130,14 +130,15 @@ const reply = (status, json = null, bytes = null) => ({ status, json: async () =
 const blob = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 
 /** 保存先の役。files に置いたものを読み直しで返す。tamper で読み直しの中身を変える */
-function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
+function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, otherJson = {}, refProbe = 403, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
   return async (url, opts) => {
     const u = new URL(url);
     calls.push([opts.method, u.pathname, opts.body ?? null, opts.headers.authorization]);
     if (u.hostname !== 'api.github.com') throw new Error('other host');
     if (u.pathname === '/repos/o/backup') return reply(repo ? 200 : 404, repo);
     if (u.pathname === '/user/repos') return reply(list === 'denied' ? 403 : 200, list === 'denied' ? {} : list);
-    if (u.pathname === '/repos/o/private-other') return reply(other, {});
+    if (u.pathname === '/repos/o/private-other') return reply(other, otherJson);
+    if (u.pathname === '/repos/o/private-other/git/refs') return reply(refProbe, {});
     if (u.pathname === '/repos/o/backup/keys') return reply(keys, []);
     if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.entries()].map(([n, b]) => ({ name: path.basename(n), sha: blob(b) })));
     if (opts.method === 'PUT') {
@@ -510,6 +511,9 @@ test('保存済みの検証：復号・hash・改ざんと鍵の誤りの拒否�
     const scan = (rows) => policyViolations(rows, VDENY, root);
     const r = verifyArchive({ bytes: archive, passphrase: PASS, scan });
     assert.deepEqual(r, { files: 2, bytes: archive.length });
+    const names = [];
+    verifyArchive({ bytes: archive, passphrase: PASS, scan: (rows) => { names.push(...rows.map((x) => x.rel)); return 0; } });
+    assert.deepEqual(names.sort(), ['x.md', 'y.bin'], '名前は先頭の対象の id を除いて見る');
     assert.ok(!JSON.stringify(r).includes('secret-note'));
     assert.throws(() => verifyArchive({ bytes: archive, passphrase: 'other-passphrase-0123456789', scan }));
     const flipped = Buffer.from(archive);
@@ -563,6 +567,24 @@ test('定期の回：token の期限を受領票に残す。古い世代の検�
   }
 });
 
+test('初回の前の verify：受領票を作らない。期限 header の無い token へ替えたら古い期限を残さない', async () => {
+  const { home, src, base } = setup();
+  try {
+    const none = await verifyBackups({ ...base, scan: () => 0, read: async () => null, fetchImpl: fakeRepo({}) });
+    assert.equal(none.status, 'failed');
+    assert.equal(existsSync(path.join(home, '.enexus', 'backup', 'last.json')), false);
+    const files = new Map();
+    await runBackup({ ...base, fetchImpl: fakeRepo({ files }) });
+    assert.ok(receiptOf(home).token_expires_at);
+    const plain = fakeRepo({ files });
+    const noHeader = async (u, o) => ({ ...(await plain(u, o)), headers: { get: () => null } });
+    await runBackup({ ...base, now: () => new Date('2026-11-06T04:40:00.000Z'), fetchImpl: noHeader });
+    assert.equal(receiptOf(home).token_expires_at, null);
+  } finally {
+    clean(home, src);
+  }
+});
+
 test('verify：送らない（PUT・DELETE なし）・読み直しが一覧の sha と違えば失敗・最新と最古を見る', async () => {
   const { home, src, base } = setup();
   try {
@@ -580,7 +602,60 @@ test('verify：送らない（PUT・DELETE なし）・読み直しが一覧の 
     const again = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files }) });
     assert.equal(again.status, 'verified');
     assert.equal(receiptOf(home).history_failure, null, '直れば消える');
+    const before = readFileSync(path.join(home, '.enexus', 'backup', 'last.json'), 'utf8');
+    const noKey = await verifyBackups({ ...base, scan: () => 0, read: async () => null, fetchImpl: fakeRepo({ files }) });
+    assert.equal(noKey.failure, 'no_passphrase');
+    const scanBroken = await verifyBackups({ ...base, scan: () => { throw new Error('deny'); }, fetchImpl: fakeRepo({ files }) });
+    assert.equal(scanBroken.failure, 'policy_scan_failed');
+    assert.equal(readFileSync(path.join(home, '.enexus', 'backup', 'last.json'), 'utf8').includes('history_failure": null'), true);
+    assert.equal(JSON.parse(before).history_failure, null);
+    assert.equal(receiptOf(home).history_failure, null, '手元の問題で受領票を異常にしない');
   } finally {
     clean(home, src);
+  }
+});
+
+test('送る条件：公開の repo へ書ける token は通さない。確かめの要求は不正な ref で、何も作らない', async () => {
+  const { home, src, base } = setup();
+  try {
+    const calls = [];
+    const pub = { private: false };
+    assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, calls }) })).code, 0);
+    const probe = calls.find(([m, p]) => m === 'POST');
+    assert.equal(probe[1], '/repos/o/private-other/git/refs');
+    assert.deepEqual(JSON.parse(probe[2]), { ref: 'invalid', sha: '0'.repeat(40) });
+    const r = await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe: 422 }) });
+    assert.deepEqual([r.code, r.failure], [3, 'token_too_broad']);
+    const down = await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe: 502 }) });
+    assert.equal(down.failure, 'scope_unverified');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('平文の残骸の掃除は条件より先：条件が落ち続ける間も消える', async () => {
+  const { home, src, base } = setup();
+  try {
+    const work = workRoot(home);
+    const old = path.join(work, 'run-old');
+    mkdirSync(old);
+    utimesSync(old, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+    const r = await runBackup({ ...base, read: async () => null, fetchImpl: fakeRepo({}) });
+    assert.equal(r.failure, 'no_passphrase');
+    assert.equal(existsSync(old), false);
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('除外の抜けを塞ぐ：全角コロン・Bearer・--token・passphrase の名前・全角と濁点の分かれた語', () => {
+  const root = tmp();
+  try {
+    const row = (rel, text) => ({ rel, body: Buffer.from(text) });
+    for (const r of [row('a.md', `token：${'a'.repeat(32)}`), row('a.md', `Authorization: Bearer ${'a'.repeat(32)}`), row('a.md', `--token ${'a'.repeat(32)}`), row('a.md', `passphrase = ${'a'.repeat(32)}`), row('backup-passphrase.txt', 'x'), row('a.md', 'ＴＲＡＤＩＮＧ　ＬＡＢ'), row('a.md', 'トレーディングラボ'.normalize('NFD'))]) {
+      assert.equal(policyViolations([r], VDENY, root), 1, r.rel);
+    }
+  } finally {
+    clean(root);
   }
 });

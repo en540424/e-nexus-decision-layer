@@ -63,6 +63,7 @@ const RULES = Object.freeze([
   [/^github_visibility_changed$/, { target: 'GitHub の公開範囲', what: '変わった', action: IF_UNKNOWN }],
   [/^github_default_branch_changed$/, { target: 'GitHub の既定 branch', what: '変わった', action: IF_UNKNOWN }],
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
+  [/^monitor_blind$/, { target: '監視の項目', what: '読めない状態が 24 時間以上続いている', action: CHECK, hold: 0 }],
   [/^monitor_args$/, { target: '監視の job の定義', what: '通知か見張りの引数が欠けている', action: ACT, hold: 0, codes: true }],
   [/^monitor_webhook$/, { target: '監視の job の定義', what: '通知の引数が無く、異常を知らせられない', action: ACT, hold: 0 }],
   [/^notify_channel$/, { target: '通知の Webhook', what: '使えない', action: ACT }],

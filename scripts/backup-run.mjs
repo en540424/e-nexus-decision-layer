@@ -11,7 +11,7 @@
  *
  * 本番データを外へ送る条件（**1 つでも欠ければ送らない**・毎回確かめる）：
  *   1. 保存先が Private（API の private と visibility）
- *   2. token が fine-grained で、見える private repo が保存先だけ（一覧と、管理対象の private repo の個別の確認の両方）・Administration の権限が無い
+ *   2. token が fine-grained で、見える private repo が保存先だけ（一覧と、管理対象の private repo の個別の確認の両方）・公開の repo へ書けない・Administration の権限が無い
  *   3. passphrase が Keychain にあり、Mac の外の控えの確認が済んでいる（passphrase を変えると確認も無効）
  *   4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
  * 届いたことの実証：送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（~/.enexus/backup/last.json）に restore_verified_at を書く。
@@ -137,7 +137,13 @@ export async function checkGates({ owner, repo, home, otherRepos, read = readCre
   if (list.json.some((x) => x?.name !== repo)) throw notReady('token_too_broad');
   for (const name of otherRepos) {
     const other = await api('GET', `/repos/${owner}/${name}`);
-    if (other.status === 200 && other.json?.private === false) continue; // 公開の repo は誰でも見える
+    if (other.status === 200 && other.json?.private === false) {
+      // 公開の repo は誰でも見えるので、書けないことを確かめる（不正な ref は 422 で、何も作られない。token の範囲の外なら 403／404）
+      const probe = await api('POST', `/repos/${owner}/${name}/git/refs`, { body: { ref: 'invalid', sha: '0'.repeat(40) } });
+      if (probe.status >= 500) throw notReady('scope_unverified');
+      if (![403, 404].includes(probe.status)) throw notReady('token_too_broad');
+      continue;
+    }
     if (other.status === 200) throw notReady('token_too_broad');
     if (other.status !== 404) throw notReady('scope_unverified'); // 確かめられなければ送らない
   }
@@ -182,6 +188,8 @@ async function upload({ api, owner, repo, name, archive, passphrase }) {
   unpack(back.bytes, passphrase); // 改ざん・鍵の違いはここで投げる
 }
 
+const STORED_FAILURES = Object.freeze(['read_back_mismatch', 'archive_unreadable', 'file_hash_mismatch', 'tamper_not_detected', 'wrong_key_not_refused', 'policy_violation', 'nothing_stored']);
+
 /** Git の blob の hash（一覧の sha と読み直した中身の照合） */
 const blobSha = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 
@@ -206,7 +214,13 @@ export function verifyArchive({ bytes, passphrase, scan }) {
   flipped[Math.floor(flipped.length / 2)] ^= 0xff;
   if (!refused(() => unpack(flipped, passphrase))) throw new Stop('tamper_not_detected');
   if (!refused(() => unpack(bytes, `${passphrase}x`))) throw new Stop('wrong_key_not_refused');
-  const violations = scan(files.map((f) => ({ rel: f.path, body: Buffer.from(f.data, 'base64') })));
+  let violations;
+  try {
+    // 名前は plan の時と同じ形（先頭の対象の id を除く）で見る
+    violations = scan(files.map((f) => ({ rel: f.path.slice(f.path.indexOf('/') + 1), body: Buffer.from(f.data, 'base64') })));
+  } catch {
+    throw new Stop('policy_scan_failed'); // deny を読めないなど手元の問題。保存物の異常ではない
+  }
   if (violations) throw new Stop('policy_violation');
   return { files: files.length, bytes: bytes.length };
 }
@@ -238,11 +252,13 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
     const picks = [...new Set([stored.at(-1), stored[0]])];
     const rows = [];
     for (const entry of picks) rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
-    writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() ?? readReceipt(receipt)?.token_expires_at ?? null });
+    writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() });
     return { code: 0, status: 'verified', stored: stored.length, rows, tamper_detected: true, wrong_key_refused: true, policy_violations: 0 };
   } catch (err) {
     const code = err instanceof Stop ? err.code : 'verify_failed';
-    writeReceipt(receipt, { ...readReceipt(receipt), history_failure: code });
+    // 保存物の異常だけ受領票へ。Keychain を読めない・通信の失敗で正常な受領票を壊さない（定期の回は次の日にもう一度）
+    const prev = readReceipt(receipt);
+    if (prev && STORED_FAILURES.includes(code)) writeReceipt(receipt, { ...prev, history_failure: code });
     return { code: err instanceof Stop ? err.exit : 1, status: 'failed', failure: code };
   }
 }
@@ -283,8 +299,8 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
   const receipt = path.join(backupDir(home), 'last.json');
   const prev = readReceipt(receipt);
   try {
+    const tmpRoot = workRoot(home); // 残骸の掃除は条件より先（条件が落ち続ける間も平文を残さない）
     const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl });
-    const tmpRoot = workRoot(home);
     const plan = planFiles(tmpRoot);
     if (!plan.files.length) throw new Stop('nothing_to_back_up');
     const archive = buildArchive({ files: plan.files, passphrase, tmpRoot, drill });
@@ -292,7 +308,7 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
     await upload({ api, owner, repo, name, archive, passphrase });
     const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
-    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() ?? prev?.token_expires_at ?? null });
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
     // 古い世代も戻せることの定期の確かめ。失敗しても今回の回は成功のまま（受領票の history_failure で host-health が知らせる）
     const last = Date.parse(prev?.history_verified_at);
     const due = scan && !(Date.parse(at) - last < VERIFY_EVERY_MS);

@@ -38,7 +38,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | 行き来する CRIT | 間引く | 回復を知らせてから 6 時間は重ねない。続いていれば明けた回に知らせる（隔離・電源・回線・監視の停止は待たない） |
 | 重大な出来事 | すぐ 1 回 | 再起動・監視の空白・Hermes の固定ファイルの変化・監視の定義と安全 policy の変化・常駐の増減・GitHub の公開範囲と既定 branch の変化 |
 | 軽微な出来事 | 送らない | 回線の切替・Hermes の再起動。24 時間に 3 回繰り返した時だけ 1 回 |
-| 重大の行き来（電源・回線・ディスク・メモリ・Hermes・隔離・監視の停止）と再起動・監視の空白の繰り返し・GitHub の見張りの失敗 | 「反復」を 1 通 | 1 回目はふつうに知らせる。24 時間に 2 回目で「反復」を 1 通送り、24 時間は静かにする。明けた時に重大が続けば再通知、落ち着けば回復を 1 回（回線断で送れないまま繰り返した時は、反復の 1 通で終わる）。**項目ごとに直近 24 時間で 3 通が上限**で、超える分は持ち越す。回線断で送れなかった回も数える。隔離の新しいコードだけは上限を待たない。原因は断定しない。上限は項目ごとで、同じ停電で電源と回線の両方が出ることはある |
+| 重大の行き来（電源・回線・ディスク・メモリ・Hermes・隔離・監視の停止）と再起動・監視の空白の繰り返し | 「反復」を 1 通（GitHub の見張りの失敗は WARN なので上限だけが効く） | 1 回目はふつうに知らせる。24 時間に 2 回目で「反復」を 1 通送り、24 時間は静かにする。明けた時に重大が続けば再通知、落ち着けば回復を 1 回（回線断で送れないまま繰り返した時は、反復の 1 通で終わる）。**項目ごとに直近 24 時間で 3 通が上限**で、超える分は持ち越す。回線断で送れなかった回も数える。隔離の新しいコードだけは上限を待たない。原因は断定しない。上限は項目ごとで、同じ停電で電源と回線の両方が出ることはある |
 | 監視の停止 | すぐ 1 回 | §3。`DISABLED` の間は 24 時間ごと。`monitor_alive`・`monitor_watchdog` は CRIT の継続と同じ間隔 |
 | 運用要約 | 四半期に 1 通 | §2-1 |
 
@@ -90,8 +90,9 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと。§3-1 の導入後は 70 分ほどで途絶として届く |
 | Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。§3-1 の外部の死活監視の導入後は 70 分ほどで届く |
 | 回線断 | 監視は動き続けるが送れない。戻った回に通知（`recovered_missed` か続く CRIT） |
+| 読めない状態が続く項目（`df` の形の変化など） | `unknown` は悪化も回復も作らないので、24 時間続けば `monitor_blind`（件数だけ）を 1 回 |
 | 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
-| Webhook の失効・Discord の障害 | 1 日 1 回 GET で確かめる（何も送らない・`notify_channel`）。失効はその Webhook では知らせられないので、要約と `runtime-ops human` に出る。回線の問題は `unreachable` で鳴らさない |
+| Webhook の失効・Discord の障害 | 1 日 1 回 GET で確かめる（何も送らない・`notify_channel`。`ok` 以外の間は毎回）。失効はその Webhook では知らせられないので、要約と `runtime-ops human` に出る。回線の問題は `unreachable` で鳴らさない |
 | スリープの窓 | host-health の後に眠り、起床で watchdog が先に動くと、間が 90 分未満なら偽の CRIT が 1 度出る（この Mac は常時稼働の前提） |
 | `DISABLED` を :20〜:35 に消す | watchdog が先に回ると古い記録を見て偽の CRIT が 1 度出る |
 | `DISABLED` のまま job が起動しなくなる | watchdog は `DISABLED` を本体に任せるので、本体の 24 時間ごとの通知が止まっても知らせない |
@@ -101,7 +102,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | 止まり方 | 見つけ方 |
 |---|---|
 | 異常終了 | `job:<name>` の WARN（`exit N`・`signal N`。§2 のとおり 24 時間続けば 1 回） |
-| 定期の時刻に起動しない | launchd の `runs` が定期の間隔の 1.25 倍増えなければ `missed Nh`（毎日の job は 30 時間）。監視の 2 job は §3 の見張りが受け持つ |
+| 定期の時刻に起動しない | `runtime-backup`：launchd の `runs` が 30 時間増えなければ `missed Nh`。監視の 2 job は §3 の見張りが受け持つ。他の job は登録の時に `JOB_PERIOD_HOURS` へ足す |
 | 定義があるのに解除された | `registered_not_loaded`（未登録の job は異常にしない） |
 | `--webhook` の欠け | host-health の job の欠けは watchdog（`monitor_webhook`）が、watchdog の job の欠けは host-health（`monitor_args`）が待たずに知らせる。`--heartbeat`・`--github-owner` の欠けも `monitor_args` |
 
@@ -116,15 +117,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 - `DISABLED` の間は送らないので、途絶として届く
 - VPS・Cloudflare・Discord の停止は知らせられない
 
-**防御の範囲（2026-11-05 監査）**
-
-| 守り | 防ぐもの | 防がないもの |
-|---|---|---|
-| Cloudflare の WAF（専用 hostname の `POST /hb` 以外を遮断） | 受け側への探索・他の path への要求 | `POST /hb` への要求そのもの（無料の枠に回数の制限は無い）・WAF の設定を外された時 |
-| HMAC（時刻を署名・ずれ 5 分・同じか古い時刻は拒否） | 偽の生存信号・盗み見た信号の再送 | token の漏えい（生存を偽装できる。Mac の停止が隠れる）。送り手の確かさは token だけに依る |
-| loopback の待受・接続 32・5 秒の打ち切り | Tunnel を通らない接続・接続の溜め込み | 上限まで埋める要求（受信できなくなり、途絶の通知になる＝気づける側へ倒れる） |
-
-本文もホストの情報も送らないので、漏れて困るのは token だけ。token は Keychain と VPS の env と Human の控えの 3 か所で、更新は §10。
+防御の範囲と限界の監査の結果は private の Vault（MA-22）に置く。
 
 ## 4. GitHub
 
@@ -143,7 +136,7 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 | token が使えない（失効・権限不足） | `github_api=auth_failed` の WARN（監視自体の失敗） |
 | token の期限まで 14 日未満 | `github_api=token_expiring` の WARN |
 | Mac の HEAD と GitHub の差 | 別の PC の push で Mac が遅れるのは普通なので値だけ。7 日続けば WARN（未 push は除く） |
-| relay の未反映 | `relay_unacked`。送った封筒のうち Vault の受領（`acks` branch のファイル名。中身は読まない）がまだの件数。取り込みは Windows のまとめ作業なので記録だけで知らせない |
+| relay の受領待ち | `relay_unacked`。送った封筒のうち Vault の受領（`acks` branch のファイル名。中身は読まない）がまだの件数。`held`・`rejected` も受領に数えるので、中身は `status --fetch` で見る。取り込みは Windows のまとめ作業なので記録だけで知らせない |
 
 未 commit・未 push は `repo:<name>`（runtime-guard・24 時間の猶予）が受け持つ。Trading Lab の repo は見ない。Vault の repo は token の範囲に入れない（中身の読み取りを渡さない）ので、公開範囲もここでは見ない。
 
@@ -175,7 +168,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 ### 本番データを送る条件（1 つでも欠ければ送らない・毎回確かめる）
 
 1. 保存先が Private（API の `private`・`visibility`）
-2. token が fine-grained で、見える private repo が保存先だけ（`/user/repos` の一覧と、管理対象の repo の個別の確認の両方。確かめられなければ送らない）・Administration の権限が無い
+2. token が fine-grained で、見える private repo が保存先だけ（`/user/repos` の一覧と、管理対象の repo の個別の確認の両方。確かめられなければ送らない）・公開の repo へ書けない（失敗する要求で確かめる）・Administration の権限が無い
 3. passphrase が Keychain にあり、**Mac の外の控えから打ち直して一致した記録がある**（passphrase を変えると無効）
 4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
 
@@ -186,7 +179,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 ### 監視
 
 - 送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（`~/.enexus/backup/last.json`・`runtime-backup-receipt/v1`）に書く（Vault の「同期＝バックアップではない」：届いたことを別の経路で実証する）
-- 保存済みの検証（`verify`）：最新と最古を読み直し、一覧の blob の hash・復号・全ファイルの hash・1 byte の改ざんと別の passphrase が拒まれること・除外の方針（Secret の形・Trading Lab の言及・deny）を確かめる。平文はメモリの上だけで、方針の grep の間だけ `work`（0700）に置く。結果は件数だけ。定期の回の中で 30 日に 1 回動き、失敗しても今回の回は成功のまま `backup_history` の WARN になる（45 日より古くなっても WARN）
+- 保存済みの検証（`verify`）：最新と最古を読み直し、一覧の blob の hash・復号・全ファイルの hash・1 byte の改ざんと別の passphrase が拒まれること・除外の方針（Secret の形・Trading Lab の言及・deny）を確かめる。平文はメモリの上だけで、方針の grep の間だけ `work`（0700）に置く。結果は件数だけ。定期の回の中で 30 日に 1 回動き、保存物の異常は今回の回を成功のまま `backup_history` の WARN にする（45 日より古くなっても WARN）。Keychain・通信の失敗は受領票を変えない。除外の方針を強めた時は、古い世代が世代の整理で消えるまで `history_failed` が続くことがある（中身の判断は Human）
 - token の期限：応答の header を受領票の `token_expires_at` へ残し、14 日未満で `credential_backup_token` の WARN（切れたら CRIT）
 - host-health の `backup_archive`：受領票が無ければ `not_configured`（異常にしない）。2 回続けて失敗で CRIT（Discord へ 1 回。正常時は送らない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**
 
@@ -224,7 +217,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 | 全体 | 監視の動作・全体の水準・要確認の件数と担当の内訳・`valid_until`（生成から 90 分。過ぎたら信じない） |
 | GitHub | repo の数・要確認の数・CI の失敗の数・token の残り日数 |
 | バックアップ | 最後の成功と復元の確認の日数・失敗中か・古い世代の検証・token の残り日数 |
-| その他 | 生存信号のコード・通知の Webhook のコード・relay の未送信と Vault へ未反映の件数 |
+| その他 | 生存信号のコード・通知の Webhook のコード・relay の未送信と Vault の受領待ちの件数 |
 | 続く異常 | `open_items`：項目 id（repo・job・GitHub は群）・水準・日数・担当・原因の候補と次の一手（`lib/ops-classify.mjs` の固定の文） |
 
 **担当の分類**（`ops-classify.mjs`。承認の代わりではない）：`auto`＝監視が再試行や回復を待つ／`ai`＝Claude Code が調べて直せる／`human`＝認証・課金・VPS・Mac の設定・Hermes の権限など Human の操作か判断が要る。分類の無い項目は `human` へ倒す。
@@ -304,7 +297,7 @@ Human ──質問──▶ Hermes ──読むだけ──▶ runtime-brief.jso
 | `backup-passphrase` | 期限なし | 変えると過去のアーカイブが読めなくなるので、Mac の外の控えと一緒に新旧を残す。変えた後は `connect-backup.sh` の確認をやり直す |
 | `heartbeat-token` | 期限なし | 漏えいの疑いがある時だけ。VPS の env を入れ替えて service を再起動（Human）→ `connect-heartbeat.sh`。順番の間は `rejected` で途絶の通知が出ることがある |
 | `heartbeat-url` | 期限なし | hostname を変えた時に `connect-heartbeat.sh` |
-| `host-health-webhook` | `notify_channel`（1 日 1 回の GET） | `bash deploy/macos/connect-discord-alerts.sh` |
+| `host-health-webhook` | `notify_channel`（1 日 1 回の GET。`ok` 以外の間は毎回） | `bash deploy/macos/connect-discord-alerts.sh` |
 
 会話やログへ出た値は失効させて作り直す。古い値は使い回さない。
 

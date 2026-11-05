@@ -4,7 +4,7 @@
  * host-health の state.json から、許可した項目の「水準」だけを取り出す（allowlist。知らない項目は落ちる）。
  * 渡さない：値（空き容量・回線名・repo の差分）・パス・hash・pid、それと Hermes を見張る項目（隔離・固定ファイルの変化・常駐の増減・
  *   監視の定義）＝見張られる側に検知の中身を渡さない。Trading Lab の情報はそもそも state に無い。
- * Hermes の権限は増えない（読むだけの 1 ファイル）が、Hermes が見る情報は増える。
+ * Hermes の権限は増えない（読むだけのファイル。隣に lib/runtime-brief.mjs の要約と読み方が並ぶ）が、Hermes が見る情報は増える。
  * 本番の置き場は STATUS_DIR の固定 1 か所。host-health の 1 回分の最後に書く。フォルダは作らない（Human の承認の後に 1 回だけ作ったもの。消せば書くのが止まる）。
  * Hermes は generated_at を見る（監視が止まると更新されないので、古い要約は信じない）。
  */

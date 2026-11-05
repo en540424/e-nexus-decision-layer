@@ -13,7 +13,7 @@
  *   既定で lib/runtime-guard.mjs の見張りも回す（2026-11-04。Hermes の常駐と隔離・repo の未 push・relay の未送信・Time Machine。--no-guard で外す）。
  *   --github-owner と --github-credential を付けた時だけ lib/github-guard.mjs の見張りも回す（GitHub の公開範囲・CI。GET だけ。Keychain に token が無ければ通信しない）。
  *   --heartbeat の時は 1 回分の最後に外の死活監視へ生存信号を送る（lib/heartbeat.mjs。時刻と署名だけ。Keychain に無ければ通信しない。2026-11-05 H6）。
- *   --hermes-user の時は 1 回分の最後に Hermes へ状態の要約を 1 ファイル書く（lib/runtime-status-summary.mjs。水準と件数だけ。2026-11-05 H4）。
+ *   --hermes-user の時は 1 回分の最後に Hermes へ状態の要約を書く（lib/runtime-status-summary.mjs の水準と件数・lib/runtime-brief.mjs の整理済みの要約と読み方。2026-11-05）。
  * 見ないもの：Trading Lab の process・VM・MT5・状態ファイル・Monitor。LIVE の状態は Trading Lab の Monitor の担当で、ここでは報告しない。
  *   process の一覧・command line・パス・IP・ホスト名は記録にも通知にも出さない（load・メモリはシステム全体の値だけ）。
  * することは 3 つだけ：記録（<state-dir>/state.json・YYYY-MM.jsonl）／状態が変わった時の通知／DEGRADED の印（起動ディスクかメモリが
@@ -49,7 +49,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_STATE_DIR = path.join(REPO, 'data', 'host-health');
 export const STATE_SCHEMA = 'host-health-state/v1';
 export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', ...GUARD_BINS]);
-/** 初期値（2026-10-21。Trading Lab の VM と同居する 32 GB の Mac mini を前提にした目安で、実測で見直す） */
+/** 初期値（2026-10-21。Mac mini の目安で、実測で見直す） */
 export const THRESHOLDS = Object.freeze({
   disk_free_gib: { warn: 50, crit: 20 },
   swap_used_gib: { warn: 2 },
@@ -57,6 +57,10 @@ export const THRESHOLDS = Object.freeze({
   hermes_rss_gib: { warn: 3, crit: 4 },
   job_running_minutes: { warn: 30 },
 });
+/** 時計の補正で kern.boottime が動く分は再起動と言わない（再起動なら起動時刻は 1 分より大きく変わる） */
+const BOOT_DRIFT_SEC = 60;
+/** これだけ読めない状態が続いた項目は monitor_blind で知らせる（unknown は悪化も回復も作らないので、壊れた出力で黙り続けないように）。GitHub は github_api が受け持つ */
+export const BLIND_MS = 24 * 3_600_000;
 /** 定期の間隔。launchd の runs がこの 1.25 倍の間増えなければ「起動していない」（monitor_watchdog が見る watchdog は入れない） */
 export const JOB_PERIOD_HOURS = Object.freeze({ 'com.e-nexus.runtime-backup': 24 });
 const JOB_MISSED_FACTOR = 1.25;
@@ -71,12 +75,13 @@ export const WATCHDOG_LABEL = 'com.e-nexus.host-health-watchdog';
 export { RECOVER_RUNS };
 /** 30 分ごとの job の 3 回分。これより前の回から間があけば監視が止まっていた */
 export const GAP_MS = 90 * 60_000;
-/** 保守窓の上限（週末の休場より長い）。これより古い PAUSE は消し忘れとして効かせない */
+/** 保守窓の上限。これより古い PAUSE は消し忘れとして効かせない */
 export const PAUSE_MAX_MS = 72 * 3_600_000;
 export const COMMAND_TIMEOUT_MS = 5000;
 export const RUN_DEADLINE_MS = 60_000;
-/** 全体の予算の内訳：GitHub 20 秒＋コマンド＋通知 25 秒＋生存信号。生存信号の遅れで 1 回分を失敗にしない */
+/** 全体の予算の内訳：GitHub 20 秒＋コマンド＋通知 25 秒＋生存信号 8 秒＋Webhook の確かめ 5 秒。これらの遅れで 1 回分を失敗にしない */
 const HEARTBEAT_BUDGET_MS = 8000;
+const WEBHOOK_CHECK_BUDGET_MS = 5000;
 const MAX_FAILURES = 3;
 /** Trading Lab の領域（見ない・引数に取らない） */
 export const TRADING_LAB_PATH = /parallels|trading-?lab|mac-mini-migration-kit/i;
@@ -264,6 +269,20 @@ export function jobRunsCheck(jobs, prevRuns, now) {
   return { missed, next };
 }
 
+/** unknown が続いた項目の数え。戻り値は BLIND_MS を超えた件数と次の基準（id ごとの始まり）。項目 id は通知へ出さない */
+export function blindCheck(items, prev, now) {
+  const next = {};
+  let stale = 0;
+  for (const it of items) {
+    if (it.kind !== 'state' || it.level !== 'unknown' || it.id.startsWith('github')) continue;
+    next[it.id] = prev?.[it.id] ?? now;
+    const ms = Date.parse(now) - Date.parse(next[it.id]);
+    if (ms >= BLIND_MS) stale += 1;
+    else if (ms < 0) next[it.id] = now; // 時計が戻った時は持ち越さない
+  }
+  return { stale, next };
+}
+
 /** 状態の項目（ok／warn／crit／unknown）。値はシステム全体か Mac Runtime 自身のものだけ。missed は jobRunsCheck の結果 */
 export function evaluate(o, t = THRESHOLDS, { missed = {} } = {}) {
   const items = [];
@@ -305,7 +324,7 @@ export function evaluate(o, t = THRESHOLDS, { missed = {} } = {}) {
 /** 出来事（前回からの変化。回復の通知は無い） */
 export function evaluateEvents(o, prev) {
   const ev = [];
-  if (prev?.boottime != null && o.boottime != null && o.boottime !== prev.boottime) ev.push({ id: 'rebooted', level: 'warn', value: new Date(o.boottime * 1000).toISOString(), kind: 'event' });
+  if (prev?.boottime != null && o.boottime != null && Math.abs(o.boottime - prev.boottime) > BOOT_DRIFT_SEC) ev.push({ id: 'rebooted', level: 'warn', value: new Date(o.boottime * 1000).toISOString(), kind: 'event' });
   if (prev?.interface && o.route?.interface && o.route.interface !== prev.interface) ev.push({ id: 'network_interface_changed', level: 'warn', value: `${prev.interface}->${o.route.interface}`, kind: 'event' });
   return ev;
 }
@@ -351,7 +370,7 @@ export function decide(items, prev, { now, paused = false }) {
       if (!rule.burst) { notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' }); continue; }
       const b = bursts[it.id];
       const hits = [...(b?.hits ?? []).filter((h) => elapsed(h) < BURST.window_ms), now];
-      const fire = hits.length >= BURST.count && (!b?.last_notified_at || elapsed(b.last_notified_at) >= BURST.window_ms);
+      const fire = hits.length >= BURST.count && (!b?.last_notified_at || elapsed(b.last_notified_at) >= BURST.window_ms || elapsed(b.last_notified_at) < 0); // 時計が戻っても未来の記録で黙らない
       bursts[it.id] = { hits, last_notified_at: fire ? now : (b?.last_notified_at ?? null) };
       if (fire) notify.push({ id: it.id, level: it.level, value: hits.length, change: 'event' });
       continue;
@@ -461,7 +480,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'backup_plist', 'backup_deny', 'repos_conf', 'human_only_policy', 'failure_policy')],
   [/^monitor_args$/, codes('ok', 'monitor_no_webhook', 'monitor_no_heartbeat', 'monitor_no_github', 'watchdog_no_webhook')],
   [/^monitor_webhook$/, /^(?:ok|no_webhook)$/],
-  [/^notify_channel$/, /^(?:ok|gone|unreachable|config_invalid)$/],
+  [/^notify_channel$/, /^(?:ok|gone|unreachable|config_invalid|unsupported)$/],
   [/^agent_scope$/, codes('ok', 'user_claude_md', 'user_rules')],
   [/^residents_changed$/, /^[+-][a-z0-9.-]{1,60}(?:,[+-][a-z0-9.-]{1,60})*$/],
   [/^github_api$/, /^(?:ok|unreachable|auth_failed|token_expiring)$/],
@@ -505,17 +524,24 @@ export function webhookBodyOf(notify, format, at, text = null) {
  * Webhook が生きているかを、何も送らずに確かめる（Discord の GET。チャンネルに何も出ない）。静かな運用では失効が次の異常まで分からないので 1 日 1 回見る。
  * 本文は読まない（URL の token を含む）。戻り値：ok／gone（失効・削除）／unreachable／config_invalid。監視の 1 回分は失敗にしない
  */
-export async function checkWebhook({ spec, readCredentialImpl = readCredential, fetchImpl = globalThis.fetch, timeoutMs = 6000 }) {
+export async function checkWebhook({ spec, readCredentialImpl = readCredential, fetchImpl = globalThis.fetch, timeoutMs = 4000 }) {
+  let value;
+  try {
+    value = await readCredentialImpl(spec.slice('credential:'.length));
+  } catch {
+    return 'unreachable'; // Keychain の一時の失敗で鳴らさない
+  }
   let url;
   try {
-    url = new URL(await readCredentialImpl(spec.slice('credential:'.length)));
+    url = new URL(value);
   } catch {
     return 'config_invalid';
   }
-  if (url.protocol !== 'https:' || !isDiscordWebhook(url)) return 'config_invalid';
+  if (url.protocol !== 'https:') return 'config_invalid';
+  if (!isDiscordWebhook(url)) return 'unsupported'; // 確かめ方を持たない宛先
   try {
     const res = await fetchImpl(url.href, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
-    return res.status === 200 ? 'ok' : [401, 403, 404].includes(res.status) ? 'gone' : 'unreachable';
+    return res.status === 200 ? 'ok' : [401, 404].includes(res.status) ? 'gone' : 'unreachable'; // Discord の失効は 401／404。403 は途中の遮断の時がある
   } catch {
     return 'unreachable';
   }
@@ -526,7 +552,8 @@ export function notifyChannelItem(prev) {
   return { id: 'notify_channel', level: ['gone', 'config_invalid'].includes(prev.code) ? 'warn' : 'ok', value: prev.code, kind: 'state' };
 }
 export const WEBHOOK_CHECK_MS = 24 * 3_600_000;
-const webhookCheckDue = (prev, at) => !(Date.parse(at) - Date.parse(prev?.at) < WEBHOOK_CHECK_MS);
+/** ok の間は 1 日 1 回。それ以外は毎回確かめる（作り直した Webhook へ古い「使えない」を送らない） */
+const webhookCheckDue = (prev, at) => prev?.code !== 'ok' || !(Date.parse(at) - Date.parse(prev?.at) < WEBHOOK_CHECK_MS);
 
 /** 取り違えた資格情報で別の宛先へ送らない（Discord の webhook の形だけ） */
 export function isDiscordWebhook(url) {
@@ -649,10 +676,8 @@ export function publishStatus({ statusDir, stateDir, state, at, uid, items = [],
     const summary = buildStatusSummary(state, flags);
     const brief = buildBrief(state, { ...flags, ...facts, items });
     if (boundaryViolations(summary).length || boundaryViolations(brief).length) return 'boundary_blocked';
-    const code = writeStatusSummary(summary, { dir: statusDir, uid });
-    if (code !== 'written') return code;
-    writeStatusSummary(null, { dir: statusDir, uid, name: GUIDE_FILE, text: GUIDE_TEXT });
-    return writeStatusSummary(brief, { dir: statusDir, uid, name: BRIEF_FILE });
+    const codes = [writeStatusSummary(summary, { dir: statusDir, uid }), writeStatusSummary(brief, { dir: statusDir, uid, name: BRIEF_FILE }), writeStatusSummary(null, { dir: statusDir, uid, name: GUIDE_FILE, text: GUIDE_TEXT })];
+    return codes.find((c) => c !== 'written') ?? 'written';
   } catch {
     return 'write_failed';
   }
@@ -732,7 +757,11 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS || Date.parse(at) - Date.parse(prev?.resumed_at) < GAP_MS }));
     if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed', 'boundary_blocked'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     if (heartbeat) { const h = heartbeatItem(prev?.heartbeat, at); if (h) items.push(h); }
-    const channel = notifyChannelItem(prev?.webhook_check);
+    // 判定の前に確かめる（今回の結果で知らせる）
+    const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
+      ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
+      : prev.webhook_check;
+    const channel = notifyChannelItem(webhookState);
     if (channel) items.push(channel);
     // 送った封筒のうち Vault の受領がまだの件数。記録だけで知らせない（取り込みは Windows のまとめ作業）
     const relayUnacked = Array.isArray(o.github?.relay_acked) && Array.isArray(o.guard?.relay_sent) ? o.guard.relay_sent.filter((id) => !o.github.relay_acked.includes(id)).length : null;
@@ -740,6 +769,8 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
     const githubRepos = o.github?.status === 'ok' ? o.github.repos : null;
     if (githubOn) items.push(...evaluateGithub(githubRepos, o.guard?.repos, prev?.github, at, { failure: o.github.status, expiresAt: o.github.expires_at ?? null }), ...evaluateGithubEvents(githubRepos, prev?.github));
+    const blind = blindCheck(items, prev?.unknown_since, at);
+    items.push({ id: 'monitor_blind', level: blind.stale ? 'warn' : 'ok', value: blind.stale, kind: 'state' });
     const d = decide(items, prev, { now: at, paused });
     // 今回見なかった項目は消す（外した repo・Hermes の水準が残り続けない）。GitHub が読めなかった回は残す
     const seen = new Set(items.map((x) => x.id));
@@ -776,10 +807,12 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       bursts,
       quarterly: quarterly.state,
       job_runs: jobRuns.next,
+      unknown_since: blind.next,
       relay_unacked: relayUnacked ?? prev?.relay_unacked ?? null,
-      github_token_expires_at: Number.isFinite(o.github?.expires_at) ? new Date(o.github.expires_at).toISOString() : (prev?.github_token_expires_at ?? null),
-      ...(prev?.webhook_check ? { webhook_check: prev.webhook_check } : {}),
-      ...(prev?.heartbeat ? { heartbeat: prev.heartbeat } : {}),
+      // 読めた回は header のとおり（期限なしの token へ替えた時に古い期限を残さない）
+      github_token_expires_at: o.github?.status === 'ok' ? (Number.isFinite(o.github.expires_at) ? new Date(o.github.expires_at).toISOString() : null) : (prev?.github_token_expires_at ?? null),
+      ...(webhookState ? { webhook_check: webhookState } : {}),
+      ...(heartbeat && prev?.heartbeat ? { heartbeat: prev.heartbeat } : {}),
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos, failure: o.github.status }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
@@ -793,11 +826,6 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       // 記録を残せた回だけ生存を伝える（止まった監視が生きているように見せない）。送信の結果は次の回の項目になる
       const code = await Promise.race([heartbeat(), new Promise((resolve) => { setTimeout(resolve, HEARTBEAT_BUDGET_MS, 'failed').unref(); })]).catch(() => 'failed');
       saved.heartbeat = nextHeartbeat(code, prev?.heartbeat, at);
-      writeState(stateDir, saved);
-    }
-    if (webhookCheck && webhookCheckDue(prev?.webhook_check, at)) {
-      const code = await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, HEARTBEAT_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable');
-      saved.webhook_check = { at, code };
       writeState(stateDir, saved);
     }
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };

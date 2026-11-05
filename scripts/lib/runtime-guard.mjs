@@ -129,9 +129,8 @@ function isolationOf({ groups, hermesHome, operatorHome, fsi }) {
       return null;
     }
   };
-  if (groups == null) return null;
-  // 1 つ読めなくても分かった違反を捨てない（ファイルを消して admin 所属を隠せないように）
-  if (groups.some((g) => FORBIDDEN_GROUPS.includes(g))) codes.push('admin_group');
+  // 1 つ読めなくても分かった違反を捨てない（ファイルを消して admin 所属を隠せないように・id が読めない回も権限の崩れは見る）
+  if (groups?.some((g) => FORBIDDEN_GROUPS.includes(g))) codes.push('admin_group');
   for (const [code, name, p] of [['hermes_home_open', 'hermes_home', hermesHome], ['operator_home_open', 'operator_home', operatorHome]]) {
     const s = stat(p);
     if (!s) codes.push(`${name}_missing`);
@@ -145,7 +144,7 @@ function isolationOf({ groups, hermesHome, operatorHome, fsi }) {
   const share = stat(HERMES_SHARE);
   if (!share) codes.push('share_missing');
   else if (share.mode & 0o027) codes.push('share_open');
-  return codes;
+  return groups == null && !codes.length ? null : codes; // group を読めず違反も無ければ分からない
 }
 
 /** com.e-nexus.* の常駐の一覧（名前の先頭で絞る。他の常駐の名前は読まない・記録しない） */

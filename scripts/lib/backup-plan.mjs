@@ -14,8 +14,10 @@ import path from 'node:path';
 
 export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000 });
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
-const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|token)[^/]*)$/i;
+const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)$/i;
 const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
+/** 全角と濁点の分かれた形も同じ語として見る */
+const mentionsTradingLab = (text) => TRADING_LAB.test(text.normalize('NFKC'));
 /** Secret の形。ファイルに 1 つでもあれば丸ごと除外する（暗号の中でも鍵を持ち出さない） */
 export const SECRET_PATTERNS = Object.freeze([
   /-----BEGIN [A-Z ]*PRIVATE KEY/,
@@ -30,7 +32,9 @@ export const SECRET_PATTERNS = Object.freeze([
   /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/, // Discord の bot token
   /discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]{20,}/i,
   /hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/i,
-  /(?:token|secret|password|passwd|api[_-]?key)["']?\s*[:=]\s*["']?[A-Za-z0-9_+/=-]{16,}/i, // 名前＝値の形
+  /(?:token|secret|password|passwd|passphrase|api[_-]?key)["']?\s*[:=：]\s*["']?[A-Za-z0-9_+/=-]{16,}/i, // 名前＝値の形
+  /\bbearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
+  /--(?:token|password|passphrase)[ =][A-Za-z0-9_+/=-]{16,}/i,
 ]);
 
 /** 対象の一覧。exclude は対象の中の相対パスの形（再生成できるもの） */
@@ -119,7 +123,7 @@ export function planBackup({ sources, denyText, tmpRoot }) {
       if (s.exclude?.test(rel)) { count('regenerable'); continue; }
       if (oldMonths.has(rel)) { count('old_records'); continue; }
       if (!TEXT.test(rel) || SKIP_NAME.test(rel) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
-      if (TRADING_LAB.test(rel)) { count('trading_lab'); continue; }
+      if (mentionsTradingLab(rel)) { count('trading_lab'); continue; }
       let body;
       try {
         body = readPlain(path.join(s.dir, rel));
@@ -137,7 +141,7 @@ export function planBackup({ sources, denyText, tmpRoot }) {
       }
       if (text.includes('\0')) { count('binary'); continue; }
       if (SECRET_PATTERNS.some((p) => p.test(text))) { count('secret'); continue; }
-      if (TRADING_LAB.test(text)) { count('trading_lab'); continue; } // 言及だけのファイルも入れない（識別子の判定は deny に任せきりにしない）
+      if (mentionsTradingLab(text)) { count('trading_lab'); continue; } // 言及だけのファイルも入れない（識別子の判定は deny に任せきりにしない）
       rows.push({ id: s.id, rel, body, bytes: body.length });
     }
   }
@@ -151,7 +155,7 @@ export function planBackup({ sources, denyText, tmpRoot }) {
 
 /** 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない） */
 export function policyViolations(rows, denyText, tmpRoot) {
-  const clean = (r) => !SKIP_NAME.test(r.rel) && !TRADING_LAB.test(r.rel) && !SECRET_PATTERNS.some((p) => p.test(r.body.toString('utf8'))) && !TRADING_LAB.test(r.body.toString('utf8'));
+  const clean = (r) => !SKIP_NAME.test(r.rel) && !mentionsTradingLab(r.rel) && !SECRET_PATTERNS.some((p) => p.test(r.body.toString('utf8'))) && !mentionsTradingLab(r.body.toString('utf8'));
   return rows.filter((r) => !clean(r)).length + deniedIndexes(rows, denyText, tmpRoot).size;
 }
 

@@ -16,8 +16,8 @@ export const BRIEF_FILE = 'runtime-brief.json';
 export const GUIDE_FILE = 'README.txt';
 const DAY = 86_400_000;
 /** 名前を出してよい項目。repo・job・GitHub は群にまとめて件数だけ */
-const NAMED = Object.freeze(['disk_free_gib', 'memory_pressure', 'swap_used_gib', 'load_15m', 'thermal', 'power', 'network_default_route', 'data_gib', 'hermes_rss_gib', 'hermes_service', 'backup_time_machine', 'backup_archive', 'backup_history', 'credential_backup_token', 'heartbeat', 'notify_channel', 'relay_outbox']);
-const GROUPED = Object.freeze([['repos', (id) => id.startsWith('repo:')], ['jobs', (id) => id.startsWith('job:')], ['github', (id) => id === 'github_api' || id.startsWith('github:')]]);
+const NAMED = Object.freeze(['disk_free_gib', 'memory_pressure', 'swap_used_gib', 'load_15m', 'thermal', 'power', 'network_default_route', 'data_gib', 'hermes_rss_gib', 'hermes_service', 'backup_time_machine', 'backup_archive', 'backup_history', 'credential_backup_token', 'heartbeat', 'notify_channel', 'relay_outbox', 'github_api']);
+const GROUPED = Object.freeze([['repos', (id) => id.startsWith('repo:')], ['jobs', (id) => id.startsWith('job:')], ['github', (id) => id.startsWith('github:')]]); // github_api は token の話なので群に混ぜない（担当が違う）
 const GROUP_RULE = Object.freeze({ repos: 'repo:x', jobs: 'job:x', github: 'github:x' });
 const LEVELS = ['ok', 'warn', 'crit', 'unknown'];
 const HEARTBEAT = ['off', 'sent', 'failed', 'rejected', 'config_invalid', 'unknown'];
@@ -53,12 +53,14 @@ export function buildBrief(state, { items = [], now = new Date(), paused = false
   const notOk = seen.filter((x) => x.level === 'warn' || x.level === 'crit');
   const open = [];
   const add = (id, level, since, rule) => open.push({ id, level, days: sinceDays(since, now), class: rule.class, cause: rule.cause, next: rule.next });
-  for (const it of notOk) if (NAMED.includes(it.id)) add(it.id, it.level, state?.items?.[it.id]?.since, classify(it.id));
+  // 送れなかった異常の通知の状態は ok の時のまま残るので、ok の since を異常の始まりと読まない
+  const sinceOf = (id) => (state?.items?.[id]?.level && state.items[id].level !== 'ok' ? state.items[id].since : null);
+  for (const it of notOk) if (NAMED.includes(it.id)) add(it.id, it.level, sinceOf(it.id), classify(it.id));
   for (const [group, match] of GROUPED) {
     const rows = notOk.filter((x) => match(x.id));
     if (!rows.length) continue;
     const worst = rows.some((x) => x.level === 'crit') ? 'crit' : 'warn';
-    const oldest = rows.map((x) => state?.items?.[x.id]?.since).filter(Boolean).sort()[0];
+    const oldest = rows.map((x) => sinceOf(x.id)).filter(Boolean).sort()[0];
     add(`group_${group}`, worst, oldest, classify(GROUP_RULE[group]));
   }
   open.sort((a, b) => (a.level === b.level ? b.days - a.days : a.level === 'crit' ? -1 : 1));
@@ -68,13 +70,16 @@ export function buildBrief(state, { items = [], now = new Date(), paused = false
   const relayOutbox = seen.find((x) => x.id === 'relay_outbox')?.value;
   const heartbeat = state?.heartbeat?.code ?? 'unknown';
   const channel = state?.webhook_check?.code ?? 'unknown';
+  // 群に入らない項目（token・古い世代・生存信号・Webhook）の異常も全体の水準に入れる
+  const worstOf = (...levels) => (levels.includes('crit') ? 'crit' : levels.includes('warn') ? 'warn' : levels[0]);
+  const backupExtra = notOk.filter((x) => ['backup_history', 'credential_backup_token'].includes(x.id));
   return {
     schema: BRIEF_SCHEMA,
     generated_at: now.toISOString(),
     source_updated_at: base.source_updated_at,
     valid_until: new Date(now.getTime() + STALE_MS).toISOString(), // これを過ぎた要約は信じない
     monitor: base.monitor,
-    overall: base.overall,
+    overall: running ? worstOf(base.overall, ...open.map((o) => o.level)) : base.overall,
     counts,
     sections: {
       host: base.groups.host,
@@ -82,7 +87,7 @@ export function buildBrief(state, { items = [], now = new Date(), paused = false
       jobs: base.groups.jobs,
       repos: base.groups.repos,
       github: { ...base.groups.github, repos: github.length, ci_failing: github.filter((x) => x.value === 'ci_failure' || x.value === 'ci_stuck').length, token_days_left: running && githubTokenExpiresAt ? daysLeft(new Date(githubTokenExpiresAt).toISOString(), now) : null },
-      backup: { ...base.groups.backup, ...(running ? backupFacts(seen, { backupTokenExpiresAt, now }) : { age_days: null, restore_age_days: null, failing: false, history: 'unknown', token_days_left: null }) },
+      backup: { ...base.groups.backup, level: running ? worstOf(base.groups.backup.level, ...backupExtra.map((x) => x.level)) : base.groups.backup.level, not_ok: base.groups.backup.not_ok + backupExtra.length, ...(running ? backupFacts(seen, { backupTokenExpiresAt, now }) : { age_days: null, restore_age_days: null, failing: false, history: 'unknown', token_days_left: null }) },
       heartbeat: { state: running && HEARTBEAT.includes(heartbeat) ? heartbeat : 'unknown' },
       notify: { state: running && CHANNEL.includes(channel) ? channel : 'unknown' },
       relay: { outbox: running ? numberOr(relayOutbox) : null, unacked: running ? numberOr(state?.relay_unacked) : null },
@@ -97,7 +102,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const KEYS = new Set(['schema', 'generated_at', 'source_updated_at', 'valid_until', 'monitor', 'overall', 'counts', 'open', 'human', 'ai', 'auto', 'sections', 'host', 'hermes', 'jobs', 'repos', 'github', 'backup', 'heartbeat', 'notify', 'relay', 'level', 'not_ok', 'ci_failing', 'token_days_left', 'age_days', 'restore_age_days', 'failing', 'history', 'state', 'outbox', 'unacked', 'open_items', 'id', 'days', 'class', 'cause', 'next', 'groups', 'attention', 'group']);
 const WORDS = new Set([BRIEF_SCHEMA, 'runtime-status-summary/v1', 'running', 'paused', 'stale', 'disabled', ...LEVELS, ...HEARTBEAT, ...CHANNEL, ...HISTORY, ...OPS_CLASSES, ...NAMED, 'group_repos', 'group_jobs', 'group_github', 'host', 'hermes', 'backup', 'jobs', 'repos', 'github']);
 /** 許す文字列に紛れても出さない形（二重の防御）。パス・IP・メール・Secret・Trading Lab */
-const DENY_SHAPES = Object.freeze([/\/(?:Users|home|private|var|Volumes|etc)\//i, /\b\d{1,3}(?:\.\d{1,3}){3}\b/, /[\w.+-]+@[\w-]+\.[\w.-]+/, /\bgithub_pat_|\bgh[pousr]_|\bsk-[A-Za-z0-9]|discord(?:app)?\.com\/api|xai-[A-Za-z0-9]/i, /trading[\s._-]*lab|parallels|oanda|\bmt5\b/i]);
+const DENY_SHAPES = Object.freeze([/\/(?:Users|home|private|var|Volumes|etc)\//i, /\b\d{1,3}(?:\.\d{1,3}){3}\b/, /[\w.+-]+@[\w-]+\.[\w.-]+/, /\bgithub_pat_|\bgh[pousr]_|\bsk-[A-Za-z0-9]|discord(?:app)?\.com\/api|xai-[A-Za-z0-9]/i, /trading[\s._-]*lab|parallels/i]);
 
 /**
  * 渡してよい形かを確かめる。戻り値は外れた場所の一覧（値は入れない＝ここからも漏らさない）。空なら通す。
@@ -161,7 +166,7 @@ export function renderReply(b) {
   lines.push(`GitHub：${s.github.repos} repo・要確認 ${s.github.not_ok}・CI の失敗 ${s.github.ci_failing}${s.github.token_days_left == null ? '' : `・token 残り ${s.github.token_days_left} 日`}`);
   lines.push(`バックアップ：${s.backup.age_days == null ? '記録なし' : `${s.backup.age_days} 日前`}・復元の確認 ${s.backup.restore_age_days == null ? 'なし' : `${s.backup.restore_age_days} 日前`}${s.backup.token_days_left == null ? '' : `・token 残り ${s.backup.token_days_left} 日`}`);
   lines.push(`生存信号：${s.heartbeat.state}／通知の Webhook：${s.notify.state}`);
-  lines.push(`作業ログ：未送信 ${s.relay.outbox ?? '不明'}・Vault へ未反映 ${s.relay.unacked ?? '不明'}`);
+  lines.push(`作業ログ：未送信 ${s.relay.outbox ?? '不明'}・Vault の受領待ち ${s.relay.unacked ?? '不明'}`);
   return lines.join('\n');
 }
 

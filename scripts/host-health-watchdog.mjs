@@ -28,13 +28,15 @@ const OWN_GAP_MS = GAP_MS;
 
 /** 止まっている理由を 1 つ返す（ok なら 'ok'）。launchctl が読めない・DISABLED は unknown（前の状態を保つ。DISABLED は本体が知らせる） */
 export function monitorState({ state, disabled, job, now, resumed = false }) {
-  if (job == null) return { level: 'unknown', value: null };
-  if (!job.loaded) return { level: 'crit', value: 'not_loaded' };
+  if (job != null && !job.loaded) return { level: 'crit', value: 'not_loaded' };
   if (disabled) return { level: 'unknown', value: 'disabled' };
   if (resumed) return { level: 'unknown', value: null };
   const minutes = Math.round((Date.parse(now) - Date.parse(state?.updated_at)) / 60_000);
+  // launchctl が読めない回も、記録の途絶は見る（読めない間に本体が止まっても黙らない）
+  if (minutes * 60_000 > GAP_MS) return { level: 'crit', value: `stale ${minutes}m` };
+  if (job == null) return { level: 'unknown', value: null };
   if (!Number.isFinite(minutes)) return { level: 'crit', value: 'no_state' }; // 登録されているのに記録が読めない
-  return minutes * 60_000 > GAP_MS ? { level: 'crit', value: `stale ${minutes}m` } : { level: 'ok', value: 'ok' };
+  return { level: 'ok', value: 'ok' };
 }
 
 /** host-health の job に --webhook が無いと本体は何も知らせられないので、ここから知らせる。定義が無い・読めない時は判定しない */

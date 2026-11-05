@@ -222,7 +222,7 @@ export function renderJob(a) {
         ...cmd.map((x) => `    <string>${xml(x)}</string>`),
         '  </array>',
         `  <key>WorkingDirectory</key><string>${xml(a.dir)}</string>`,
-        // Mac mini は本番の workload（2026-10-21〜 Trading Lab の LIVE VM）と同居する。定期 job は CPU・I/O を譲る（launchd の Background＝強い資源制限・低優先度 I/O）
+        // Mac mini は他の本番の workload と同居する。定期 job は CPU・I/O を譲る（launchd の Background＝強い資源制限・低優先度 I/O）
         '  <key>ProcessType</key><string>Background</string>',
         '  <key>LowPriorityIO</key><true/>',
         ...(HOST_JOBS.includes(a.job)

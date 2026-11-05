@@ -13,9 +13,9 @@ Mac mini（host-health・30 分ごと）──HTTPS POST /hb（HMAC）──▶ 
 | 復旧 | 戻ったら 1 回（反復の後は落ち着いてから 1 回） |
 | 正常時 | 通知なし |
 | 乱発の防止 | 24 時間に 2 回途絶えたら「反復」を 1 通で、24 時間は静か。静かな間に始まった途絶も明けた時に続いていれば知らせる |
-| 既存への影響 | 新しい user・unit だけ。memory 128 MB・CPU 10%・同時接続 32 の上限。既存の service・Docker・Serve／Funnel・firewall は変えない |
+| 既存への影響 | 新しい user・unit だけ。memory 128 MB・CPU 10%・同時接続 32 の上限。既存の service・firewall は変えない |
 
-Mac は Tailscale に未参加なので、経路は既存の Cloudflare Tunnel の Public Hostname を 1 つ足す形にする。Tunnel は Dashboard 管理（token 方式）で、VPS の設定ファイルと cloudflared の再起動は要らない。
+経路は既存の Cloudflare Tunnel の Public Hostname を 1 つ足す形にする。VPS の設定ファイルと cloudflared の再起動は要らない。
 
 ## 導入（Human）
 
@@ -26,7 +26,7 @@ Mac は Tailscale に未参加なので、経路は既存の Cloudflare Tunnel �
    ssh -t <VPS> sudo bash vps-heartbeat/install.sh
    ```
    URL の入力を求められる（`-t` が無いと止まる）。チャンネルに配送試験が 1 通届く。最後に出る token を控える（画面にだけ出る）。既存の service の PID を前後で比べ、変われば NG と言う。port は既定 8795（`HEARTBEAT_PORT` で変えられる）
-3. Cloudflare の Zero Trust → Networks → Tunnels → 既存の Tunnel → Public Hostname を**足す**（既存の行は変えない）。Service は `http://127.0.0.1:8795`。既存の hostname とは別の名前にする。同じ Tunnel を電話 AI が使うので、Security → WAF のカスタムルールで、この hostname は `POST /hb` だけ通すルールを足す（無料の枠の範囲）
+3. Cloudflare の Zero Trust → Networks → Tunnels → 既存の Tunnel → Public Hostname を**足す**（既存の行は変えない）。Service は `http://127.0.0.1:8795`。既存の hostname とは別の名前にする。同じ Tunnel を他の service も使うので、Security → WAF のカスタムルールで、この hostname は `POST /hb` だけ通すルールを足す（無料の枠の範囲）
 4. Mac の Terminal で `bash deploy/macos/connect-heartbeat.sh`。URL（`https://<足した hostname>/hb`）と token を Keychain へ入れ、試しに 1 回送る。204 なら完了。job は登録済みで、次の :20／:50 から送る
 
 ## 確認
@@ -49,5 +49,6 @@ Cloudflare の Public Hostname を消し、Mac の `keychain-edl.sh delete heart
 
 - VPS 自身・Cloudflare・Discord が止まると知らせられない
 - 一度も受信していない間は知らせない（導入の途中で鳴らさない）
+- 「反復」の後の静かな 24 時間に本当に止まると、知らせるのは静かな間が明けた時（最悪で約 23 時間遅れる）
 - 計画した Mac の停止でも 70 分で鳴る（止める時は Human が承知しておく）
 - host-health が `DISABLED` の時は信号を送らないので途絶として届く（監視の停止の検知を兼ねる）

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JOB_PERIOD_HOURS, THRESHOLDS, WATCHDOG_LABEL, checkWebhook, evaluate, jobRunsCheck, notifyChannelItem, safeValue } from '../scripts/host-health.mjs';
+import { BLIND_MS, JOB_PERIOD_HOURS, THRESHOLDS, WATCHDOG_LABEL, blindCheck, checkWebhook, evaluate, evaluateEvents, jobRunsCheck, notifyChannelItem, safeValue } from '../scripts/host-health.mjs';
 import { monitorWebhookItem } from '../scripts/host-health-watchdog.mjs';
 import { collectGithub } from '../scripts/lib/github-guard.mjs';
 import { ruleOf } from '../scripts/lib/alert-policy.mjs';
@@ -32,6 +32,14 @@ const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r.verdict]));
 test('検収：記録で揃えば pass。観察は 7 日たつまで pending', () => {
   const v = byId(acceptanceOf(base()));
   assert.deepEqual(v, { H2: 'pass', H3: 'pass', H4: 'pass', H5: 'pass', H6: 'pass', H8: 'pending' });
+});
+
+test('検収：正常の項目を送っていれば H2 は fail（異常・出来事・回復は送ってよい）', () => {
+  const b = base();
+  b.records = [healthy(1), { ...healthy(0.5), notify_code: 'SENT', notify: [{ id: 'x', level: 'crit', change: 'new' }, { id: 'y', level: 'ok', change: 'recovered' }] }];
+  assert.equal(byId(acceptanceOf(b)).H2, 'pass');
+  b.records = [healthy(1), { ...healthy(0.5), notify_code: 'SENT', notify: [{ id: 'y', level: 'ok', change: 'new' }] }];
+  assert.equal(byId(acceptanceOf(b)).H2, 'fail');
 });
 
 test('検収：定期の回がまだなら pending（手で送った初回だけでは pass にしない）', () => {
@@ -77,6 +85,7 @@ test('Human Required：台帳＋今の異常（human だけ）＋期限の近い
     now: NOW,
   });
   assert.deepEqual(rows.map((r) => r.id), ['console', 'token:バックアップの token', 'item:power', 'token:GitHub の見張りの token', 'vps']);
+  assert.deepEqual(humanRequired({ ledger: { not: 'array' }, now: NOW }), [], '壊れた台帳で止まらない');
   const overdue = humanRequired({ ledger: [{ id: 'c', title: 'x', due: '2026-11-01' }], now: NOW });
   assert.equal(overdue[0].overdue, true);
 });
@@ -171,10 +180,12 @@ test('Webhook の生存：何も送らず GET だけ。本文を読まない・D
   const fetchImpl = async (u, o) => { calls.push([u, o.method, o.body]); return { status: 200, json: () => { throw new Error('本文を読まない'); } }; };
   assert.equal(await checkWebhook({ spec: 'credential:E-NEXUS/edl/x', readCredentialImpl: async () => URL_OK, fetchImpl }), 'ok');
   assert.deepEqual(calls[0], [URL_OK, 'GET', undefined]);
-  for (const status of [401, 403, 404]) assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => URL_OK, fetchImpl: async () => ({ status }) }), 'gone');
+  assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => URL_OK, fetchImpl: async () => ({ status: 403 }) }), 'unreachable', '403 は途中の遮断の時がある');
+  assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => { throw new Error('keychain'); }, fetchImpl }), 'unreachable', 'Keychain の一時の失敗で鳴らさない');
+  for (const status of [401, 404]) assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => URL_OK, fetchImpl: async () => ({ status }) }), 'gone');
   assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => URL_OK, fetchImpl: async () => ({ status: 503 }) }), 'unreachable');
   assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => URL_OK, fetchImpl: async () => { throw new Error('x'); } }), 'unreachable');
-  assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => 'https://evil.example/hook', fetchImpl }), 'config_invalid');
+  assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => 'https://evil.example/hook', fetchImpl }), 'unsupported');
   assert.equal(await checkWebhook({ spec: 'credential:x', readCredentialImpl: async () => null, fetchImpl }), 'config_invalid');
   assert.equal(notifyChannelItem(null), null);
   assert.equal(notifyChannelItem({ code: 'ok' }).level, 'ok');
@@ -186,24 +197,75 @@ test('Webhook の生存：何も送らず GET だけ。本文を読まない・D
 // ─── relay の未反映 ───
 
 test('relay：acks branch のファイル名だけ読む。自分の machine だけ数える・読めなければ null', async () => {
-  const ID = '20261105T064601Z-mac-mini-e98bca';
+  const ID = '20260101T000000Z-test-box-abc123';
   const reply = (status, json) => ({ status, json: async () => json, headers: { get: () => null } });
   const seen = [];
   const fetchImpl = async (u) => {
     const p = new URL(u).pathname;
     seen.push(p);
-    if (p.endsWith('/git/trees/acks')) return reply(200, { tree: [{ path: `acks/mac-mini/2026-11/${ID}.json` }, { path: 'acks/other/2026-11/20261105T064601Z-other-aaaaaa.json' }, { path: 'acks/mac-mini/2026-11/bad name.json' }] });
+    if (p.endsWith('/git/trees/acks')) return reply(200, { tree: [{ path: `acks/test-box/2026-11/${ID}.json` }, { path: 'acks/other/2026-11/20261105T064601Z-other-aaaaaa.json' }, { path: 'acks/test-box/2026-11/bad name.json' }] });
     if (p.endsWith('/git/ref/heads/master')) return reply(200, { object: { sha: 'abc' } });
     if (p.endsWith('/status')) return reply(200, { total_count: 0, state: 'pending' });
     if (p.endsWith('/actions/runs')) return reply(200, { workflow_runs: [] });
     return reply(200, { default_branch: 'master', visibility: 'private' });
   };
   const args = { credential: 'E-NEXUS/edl/x', owner: 'o', repos: ['e-nexus-devlog-relay'], now: at(0), read: async () => 'github_pat_x', fetchImpl };
-  const r = await collectGithub({ ...args, relay: { repo: 'e-nexus-devlog-relay', prefix: 'acks/mac-mini/' } });
+  const r = await collectGithub({ ...args, relay: { repo: 'e-nexus-devlog-relay', prefix: 'acks/test-box/' } });
   assert.deepEqual(r.relay_acked, [ID]);
   assert.ok(!seen.some((p) => /contents|blobs/.test(p)), '中身は読まない');
   assert.equal((await collectGithub(args)).relay_acked, undefined);
-  const broken = await collectGithub({ ...args, relay: { repo: 'e-nexus-devlog-relay', prefix: 'acks/mac-mini/' }, fetchImpl: async (u) => (new URL(u).pathname.endsWith('/git/trees/acks') ? reply(404, {}) : fetchImpl(u)) });
+  const broken = await collectGithub({ ...args, relay: { repo: 'e-nexus-devlog-relay', prefix: 'acks/test-box/' }, fetchImpl: async (u) => (new URL(u).pathname.endsWith('/git/trees/acks') ? reply(404, {}) : fetchImpl(u)) });
   assert.equal(broken.status, 'ok');
   assert.equal(broken.relay_acked, null);
+});
+
+test('Webhook の確かめ：判定の前に確かめて今回の結果で知らせる。ok の間は 1 日 1 回・それ以外は毎回・止めれば state に残さない', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-ops-wh-'));
+  try {
+    const { runHostHealth } = await import('../scripts/host-health.mjs');
+    const run = async (bin) => ({ code: 1, stdout: '', timedOut: bin === 'never' });
+    let code = 'gone';
+    let checks = 0;
+    const once = (at, webhookCheck = async () => { checks += 1; return code; }) => runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, webhookCheck, now: () => new Date(at) });
+    const a = await once('2026-11-05T00:00:00.000Z');
+    assert.equal(a.items.find((x) => x.id === 'notify_channel').level, 'warn');
+    code = 'ok';
+    const b = await once('2026-11-05T00:30:00.000Z');
+    assert.equal(b.items.find((x) => x.id === 'notify_channel').level, 'ok', '作り直した後の回に古い「使えない」を出さない');
+    assert.equal(checks, 2);
+    await once('2026-11-05T01:00:00.000Z');
+    assert.equal(checks, 2, 'ok の間は 1 日 1 回');
+    await once('2026-11-06T00:31:00.000Z');
+    assert.equal(checks, 3);
+    const off = await once('2026-11-06T01:00:00.000Z', null);
+    assert.equal(off.items.find((x) => x.id === 'notify_channel'), undefined);
+    const { readFileSync } = await import('node:fs');
+    assert.equal(JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8')).webhook_check, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('読めない状態が続く：24 時間で件数だけ数える。戻れば数え直す。GitHub は別の項目が受け持つ', () => {
+  const u = { id: 'disk_free_gib', level: 'unknown', value: null, kind: 'state' };
+  const first = blindCheck([u, { id: 'github_api', level: 'unknown', kind: 'state' }, { id: 'rebooted', level: 'unknown', kind: 'event' }], null, at(30));
+  assert.deepEqual(Object.keys(first.next), ['disk_free_gib']);
+  assert.equal(first.stale, 0);
+  assert.equal(blindCheck([u], first.next, at(7)).stale, 0);
+  assert.equal(blindCheck([u], first.next, new Date(Date.parse(at(30)) + BLIND_MS).toISOString()).stale, 1);
+  assert.deepEqual(blindCheck([{ ...u, level: 'ok' }], first.next, at(1)), { stale: 0, next: {} });
+  assert.equal(ruleOf('monitor_blind').hold, 0);
+});
+
+test('再起動の判定：時計の補正の分は再起動と言わない', () => {
+  assert.deepEqual(evaluateEvents({ boottime: 1000 + 5 }, { boottime: 1000 }), []);
+  assert.equal(evaluateEvents({ boottime: 2000 }, { boottime: 1000 })[0].id, 'rebooted');
+});
+
+test('隔離：id が読めない回も権限の崩れは捨てない', async () => {
+  const hermes = '/Users/hermes';
+  const fsi = { ...fakeFsi(FULL), statSync: () => ({ mode: 0o777, uid: 501 }) };
+  const g = await collectGuard({ run: async (bin) => ({ code: bin === '/usr/bin/id' ? 1 : 0, stdout: '', timedOut: false }), hermesUser: 'hermes', base: '/b', repos: [], outbox: '/o', operatorHome: '/Users/op', fsi });
+  assert.ok(g.isolation.includes('hermes_home_open') && g.isolation.includes('config_not_root_only'), hermes);
+  assert.ok(!g.isolation.includes('admin_group'));
 });
