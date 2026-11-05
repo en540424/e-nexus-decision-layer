@@ -28,6 +28,7 @@ export const GUARD_LIMITS = Object.freeze({ repo_hours: 24, outbox_hours: 24, ba
 /** 変わったら知らせる固定ファイル（repo 内の相対パス）。Human Gate を弱める変更は git の差分より先にここで出す */
 export const WATCHED_POLICIES = Object.freeze({ human_only_policy: 'policies/safety/human-only.json', failure_policy: 'policies/gateway/failure-policy.json' });
 export const MONITOR_LABEL = 'com.e-nexus.host-health';
+const WATCHDOG_PLIST = 'com.e-nexus.host-health-watchdog.plist';
 export const BACKUP_RECEIPT_SCHEMA = 'runtime-backup-receipt/v1';
 const RESIDENT = /^(com\.e-nexus\.[a-z0-9.-]+)\.plist$/;
 const HOUR = 3_600_000;
@@ -190,7 +191,8 @@ export async function collectGuard({ run, hermesUser = null, base, repos, outbox
   g.backup_receipt = backupReceiptOf(backupReceipt, fsi);
   g.residents = residentsOf(operatorHome, fsi);
   g.scope = scopeOf(operatorHome, fsi);
-  g.config = { monitor_plist: sha256OfFile(path.join(operatorHome, 'Library', 'LaunchAgents', `${MONITOR_LABEL}.plist`), fsi) };
+  const agents = path.join(operatorHome, 'Library', 'LaunchAgents');
+  g.config = { monitor_plist: sha256OfFile(path.join(agents, `${MONITOR_LABEL}.plist`), fsi), watchdog_plist: sha256OfFile(path.join(agents, WATCHDOG_PLIST), fsi) };
   if (repoRoot) for (const [name, p] of Object.entries(WATCHED_POLICIES)) g.config[name] = sha256OfFile(path.join(repoRoot, p), fsi);
   if (hermesUser) {
     const r = await run('/usr/bin/id', ['-Gn', hermesUser]);
@@ -306,7 +308,7 @@ export function nextGuardState(g, prevGuard, now, { keepEvents = false } = {}) {
 
 // ─── 観察の集計（H8）───
 
-const EVENT_IDS = ['rebooted', 'network_interface_changed', 'hermes_restarted', 'hermes_files_changed', 'monitor_config_changed', 'residents_changed', 'monitor_gap', 'github_visibility_changed', 'github_default_branch_changed'];
+export const EVENT_IDS = ['rebooted', 'network_interface_changed', 'hermes_restarted', 'hermes_files_changed', 'monitor_config_changed', 'residents_changed', 'monitor_gap', 'github_visibility_changed', 'github_default_branch_changed'];
 
 /** host-health の YYYY-MM.jsonl の行から、期間の要約。値は記録にあるものだけ */
 export function summarizeRecords(lines, { since = null, intervalMinutes = 30 } = {}) {

@@ -85,8 +85,9 @@ export function evaluateGithub(gh, localRepos, prev, now) {
   add('github_api', 'ok', 'ok');
   for (const [name, r] of Object.entries(gh)) {
     const id = `github:${name}`;
-    if (!r.found) { add(id, 'warn', 'not_found'); continue; }
-    if (r.disabled || r.archived) { add(id, 'warn', r.disabled ? 'disabled' : 'archived'); continue; }
+    if (!r.found) { add(id, 'crit', 'not_found'); continue; } // 消えた・無効にされた repo は CI の失敗より重い。続いている WARN に隠さない
+    if (r.disabled) { add(id, 'crit', 'disabled'); continue; }
+    if (r.archived) { add(id, 'warn', 'archived'); continue; }
     if (r.ci === 'FAILURE' || r.ci === 'ERROR') { add(id, 'warn', 'ci_failure'); continue; }
     const local = localRepos?.[name]?.oid;
     add(id, 'ok', local && r.oid && local !== r.oid ? 'differs_from_mac' : 'ok');

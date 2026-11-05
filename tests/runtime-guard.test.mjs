@@ -90,7 +90,7 @@ test('collectGuard：index を書かない git だけを呼び、Hermes の home
   assert.deepEqual(git.slice(1, 3), ['--no-optional-locks', '-C']);
   assert.ok(!calls.flat().some((a) => /fetch|pull|push|ls-remote/.test(a)));
   assert.deepEqual(g.isolation, []);
-  assert.deepEqual(fsi.reads.sort(), [...Object.values(HERMES_FILES), '/Users/op/Library/LaunchAgents/com.e-nexus.host-health.plist'].sort());
+  assert.deepEqual(fsi.reads.sort(), [...Object.values(HERMES_FILES), '/Users/op/Library/LaunchAgents/com.e-nexus.host-health.plist', '/Users/op/Library/LaunchAgents/com.e-nexus.host-health-watchdog.plist'].sort());
   assert.equal(g.backup.configured, false);
 });
 
@@ -181,10 +181,10 @@ test('host-health の 1 回分に入り、記録と通知にハッシュ・パ�
     const failing = async () => ({ sent: false, code: 'WEBHOOK_TIMEOUT' });
     const changed = guardArgs(fakeFs({ content: { [HERMES_FILES.config]: 'two' } }));
     const second = await runHostHealth({ ...opts, guard: changed, run: hostRun({ pid: 701 }).run, webhook: 'credential:E-NEXUS/edl/x', post: failing });
-    assert.deepEqual(second.notify.map((n) => n.id).sort(), ['hermes_files_changed', 'hermes_restarted']);
+    assert.deepEqual(second.notify.map((n) => n.id), ['hermes_files_changed'], 'Hermes の再起動は 1 回なら記録だけ');
     const sent = [];
     const third = await runHostHealth({ ...opts, guard: changed, run: hostRun({ pid: 701 }).run, webhook: 'credential:E-NEXUS/edl/x', post: async (n) => { sent.push(...n); return { sent: true, code: 'SENT' }; } });
-    assert.deepEqual(third.notify.map((n) => n.id).sort(), ['hermes_files_changed', 'hermes_restarted']);
+    assert.deepEqual(third.notify.map((n) => n.id), ['hermes_files_changed']);
     const fourth = await runHostHealth({ ...opts, guard: changed, run: hostRun({ pid: 701 }).run });
     assert.equal(fourth.notify.length, 0);
     const log = readFileSync(path.join(dir, `${new Date().toISOString().slice(0, 7)}.jsonl`), 'utf8');

@@ -6,15 +6,16 @@
  *
  * 見るもの：host-health の記録の更新時刻・DISABLED の印・launchd の登録。監視が止まった時（本体が自分では知らせられない形）を知らせる。
  * 限界：同じ Mac の上で動くので、Mac 自身の停止は見えない（再開した時に host-health の monitor_gap が知らせる。外からの見張りは Human の判断）。
- * 通知の抑止は host-health の decide と同じ（変化した時だけ・続けば CRIT は 3 時間ごと・回復は 2 回続いてから 1 回）。PAUSE の間は知らせない（72 時間で切れる）。
- * DISABLED の通知は host-health 本体の担当（12 時間ごと）なので、ここからは重ねない。
+ *   この job の停止は host-health の monitor_watchdog が見る。両方が同時に止まるとどちらからも見えない。
+ * 通知の抑止は host-health の decide と同じ（変化した時だけ・続けば 24 時間後から間隔を広げて再通知・回復は 2 回続いてから 1 回）。PAUSE の間は知らせない（72 時間で切れる）。
+ * DISABLED の通知は host-health 本体の担当（24 時間ごと）なので、ここからは重ねない。
  * 記録：<state-dir>/watchdog.json だけ。host-health の state は書かない。
  * exit：0＝1 回分を終えた（異常があっても 0）／1＝失敗／2＝引数・macOS 以外
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_STATE_DIR, GAP_MS, decide, makeRunner, parseArgs, parseLaunchctlPrint, pauseState, postAlerts, validateArgs } from './host-health.mjs';
+import { DEFAULT_STATE_DIR, GAP_MS, decide, makeRunner, parseArgs, parseLaunchctlPrint, pauseState, postAlerts, rollbackUnsent, validateArgs } from './host-health.mjs';
 import { MONITOR_LABEL } from './lib/runtime-guard.mjs';
 
 const WATCHDOG_SCHEMA = 'host-health-watchdog/v1';
@@ -44,20 +45,25 @@ export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null
   const at = now().toISOString();
   const file = path.join(stateDir, 'watchdog.json');
   const prev = readJson(file);
+  const prevItems = prev?.schema === WATCHDOG_SCHEMA ? (prev.items ?? {}) : {};
   const job = parseLaunchctlPrint(await run('/bin/launchctl', ['print', `gui/${uid}/${MONITOR_LABEL}`]));
   const seen = monitorState({ state: readJson(path.join(stateDir, 'state.json')), disabled: existsSync(path.join(stateDir, 'DISABLED')), job, now: at });
   const { paused } = pauseState(stateDir, at);
   const d = decide([{ id: ID, ...seen, kind: 'state' }], prev?.schema === WATCHDOG_SCHEMA ? prev : null, { now: at, paused });
   let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
+  const save = (items) => {
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify({ schema: WATCHDOG_SCHEMA, updated_at: at, items }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, file);
+  };
   let items = d.items;
   if (d.notify.length && webhook) {
+    save(prevItems); // 送れた印を残せないなら送らない（書けない間に同じ通知を毎回重ねない）
     const r = await post(d.notify, { spec: webhook, format: webhookFormat, at });
     notifyCode = r.code;
-    if (!r.sent) items = prev?.items ?? {}; // 送れなかった分は次の回にもう一度
+    if (!r.sent) items = rollbackUnsent(d.notify, prevItems, d.items, at); // 送れなかった分は次の回にもう一度
   }
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ schema: WATCHDOG_SCHEMA, updated_at: at, items }, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, file);
+  save(items);
   return { code: 0, status: 'ok', level: seen.level, value: seen.value, notify: d.notify, notifyCode, paused };
 }
 
@@ -65,7 +71,7 @@ async function main(argv) {
   let a;
   try { a = parseArgs(argv); } catch (e) { console.error(e.message); return 2; }
   const errors = validateArgs(a);
-  if (a.report || a.webhookTest || a.githubOwner || a.hermesUser || a.days || a.dataDirs.length) errors.push('host-health-watchdog takes only --state-dir, --webhook, --webhook-format');
+  if (a.report || a.webhookTest || a.githubOwner || a.hermesUser || a.days || a.period || a.quarterlyPreview || a.dataDirs.length) errors.push('host-health-watchdog takes only --state-dir, --webhook, --webhook-format');
   if (errors.length) { console.error(errors.join('\n')); return 2; }
   if (process.platform !== 'darwin') { console.error('host-health-watchdog is for the Mac mini (macOS) only'); return 2; }
   try {

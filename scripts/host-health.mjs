@@ -5,6 +5,7 @@
  *   node scripts/host-health.mjs [--state-dir <abs>] [--data-dir <abs>]... [--hermes-user <name>] [--no-guard]
  *   node scripts/host-health.mjs --report [--days 7] [--state-dir <abs>]   記録の要約を出すだけ（観察用。何も書かない）
  *   node scripts/host-health.mjs --webhook-test --webhook <…> [--webhook-format discord]   配送試験を 1 通だけ送る（監視の状態は変えない）
+ *   node scripts/host-health.mjs --quarterly-preview [--period 2026Q4] [--state-dir <abs>]   運用要約の本文を出すだけ（送らない・何も書かない）
  *        [--webhook credential:E-NEXUS/edl/<name> [--webhook-format json|slack|discord]] [--github-owner <owner>] [--json]
  *
  * 見るもの：ホストの資源（起動ディスクの空き・メモリ逼迫・swap・15 分 load・発熱・電源・再起動・既定経路）、
@@ -16,14 +17,15 @@
  * することは 3 つだけ：記録（<state-dir>/state.json・YYYY-MM.jsonl）／状態が変わった時の通知／DEGRADED の印（起動ディスクかメモリが
  *   CRIT の間。Mac Runtime の他の job が見て休むための印）。kill・renice・再起動・設定変更はしない。
  * 通知：--webhook を付けた時だけ（usage-digest と同じ契約：URL は OS 資格情報ストアからだけ・https 必須。discord は宛先も discord.com の webhook に限る）。
- *   CRIT は即時（続けば 3 時間ごと）、WARN は 1 回（続けば 12 時間ごと）、回復は 2 回続けて ok になってから 1 回（行き来で通知を重ねない）、
- *   再起動・回線の切替・監視の空白は出来事として 1 回。正常の定期通知はしない。送れなかった分は次の回にもう一度。
- *   本文は固定のコードと値だけで、値は項目ごとの形（VALUE_SHAPES）に合うものしか通さない。Discord の mention は全部無効。
+ *   普段は静かに見て、本当に必要な時だけ知らせる（2026-11-05 Human 決定。基準は lib/alert-policy.mjs）。正常と軽微な異常は記録だけ。
+ *   CRIT は即時（続けば 24 時間後から間隔を広げて再通知）、WARN は続いた時に 1 回、回復は CRIT を知らせた項目だけ 2 回続けて ok になってから 1 回、
+ *   再起動・監視の空白・設定の変化は出来事として 1 回。送れなかった分は次の回にもう一度。四半期に 1 回だけ集計の要約を送る（lib/quarterly-report.mjs）。
+ *   本文は固定の文と値だけで、値は項目ごとの形（VALUE_SHAPES）に合うものしか通さない。Discord の mention は全部無効。
  *   <state-dir>/PAUSE があれば記録だけして通知せず、状態も出来事の基準も進めない（保守窓。明けた後に変化として知らせる）。
  *   PAUSE は 72 時間で効かなくなる（消し忘れで全部の通知が黙らないように。monitor_pause=expired）。
  * 停止：3 回続けて失敗（全体の時間切れを含む）したら <state-dir>/DISABLED を作り、Human が消すまで調べない（exit 3）。全体 60 秒・コマンド 1 つ 5 秒で打ち切る。
- *   DISABLED の間も 12 時間ごとに知らせる（監視が止まったままにならないように）。ここで検知できない停止（job の解除・Mac の停止）は
- *   host-health-watchdog（別の job）と、再開した時の monitor_gap が受け持つ。
+ *   DISABLED の間も 24 時間ごとに知らせる（監視が止まったままにならないように）。ここで検知できない停止（job の解除・Mac の停止）は
+ *   host-health-watchdog（別の job）と、再開した時の monitor_gap が受け持つ。watchdog の停止は monitor_watchdog でここから見る（相互に見る）。
  * コマンドは ALLOWED_BINS の絶対パスを固定の argv で shell なしに実行する（それ以外は起動しない）。
  * exit：0＝1 回分を記録した（WARN・CRIT があっても 0。異常は通知と記録で伝える）／1＝失敗／2＝引数・macOS 以外・時間超過／3＝DISABLED
  */
@@ -32,6 +34,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCredential, EDL_CREDENTIAL_PATTERN } from './lib/env-file.mjs';
+import { BURST, COOLDOWN_MS, RECOVER_RUNS, REMIND_MS, alertLine, remindInterval, ruleOf } from './lib/alert-policy.mjs';
+import { QUARTERLY_RETRY, canAttempt, duePeriod, isPeriod, periodOf, previousPeriod, quarterlyText, summarizeQuarter } from './lib/quarterly-report.mjs';
 import { JOBS } from './scheduled-job-service.mjs';
 import { GUARD_BINS, HERMES_LABEL, collectGuard, defaultGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, summarizeRecords } from './lib/runtime-guard.mjs';
 import { GITHUB_BINS, GITHUB_OWNER, GITHUB_TIMEOUT_MS, collectGithub, evaluateGithub, evaluateGithubEvents, githubBin, nextGithubState } from './lib/github-guard.mjs';
@@ -48,9 +52,14 @@ export const THRESHOLDS = Object.freeze({
   hermes_rss_gib: { warn: 3, crit: 4 },
   job_running_minutes: { warn: 30 },
 });
-export const REMIND_MS = Object.freeze({ warn: 12 * 3_600_000, crit: 3 * 3_600_000 });
-/** 回復を知らせるまでに ok が続く回数（30 分ごとなので 30 分遅れる。行き来する項目で通知を重ねない） */
-export const RECOVER_RUNS = 2;
+/** DISABLED の間の通知の間隔 */
+export const DISABLED_REMIND_MS = 24 * 3_600_000;
+/** 回数を残せない時の通知の間隔。state が無いので時刻の枠で決める（6 時間ごとの最初の 1 時間。job が毎時のどの分でも枠に入る） */
+export const UNWRITABLE_SLOT_MS = 6 * 3_600_000;
+/** 毎時の watchdog の 3 回分 */
+export const WATCHDOG_STALE_MS = 3 * 3_600_000;
+export const WATCHDOG_LABEL = 'com.e-nexus.host-health-watchdog';
+export { RECOVER_RUNS };
 /** 30 分ごとの job の 3 回分。これより前の回から間があけば監視が止まっていた */
 export const GAP_MS = 90 * 60_000;
 /** 保守窓の上限（週末の休場より長い）。これより古い PAUSE は消し忘れとして効かせない */
@@ -278,43 +287,92 @@ export function monitorGapEvent(prev, nowIso) {
 }
 
 /**
- * 通知するものと次の状態。状態が変わった時だけ・続けば間隔をあけて・回復は RECOVER_RUNS 回続いてから 1 回。unknown は前の状態を保つ（読めなかった回で悪化も回復も作らない）。
- * paused（保守窓）の間は何も知らせず、状態も進めない。
+ * 通知するものと次の状態（基準は lib/alert-policy.mjs）。unknown は前の状態を保つ（読めなかった回で悪化も回復も作らない）。
+ * paused（保守窓）の間は何も知らせず、状態も進めない。state の notified は知らせた水準で、続いている間の重複を止める。
  */
 export function decide(items, prev, { now, paused = false }) {
   const prevItems = prev?.items ?? {};
   const next = { ...prevItems };
+  const bursts = { ...(prev?.bursts ?? {}) };
   const notify = [];
+  const t = Date.parse(now);
+  const elapsed = (at) => t - Date.parse(at);
+  const codesOf = (v) => String(v ?? '').split(',');
   for (const it of items) {
     if (paused) continue;
+    const rule = ruleOf(it.id);
     if (it.kind === 'event') {
-      notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' });
+      if (!rule.burst) { notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' }); continue; }
+      const b = bursts[it.id];
+      const hits = [...(b?.hits ?? []).filter((h) => elapsed(h) < BURST.window_ms), now];
+      const fire = hits.length >= BURST.count && (!b?.last_notified_at || elapsed(b.last_notified_at) >= BURST.window_ms);
+      bursts[it.id] = { hits, last_notified_at: fire ? now : (b?.last_notified_at ?? null) };
+      if (fire) notify.push({ id: it.id, level: it.level, value: hits.length, change: 'event' });
       continue;
     }
     if (it.level === 'unknown') continue;
     const p = prevItems[it.id] ?? { level: 'ok', since: now, last_notified_at: null };
-    let change = null;
-    if (it.level !== 'ok' && it.level !== p.level) change = 'new';
-    else if (it.level !== 'ok' && (p.last_notified_at == null || Date.parse(now) - Date.parse(p.last_notified_at) >= REMIND_MS[it.level])) change = 'reminder';
-    else if (it.level === 'ok' && p.level !== 'ok') {
-      const okRuns = (p.ok_runs ?? 0) + 1;
-      if (okRuns < RECOVER_RUNS) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
-      change = 'recovered';
+    if (it.level === 'ok') {
+      if (p.level !== 'ok') {
+        const okRuns = (p.ok_runs ?? 0) + 1;
+        if (okRuns < RECOVER_RUNS) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
+      } else if (!p.missed_at) { next[it.id] = p; continue; }
+      const change = p.notified === 'crit' ? 'recovered' : p.missed_at ? 'recovered_missed' : null;
+      next[it.id] = { level: 'ok', since: now, last_notified_at: change ? now : p.last_notified_at, recovered_at: change === 'recovered' ? now : (p.recovered_at ?? null) }; // 「知らせられなかった」の後の戻りは待たせない
+      if (change) notify.push({ id: it.id, level: 'ok', value: it.value, change });
+      continue;
     }
-    next[it.id] = { level: it.level, since: it.level === p.level ? p.since : now, last_notified_at: change ? now : p.last_notified_at };
-    if (change) notify.push({ id: it.id, level: it.level, value: it.value, change });
+    const since = p.level === 'ok' ? now : p.since;
+    const held = elapsed(since) >= rule.hold;
+    const level = it.level === 'crit' || (rule.promote && held) ? 'crit' : 'warn';
+    const grew = rule.codes && p.notified && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c));
+    let change = null;
+    if (grew) change = 'new';
+    else if (level === 'crit' && p.notified === 'crit') {
+      // 長く WARN へ下がった後に重大へ戻った時は、広がった間隔を待たない（境で行き来するだけなら広げたまま）
+      const longLow = it.level === 'crit' && p.lowered_at && elapsed(p.lowered_at) >= REMIND_MS.first;
+      change = elapsed(p.last_notified_at) >= (longLow ? REMIND_MS.first : remindInterval(p.reminders)) ? 'reminder' : null;
+    } else if (level === 'crit') change = !rule.noCooldown && p.recovered_at && elapsed(p.recovered_at) < COOLDOWN_MS ? null : 'new';
+    else if (!p.notified && held) change = 'new';
+    next[it.id] = {
+      level: it.level,
+      since,
+      last_notified_at: change ? now : p.last_notified_at,
+      notified: change ? level : (p.notified ?? null),
+      notified_value: change ? it.value : (p.notified_value ?? null),
+      reminders: change === 'reminder' ? (p.reminders ?? 0) + 1 : change ? 0 : (p.reminders ?? 0),
+      recovered_at: p.recovered_at ?? null,
+      missed_at: change && level === 'crit' ? null : (p.missed_at ?? null),
+      lowered_at: it.level === 'crit' ? null : (p.lowered_at ?? now),
+    };
+    if (change) notify.push({ id: it.id, level, value: it.value, change });
   }
-  return { notify, items: next };
+  return { notify, items: next, bursts };
+}
+
+/**
+ * 送れなかった項目を前の状態へ戻し、次の回にもう一度判定させる。重大は「知らせられなかった」印を残す（送れない間に解消しても、回線断の後に 1 回知らせる）。
+ * watchdog も使う。
+ */
+export function rollbackUnsent(notify, prevItems, nextItems, at) {
+  const items = { ...nextItems };
+  for (const n of notify) {
+    const p = prevItems?.[n.id];
+    if (n.level === 'crit' && n.change === 'new') items[n.id] = { ...(p ?? { level: 'ok', since: at, last_notified_at: null }), missed_at: p?.missed_at ?? at };
+    else if (p) items[n.id] = p;
+    else delete items[n.id];
+  }
+  return items;
 }
 
 // ─── 通知（usage-digest と同じ契約。共通通知 package は作らない＝MA-30）───
 
-const CHANGE_LABEL = { new: '発生', reminder: '継続', recovered: '回復', event: '出来事' };
 const DISCORD_LIMIT = 1900;
 const LEVEL_ORDER = { crit: 0, warn: 1, ok: 2 };
 const SAFE_ID = /^[a-z0-9_]{1,40}(?::[A-Za-z0-9._-]{1,100})?$/;
 const codes = (...c) => new RegExp(`^(?:${c.join('|')})(?:,(?:${c.join('|')}))*$`);
-const REPO_CHANGE = /^[A-Za-z0-9._-]{1,100}:[A-Za-z0-9._/-]{1,60}->[A-Za-z0-9._/-]{1,60}$/;
+const VISIBILITY = '(?:PUBLIC|PRIVATE|INTERNAL)';
+const BRANCH = '[A-Za-z0-9._-]{1,60}(?:/[A-Za-z0-9._-]{1,60}){0,3}';
 /**
  * 通知の最後の関所（allowlist）。項目ごとに値の形を決め、ここに無い項目の文字列は出さない（数だけ通す）。
  * IP・ホスト名・ユーザー名は形では見分けられないので、知らない値は全部落とす。項目を足す時はここへも足す。
@@ -331,15 +389,17 @@ const VALUE_SHAPES = Object.freeze([
   [/^hermes_service$/, /^(?:running|not_loaded|stopped exit (?:-?\d+|-))$/],
   [/^hermes_isolation$/, codes('ok', 'admin_group', 'hermes_home_open', 'operator_home_open', 'hermes_home_missing', 'operator_home_missing', '(?:config|plist|wrapper)_(?:not_root_only|missing)', 'share_open', 'share_missing')],
   [/^hermes_files_changed$/, codes('vault_copy', 'config', 'plist', 'wrapper')],
-  [/^monitor_config_changed$/, codes('monitor_plist', 'human_only_policy', 'failure_policy')],
+  [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'human_only_policy', 'failure_policy')],
   [/^agent_scope$/, codes('ok', 'user_claude_md', 'user_rules')],
   [/^residents_changed$/, /^[+-][a-z0-9.-]{1,60}(?:,[+-][a-z0-9.-]{1,60})*$/],
   [/^github_api$/, /^(?:ok|unreachable)$/],
   [/^github:/, /^(?:ok|ci_failure|archived|disabled|not_found|differs_from_mac)$/],
-  [/^github_(?:visibility|default_branch)_changed$/, REPO_CHANGE],
+  [/^github_visibility_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${VISIBILITY}->${VISIBILITY}$`)],
+  [/^github_default_branch_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${BRANCH}->${BRANCH}$`)],
   [/^monitor_gap$/, /^\d+h\d+m$/],
   [/^monitor_pause$/, /^(?:none|active|expired)$/],
   [/^monitor_alive$/, /^(?:ok|disabled|not_loaded|no_state|stale \d+m)$/],
+  [/^monitor_watchdog$/, /^(?:ok|not_installed|not_loaded|no_state|stale \d+m)$/],
   [/^host_health$/, /^(?:disabled|state_unwritable)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
@@ -354,24 +414,25 @@ export function alertText(notify, limit = Infinity) {
   const lines = ['[E-NEXUS Mac Runtime host]'];
   let used = lines[0].length;
   for (const [i, n] of rows.entries()) {
-    const line = `${n.level.toUpperCase()} ${n.id}=${n.value ?? '-'}（${CHANGE_LABEL[n.change] ?? n.change}）`;
-    if (used + line.length + 1 > limit - 40) { lines.push(`…ほか ${rows.length - i} 件（host-health --report で確認）`); break; }
+    const line = alertLine(n);
+    if (used + line.length + 1 > limit - 40) { lines.push(`…ほか ${rows.length - i} 件（内部の記録で確認）`); break; }
     lines.push(line);
     used += line.length + 1;
   }
   return lines.join('\n');
 }
-export function webhookBodyOf(notify, format, at) {
-  if (format === 'slack') return { text: alertText(notify) };
-  if (format === 'discord') return { content: alertText(notify, DISCORD_LIMIT), allowed_mentions: { parse: [] } };
-  return { component: 'e-nexus-mac-runtime-host', at, alerts: cleanNotify(notify) };
+/** text があれば運用要約（集計の数だけの本文）。無ければ通知の項目から本文を作る */
+export function webhookBodyOf(notify, format, at, text = null) {
+  if (format === 'slack') return { text: text ?? alertText(notify) };
+  if (format === 'discord') return { content: text ?? alertText(notify, DISCORD_LIMIT), allowed_mentions: { parse: [] } };
+  return { component: 'e-nexus-mac-runtime-host', at, ...(text ? { summary: text } : { alerts: cleanNotify(notify) }) };
 }
 /** 取り違えた資格情報で別の宛先へ送らない（Discord の webhook の形だけ） */
 export function isDiscordWebhook(url) {
   return /^(?:(?:ptb|canary)\.)?discord(?:app)?\.com$/.test(url.hostname) && /^\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]+\/?$/.test(url.pathname);
 }
 /** URL は credential:E-NEXUS/edl/<name> からだけ。https 必須。失敗しても記録は成功 */
-export async function postAlerts(notify, { spec, format = 'json', at, readCredentialImpl = readCredential, fetchImpl = globalThis.fetch, timeoutMs = 10000 }) {
+export async function postAlerts(notify, { spec, format = 'json', at, text = null, readCredentialImpl = readCredential, fetchImpl = globalThis.fetch, timeoutMs = 10000 }) {
   if (typeof spec !== 'string' || !spec.startsWith('credential:')) return { sent: false, code: 'WEBHOOK_MUST_BE_CREDENTIAL' };
   const target = spec.slice('credential:'.length);
   if (!EDL_CREDENTIAL_PATTERN.test(target)) return { sent: false, code: 'WEBHOOK_CREDENTIAL_TARGET_INVALID' };
@@ -390,7 +451,7 @@ export async function postAlerts(notify, { spec, format = 'json', at, readCreden
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(url.href, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(webhookBodyOf(notify, bodyFormat, at)), redirect: 'error', signal: controller.signal });
+    const res = await fetchImpl(url.href, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(webhookBodyOf(notify, bodyFormat, at, text)), redirect: 'error', signal: controller.signal });
     return res.ok ? { sent: true, code: 'SENT' } : { sent: false, code: `WEBHOOK_HTTP_${res.status}` };
   } catch (err) {
     return { sent: false, code: err?.name === 'AbortError' ? 'WEBHOOK_TIMEOUT' : 'WEBHOOK_UNREACHABLE' };
@@ -431,11 +492,12 @@ export function pauseState(stateDir, at) {
   return { paused: !expired, expired };
 }
 
-/** 監視が止まっていることの通知（DISABLED の間も 12 時間ごと）。送れた時刻を state に残す。state を書けなくても送る */
+/** 監視が止まっていることの通知（DISABLED の間も 24 時間ごと）。送れた時刻を state に残す。state を書けない時は時刻の枠で間引いて送る */
 async function noticeDisabled({ stateDir, state, webhook, webhookFormat, at, post, value = 'disabled' }) {
   const last = state?.disabled_notified_at;
   if (!webhook || pauseState(stateDir, at).paused) return null;
-  if (last && Date.parse(at) - Date.parse(last) < REMIND_MS.warn) return null;
+  if (last && Date.parse(at) - Date.parse(last) < DISABLED_REMIND_MS) return null;
+  if (value === 'state_unwritable' && Date.parse(at) % UNWRITABLE_SLOT_MS >= 3_600_000) return null;
   const r = await post([{ id: 'host_health', level: 'crit', value, change: last ? 'reminder' : 'event' }], { spec: webhook, format: webhookFormat, at }).catch(() => ({ sent: false, code: 'WEBHOOK_UNREACHABLE' }));
   if (r.sent) {
     try {
@@ -454,7 +516,7 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
   try {
     writeState(stateDir, state);
   } catch {
-    // 回数を残せない＝数えられないので、黙らないよう毎回知らせる。残っていない回数で DISABLED にはしない（一瞬の書き込み失敗で監視を止めない）
+    // 回数を残せない＝数えられないので、黙らないよう知らせ続ける（時刻の枠。6 時間ごとの最初の 1 時間）。残っていない回数で DISABLED にはしない（一瞬の書き込み失敗で監視を止めない）
     await noticeDisabled({ stateDir, state, webhook, webhookFormat, at, post, value: 'state_unwritable' });
     return failures;
   }
@@ -467,6 +529,53 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
     await noticeDisabled({ stateDir, state, webhook, webhookFormat, at, post });
   }
   return failures;
+}
+
+/** watchdog は host-health を見て、host-health は watchdog を見る（片方が止まればもう片方が知らせる。同時の停止はどちらからも見えない）。未登録は異常にしない */
+export function watchdogItem({ installed, job, updatedAt, now, gap = false }) {
+  const item = (level, value) => ({ id: 'monitor_watchdog', level, value, kind: 'state' });
+  if (installed == null || job == null || gap) return item('unknown', null); // 監視の空白・起動の直後は watchdog もまだ回っていない（Mac の停止の後の偽の CRIT を出さない）
+  if (!installed) return item('ok', 'not_installed');
+  if (!job.loaded) return item('crit', 'not_loaded');
+  const ms = Date.parse(now) - Date.parse(updatedAt);
+  if (!Number.isFinite(ms)) return item('warn', 'no_state'); // 登録した直後は記録がまだ無い。続いた時だけ知らせる
+  return ms > WATCHDOG_STALE_MS ? item('crit', `stale ${Math.round(ms / 60_000)}m`) : item('ok', 'ok');
+}
+function watchdogUpdatedAt(dir) {
+  try {
+    return JSON.parse(readFileSync(path.join(dir, 'watchdog.json'), 'utf8')).updated_at ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 記録の行（新しい月のファイルも全部）。state-dir の YYYY-MM.jsonl を読むだけ */
+function recordLines(stateDir) {
+  const files = existsSync(stateDir) ? readdirSync(stateDir).filter((f) => /^\d{4}-\d{2}\.jsonl$/.test(f)) : [];
+  return files.flatMap((f) => readFileSync(path.join(stateDir, f), 'utf8').split('\n').filter(Boolean));
+}
+
+/**
+ * 四半期の運用要約。送るのは 1 回の run に 1 通まで・間隔をあけて回数も限る。送る前に試みを state へ残す（送れた後の書き込みに失敗しても 6 時間は重ねない）。
+ * PAUSE の間・webhook が無い時は試みに数えない。戻り値の state を次の state へ入れる。
+ */
+export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhookFormat, post }) {
+  const q = prev?.quarterly ?? { last_period: previousPeriod(periodOf(Date.parse(at))), attempts: 0, last_attempt_at: null };
+  const period = duePeriod(q, at);
+  if (!period || paused || !webhook || !canAttempt(q, at)) return { state: q, code: null };
+  const attempts = (q.attempts ?? 0) + 1;
+  const tried = { ...q, attempts, last_attempt_at: at };
+  writeState(stateDir, { ...(prev ?? { schema: STATE_SCHEMA, items: {} }), quarterly: tried });
+  let r;
+  try {
+    const text = quarterlyText(period, summarizeQuarter(recordLines(stateDir), period));
+    r = await post([], { spec: webhook, format: webhookFormat, at, text });
+  } catch {
+    r = { sent: false, code: 'QUARTERLY_FAILED' }; // 要約の失敗で 1 回分の監視を失敗にしない
+  }
+  if (r.sent) return { state: { last_period: period, attempts: 0, last_attempt_at: null }, period, code: r.code };
+  if (attempts >= QUARTERLY_RETRY.max_attempts) return { state: { last_period: period, attempts: 0, last_attempt_at: null }, period, code: 'QUARTERLY_GAVE_UP' };
+  return { state: tried, period, code: r.code };
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
@@ -491,7 +600,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     const o = await collect({ run, uid, dataDirs, hermesUser, guard, github });
     const gap = monitorGapEvent(prev, at);
     const items = [...evaluate(o), ...evaluateEvents(o, prev), ...gap, { id: 'monitor_pause', level: expired ? 'warn' : 'ok', value: expired ? 'expired' : paused ? 'active' : 'none', kind: 'state' }];
-    if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard));
+    if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS }));
     if (github) items.push(...evaluateGithub(o.github, o.guard?.repos, prev?.github, at), ...evaluateGithubEvents(o.github, prev?.github));
     const d = decide(items, prev, { now: at, paused });
     // 今回見なかった項目は消す（外した repo・Hermes の水準が残り続けない）。GitHub が読めなかった回は残す
@@ -500,21 +609,21 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     let nextItems = Object.fromEntries(Object.entries(d.items).filter(([id]) => keep(id)));
     let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
     if (d.notify.length && webhook) {
+      // 送れた印を残せないなら送らない（書けない間に同じ通知を毎回重ねない）。書けないことは recordFailure が知らせる
+      writeState(stateDir, prev ?? { schema: STATE_SCHEMA, items: {} });
       const r = await post(d.notify, { spec: webhook, format: webhookFormat, at });
       notifyCode = r.code;
       if (!r.sent) {
-        // 送れなかった項目は前の状態に戻し、次の回にもう一度判定させる
-        nextItems = { ...nextItems };
-        for (const n of d.notify) {
-          if (prev?.items?.[n.id]) nextItems[n.id] = prev.items[n.id];
-          else delete nextItems[n.id];
-        }
+        nextItems = rollbackUnsent(d.notify, prev?.items, nextItems, at);
       }
     }
     const degraded = items.some((x) => (x.id === 'disk_free_gib' || x.id === 'memory_pressure') && x.level === 'crit');
     setFlag(stateDir, 'DEGRADED', degraded, at);
     // 送れなかった回と保守窓の間は、出来事の基準を進めない（次の回・明けた後に知らせる）
     const eventsUnsent = paused || (notifyCode !== 'SENT' && notifyCode !== 'NO_WEBHOOK' && d.notify.some((n) => n.change === 'event'));
+    // 基準を進めない回は同じ出来事が次の回にまた出るので、繰り返しの回数に足さない
+    const bursts = eventsUnsent ? (prev?.bursts ?? {}) : d.bursts;
+    const quarterly = await runQuarterly({ stateDir, prev, at, paused, webhook, webhookFormat, post });
     writeState(stateDir, {
       schema: STATE_SCHEMA,
       updated_at: at,
@@ -526,13 +635,15 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       interface: eventsUnsent ? (prev?.interface ?? null) : (o.route?.interface ?? prev?.interface ?? null),
       consecutive_failures: 0,
       items: nextItems,
+      bursts,
+      quarterly: quarterly.state,
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(github ? { github: nextGithubState(o.github, prev?.github, at, { keepEvents: eventsUnsent }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
     });
     const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
     for (const x of items) levels[x.level] += 1;
-    appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), `${JSON.stringify({ at, paused, degraded, levels, items: items.map(({ id, level, value }) => ({ id, level, value })), notify: d.notify.map(({ id, level, change }) => ({ id, level, change })), notify_code: notifyCode })}\n`, { mode: 0o600 });
+    appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), `${JSON.stringify({ at, paused, degraded, levels, items: items.map(({ id, level, value }) => ({ id, level, value })), notify: d.notify.map(({ id, level, change }) => ({ id, level, change })), notify_code: notifyCode, ...(quarterly.code ? { quarterly: { period: quarterly.period, code: quarterly.code } } : {}) })}\n`, { mode: 0o600 });
     return { code: 0, status: 'ok', items, notify: d.notify, notifyCode, paused, degraded, levels };
   } catch (err) {
     const failures = await recordFailure({ stateDir, at, webhook, webhookFormat, post });
@@ -543,14 +654,15 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
 // ─── CLI ───
 
 export function parseArgs(argv) {
-  const a = { dataDirs: [], json: false, guard: true, report: false, webhookTest: false };
-  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner' };
+  const a = { dataDirs: [], json: false, guard: true, report: false, webhookTest: false, quarterlyPreview: false };
+  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner', '--period': 'period' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--json') { a.json = true; continue; }
     if (k === '--no-guard') { a.guard = false; continue; }
     if (k === '--report') { a.report = true; continue; }
     if (k === '--webhook-test') { a.webhookTest = true; continue; }
+    if (k === '--quarterly-preview') { a.quarterlyPreview = true; continue; }
     if (i + 1 >= argv.length) throw new Error(`${k} needs a value`);
     if (k === '--data-dir') a.dataDirs.push(argv[i + 1]);
     else if (map[k]) a[map[k]] = argv[i + 1];
@@ -573,15 +685,14 @@ export function validateArgs(a) {
   if (a.webhookFormat !== undefined && !['json', 'slack', 'discord'].includes(a.webhookFormat)) errors.push('--webhook-format must be json|slack|discord');
   if (a.webhookTest && !a.webhook) errors.push('--webhook-test needs --webhook');
   if (a.githubOwner !== undefined && !GITHUB_OWNER.test(a.githubOwner)) errors.push('--github-owner must be a GitHub owner name');
+  if (a.period !== undefined && !isPeriod(a.period)) errors.push('--period must look like 2026Q4');
   return errors;
 }
 
 /** 記録の要約（観察用）。state-dir の YYYY-MM.jsonl を読むだけ */
 export function reportOf(stateDir, { days = 7, now = new Date() } = {}) {
   const since = new Date(now.getTime() - days * 86_400_000).toISOString();
-  const files = existsSync(stateDir) ? readdirSync(stateDir).filter((f) => /^\d{4}-\d{2}\.jsonl$/.test(f)) : [];
-  const lines = files.flatMap((f) => readFileSync(path.join(stateDir, f), 'utf8').split('\n').filter(Boolean));
-  return { component: 'edl-host-health', days, ...summarizeRecords(lines, { since }) };
+  return { component: 'edl-host-health', days, ...summarizeRecords(recordLines(stateDir), { since }) };
 }
 
 async function main(argv) {
@@ -590,6 +701,11 @@ async function main(argv) {
   const errors = validateArgs(a);
   if (errors.length) { console.error(errors.join('\n')); return 2; }
   if (a.report) { console.log(JSON.stringify(reportOf(a.stateDir ?? DEFAULT_STATE_DIR, { days: Number(a.days ?? 7) }), null, 2)); return 0; }
+  if (a.quarterlyPreview) {
+    const period = a.period ?? previousPeriod(periodOf(Date.now()));
+    console.log(quarterlyText(period, summarizeQuarter(recordLines(a.stateDir ?? DEFAULT_STATE_DIR), period, { now: Date.now() })));
+    return 0;
+  }
   if (a.webhookTest) {
     const r = await postAlerts([{ id: 'delivery_test', level: 'ok', value: '配送試験 異常ではありません', change: 'event' }], { spec: a.webhook, format: a.webhookFormat ?? 'json', at: new Date().toISOString() });
     console.log(JSON.stringify({ component: 'edl-host-health', webhook_test: r.code }));

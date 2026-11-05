@@ -20,7 +20,7 @@ test('判定：解除・記録の途絶は CRIT。launchctl が読めない・DI
   const state = { updated_at: iso(0) };
   assert.deepEqual(monitorState({ state, disabled: false, job, now: iso(60) }), { level: 'ok', value: 'ok' });
   assert.deepEqual(monitorState({ state, disabled: false, job, now: iso(120) }), { level: 'crit', value: 'stale 120m' });
-  assert.equal(monitorState({ state, disabled: true, job, now: iso(500) }).level, 'unknown', '12 時間ごとの本体の通知に 3 時間ごとを重ねない');
+  assert.equal(monitorState({ state, disabled: true, job, now: iso(500) }).level, 'unknown', '本体の通知に重ねない');
   assert.equal(monitorState({ state, disabled: true, job: { loaded: false }, now: iso(1) }).value, 'not_loaded', '解除されていれば本体は知らせられない');
   assert.deepEqual(monitorState({ state, disabled: false, job: { loaded: false }, now: iso(1) }), { level: 'crit', value: 'not_loaded' });
   assert.equal(monitorState({ state, disabled: false, job: null, now: iso(1) }).level, 'unknown');
@@ -28,7 +28,7 @@ test('判定：解除・記録の途絶は CRIT。launchctl が読めない・DI
   assert.equal(monitorState({ state: { updated_at: 'broken' }, disabled: false, job, now: iso(1) }).value, 'no_state');
 });
 
-test('通知：止まった時に 1 回・続けば 3 時間ごと・送れなければ次の回・回復は 1 回・host-health の state は書かない', async () => {
+test('通知：止まった時に 1 回・続けば 24 時間後に再通知・送れなければ次の回・回復は 1 回・host-health の state は書かない', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'edl-watchdog-'));
   try {
     const state = path.join(dir, 'state.json');
@@ -44,10 +44,11 @@ test('通知：止まった時に 1 回・続けば 3 時間ごと・送れな�
     assert.deepEqual([down.notifyCode, down.notify[0].id, down.notify[0].level], ['WEBHOOK_UNREACHABLE', 'monitor_alive', 'crit']);
     assert.equal((await tick(180)).notifyCode, 'SENT', '送れなかった分をもう一度');
     assert.equal((await tick(240)).notify.length, 0, '重ねない');
-    assert.equal((await tick(180 + 180)).notify[0].change, 'reminder');
-    writeFileSync(state, JSON.stringify({ updated_at: iso(400) }));
-    assert.equal((await tick(401)).notify.length, 0, '回復は 2 回続いてから');
-    const up = await tick(430);
+    assert.equal((await tick(180 + 1439)).notify.length, 0, '24 時間は重ねない');
+    assert.equal((await tick(180 + 1440)).notify[0].change, 'reminder');
+    writeFileSync(state, JSON.stringify({ updated_at: iso(1700) }));
+    assert.equal((await tick(1701)).notify.length, 0, '回復は 2 回続いてから');
+    const up = await tick(1730);
     assert.deepEqual([up.notify[0].change, up.notify[0].level], ['recovered', 'ok']);
     assert.ok(posted.every((n) => n.id === 'monitor_alive'));
     writeFileSync(state, before);

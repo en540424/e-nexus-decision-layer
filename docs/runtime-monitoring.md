@@ -10,6 +10,8 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 | `scripts/host-health.mjs` | 30 分ごとの 1 回分：集める・判定する・記録する・変化を知らせる | 通信なし（`--webhook`・`--github-owner` を付けた時だけ） |
 | `scripts/lib/runtime-guard.mjs` | Hermes の常駐と隔離・repo・relay・バックアップ・設定の改変 | host-health の中で動く |
 | `scripts/lib/github-guard.mjs` | GitHub の公開範囲・CI・repo の異常 | `--github-owner` の時だけ |
+| `scripts/lib/alert-policy.mjs` | 知らせる基準と本文の文（§2） | host-health の中で動く |
+| `scripts/lib/quarterly-report.mjs` | 四半期の運用要約（§2-1） | host-health の中で動く |
 | `scripts/host-health-watchdog.mjs` | host-health の停止を別の job から見る | 生成だけ（登録は Human） |
 | `scripts/runtime-status-summary.mjs` | Hermes へ渡す要約のモック（§6） | 一時フォルダにしか書けない |
 | `scripts/backup-*.mjs` | バックアップの棚卸しと復元の予行（§5） | 合成データだけ・外へ送らない |
@@ -18,23 +20,43 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 
 ## 2. 通知（Discord）
 
+**普段は静かに監視し、本当に必要な時だけ Human に知らせる**（2026-11-05 Human 決定・E-NEXUS の標準方針）。基準は `scripts/lib/alert-policy.mjs`、判定は `host-health.mjs` の `decide`。
 宛先は専用チャンネルの専用 Webhook。URL は Keychain の `E-NEXUS/edl/host-health-webhook` だけに置く（引数・ファイル・Git に置かない）。
 
-| 種類 | 通知 |
-|---|---|
-| CRIT | 発生時すぐ。続けば 3 時間ごと |
-| WARN | 発生時 1 回。続けば 12 時間ごと |
-| 回復 | 2 回続けて ok になってから 1 回（30 分遅れる代わりに行き来で通知を重ねない） |
-| 出来事 | 再起動・回線の切替・Hermes の再起動・固定ファイルの変化・監視の定義と安全 policy の変化・com.e-nexus の常駐の増減・GitHub の公開範囲の変化・監視の空白。各 1 回 |
-| 監視の停止 | `DISABLED` になった時 CRIT。止まっている間は 12 時間ごと |
-| 正常 | 送らない（定期の「異常なし」は作らない） |
+| 種類 | Discord | 詳細 |
+|---|---|---|
+| 正常 | 送らない | 30 分ごとの記録だけ |
+| 一時的な異常 | 送らない | WARN が 24 時間に満たない間は記録だけ。2 回続けて ok なら数え直す |
+| 続く WARN | 1 回 | 24 時間続いた時に 1 回だけ。再通知なし・回復の通知なし |
+| CRIT（重大） | すぐ 1 回 | 新規と WARN からの悪化 |
+| CRIT の継続 | 控えめに再通知 | 24 時間後・その 48 時間後・96 時間後…（上限 7 日）。WARN へ下がった間は黙り、24 時間以上あいて CRIT へ戻れば知らせる。隔離・user 範囲は新しいコードが増えれば知らせ直す |
+| 回復 | 1 回 | CRIT を知らせた項目だけ、2 回続けて ok になってから。送れない間に解消した CRIT も、送れるようになった回に 1 回（回線断は送信も失敗するので） |
+| 行き来する CRIT | 間引く | 回復を知らせてから 6 時間は重ねない。続いていれば明けた回に知らせる（隔離・電源・回線・監視の停止は待たない） |
+| 重大な出来事 | すぐ 1 回 | 再起動・監視の空白・Hermes の固定ファイルの変化・監視の定義と安全 policy の変化・常駐の増減・GitHub の公開範囲と既定 branch の変化 |
+| 軽微な出来事 | 送らない | 回線の切替・Hermes の再起動。24 時間に 3 回繰り返した時だけ 1 回 |
+| 監視の停止 | すぐ 1 回 | §3。止まっている間は 24 時間ごと |
+| 運用要約 | 四半期に 1 通 | §2-1 |
 
-- 送れなかった分は次の回にもう一度（出来事の基準も進めない）。`PAUSE` の間は記録だけで、状態も出来事の基準も進めず、明けた後に知らせる
+項目ごとの例外：Hermes の停止は 1 時間（3 回の観測）続いたら重大として扱う（再通知と回復の通知あり）。user 範囲の指示の混入は WARN でも待たない。`repo:`・`relay_outbox` は WARN になるまでの猶予が 24 時間あるので、知らせるのは 48 時間後。`backup_time_machine` は 3 日で WARN なので 4 日後。
+
+繰り返す短い WARN（毎回 24 時間に届かない）は知らせない（累積では見ない）。重大が続く間の値の悪化（ディスクの空きがさらに減るなど）は次の再通知まで知らせない。送れた印を残せない時は送らない（記録を書けない間に同じ通知を重ねない。§3）。
+
+- 送れなかった分は次の回にもう一度（30 分に 1 回まで。出来事の基準も進めない）。`PAUSE` の間は記録だけで、状態も出来事の基準も進めず、明けた後に知らせる
 - `PAUSE` は 72 時間で効かなくなる（消し忘れで全部が黙らないように。`monitor_pause=expired` の WARN）
-- 本文は固定のコードと値だけ。値は項目ごとの形（`VALUE_SHAPES`）に合うものだけ通し、それ以外の文字列は `[redacted]` にする（allowlist。項目を足す時はここへも足す）。先頭は `[E-NEXUS Mac Runtime host]`（Trading Lab の通知と取り違えない）
+- 本文は 1 行に「対象：何が起きたか → 対応」だけ（例：`【重大】起動ディスク：空きが少ない（18.2） → 要対応`）。文は固定で、値は項目ごとの形（`VALUE_SHAPES`）に合うものだけ通し、それ以外の文字列は `[redacted]` にする（allowlist。項目を足す時はここへも足す）。先頭は `[E-NEXUS Mac Runtime host]`（Trading Lab の通知と取り違えない）。詳細は内部の記録（`YYYY-MM.jsonl`）に残す
 - Discord の mention は `allowed_mentions` で全部無効。`discord` 形式の宛先は Discord の webhook の形だけ・redirect に従わない
 - 宛先が Discord の webhook なら本文は常に Discord の形（`--webhook-format` の付け忘れで送れなくならない）
 - 回復は今回見なかった項目には出ない（外した repo などは state から消える）
+
+### 2-1. 運用要約（四半期）
+
+暦四半期（1・4・7・10 月）の最初の日の 9 時（日本時間）より後の最初の回に、前の四半期を 1 通だけ送る。既存の host-health の job の中で動く（常駐を増やさない）。毎日・毎週・毎月の正常報告はしない。
+
+- 本文は集計の数だけ（稼働率・欠落の回数・重大の件数と対応済み・未解決・軽微な警告・出来事・host-health が送った通知。watchdog の通知は数えない）。項目名・値は載せない（`scripts/lib/quarterly-report.mjs`）
+- 送れない時は 6 時間あけて 8 回まで。それでも送れなければその四半期は諦める（`QUARTERLY_GAVE_UP` を記録）。Mac が止まっていて飛ばした四半期は積み上げず、最後の 1 通だけ
+- `PAUSE` の間は送らない。state を失った時は同じ四半期を二度送らない側へ倒す
+- 下見：`node scripts/host-health.mjs --quarterly-preview [--period 2026Q4]`（送らない・何も書かない）
+- **四半期の要約が届かなければ、それ自体が監視の停止の手がかりになる**（§3 の未カバーの最後の網）
 
 ### 接続（Human の操作）
 
@@ -46,12 +68,25 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 
 | 止まり方 | 見つけ方 |
 |---|---|
-| 例外が 3 回続いた | `DISABLED`＋CRIT の通知。止まっている間も 12 時間ごと。Human が消した後は数え直す |
-| 記録を書けない | 回数を残せないので毎回 CRIT を知らせる |
+| 例外が 3 回続いた | `DISABLED`＋CRIT の通知。止まっている間も 24 時間ごと。Human が消した後は数え直す |
+| 記録を書けない | 回数を残せないので時刻の枠で CRIT を知らせる（6 時間ごとの最初の 1 時間。他の通知は送らない） |
 | 全体の時間切れ（60 秒） | 失敗に数える（上と同じ） |
 | 一時的に止まって再開した | 再開した回に `monitor_gap`（最後の成功から 90 分を超えた空白。再開の回が失敗しても持ち越す） |
-| job の解除・ハング・記録の途絶 | `host-health-watchdog`（別の job・登録は Human。CRIT は 3 時間ごと。`DISABLED` は本体の担当で重ねない） |
-| Mac の停止・回線断 | Mac の上の監視では見えない。再開した時の `rebooted`・`monitor_gap` だけ。外からの見張りは Human の判断（新しいサービスになる） |
+| job の解除・ハング・記録の途絶 | `host-health-watchdog`（別の job・登録は Human。`DISABLED` は本体の担当で重ねない）。**未登録の間は再開するまで見えない** |
+| watchdog の解除・ハング | host-health の `monitor_watchdog`（解除＝CRIT・記録が 3 時間途絶＝CRIT・plist を消せば `residents_changed`）。未登録なら `not_installed` で異常にしない |
+
+### 未カバー（Mac の上の監視では知らせられない）
+
+| 止まり方 | 残る手がかり |
+|---|---|
+| host-health と watchdog が同時に止まる | 再開した時の `monitor_gap`。再開しなければ四半期の要約が届かないこと |
+| Mac の停止 | 再開した時の `rebooted`・`monitor_gap`。外からの見張りは Human の判断（新しいサービスになる） |
+| 回線断 | 監視は動き続けるが送れない。戻った回に通知（`recovered_missed` か続く CRIT） |
+| 記録を書けない間に起きて解消した CRIT | 通知は送らない（§2）。戻った回の `monitor_gap` と記録だけ |
+| Webhook の失効・Discord の障害 | 静かな運用では次の異常か四半期まで分からない。送ろうとした回の `notify_code` が記録に残る（`--report`） |
+| host-health の plist から `--webhook` を消す | `monitor_config_changed` は送る先が無く、基準だけ進む。記録の `NO_WEBHOOK` だけが残る |
+| `DISABLED` のまま job が起動しなくなる | watchdog は `DISABLED` を本体に任せるので、本体の 24 時間ごとの通知が止まっても知らせない |
+| watchdog の plist に `--webhook` が無い | 動いていても送れない。`connect-discord-alerts.sh` は host-health の job だけ確かめる |
 
 ## 4. GitHub
 
@@ -61,8 +96,9 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 |---|---|
 | private → public | CRIT（出来事） |
 | public → private・既定 branch の変化 | WARN（出来事） |
-| 既定 branch の先頭 commit の CI が FAILURE／ERROR | WARN |
-| archived・disabled・見えない repo | WARN |
+| 既定 branch の先頭 commit の CI が FAILURE／ERROR | WARN（§2 のとおり 24 時間続けば 1 回） |
+| archived | WARN |
+| disabled・見えない repo | CRIT（CI の失敗が続く repo でも悪化としてすぐ知らせる） |
 | 通信・認証の失敗 | 6 時間までは unknown（悪化も回復も作らない）。続けば `github_api` を WARN |
 | Mac の HEAD と GitHub の差 | 値だけ。別の PC の push で Mac が遅れるのは普通なので知らせない |
 
@@ -106,7 +142,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 ```
 host-health ──記録──▶ data/host-health/（state.json・YYYY-MM.jsonl）
      │                    └─(A2 の承認後)─▶ 要約ファイル ─読むだけ─▶ Hermes
-     └──変化だけ──▶ Discord（Human）
+     └──重大と続く異常だけ──▶ Discord（Human）
 Claude Code ──作業の記録──▶ devlog relay ──▶ Vault（Windows）
 App・Agent ──CLI／SDK／Gateway──▶ Decision Layer ──▶ Jev（Adapter）
 ```

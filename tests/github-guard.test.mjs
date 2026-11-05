@@ -48,7 +48,7 @@ test('collect：gh api graphql を 1 回だけ・固定の argv・Vault の公�
   assert.deepEqual(Object.keys(g), ['a', ...GITHUB_EXTRA_REPOS]);
 });
 
-test('判定：CI の失敗・archived・disabled・見えない repo は warn。Mac の HEAD との差は値だけで ok', () => {
+test('判定：CI の失敗・archived は warn・disabled・見えない repo は crit。Mac の HEAD との差は値だけで ok', () => {
   const gh = { a: parsed(), b: parsed({ ci: 'FAILURE' }), c: parsed({ ci: 'ERROR' }), d: parsed({ archived: true }), e: parsed({ disabled: true }), f: { found: false }, g: parsed({ ci: 'PENDING', oid: 'bbb' }) };
   const items = evaluateGithub(gh, { a: { oid: 'aaa' }, g: { oid: 'ccc' } }, null, NOW);
   const by = Object.fromEntries(items.map((x) => [x.id, [x.level, x.value]]));
@@ -58,8 +58,8 @@ test('判定：CI の失敗・archived・disabled・見えない repo は warn�
     'github:b': ['warn', 'ci_failure'],
     'github:c': ['warn', 'ci_failure'],
     'github:d': ['warn', 'archived'],
-    'github:e': ['warn', 'disabled'],
-    'github:f': ['warn', 'not_found'],
+    'github:e': ['crit', 'disabled'],
+    'github:f': ['crit', 'not_found'],
     'github:g': ['ok', 'differs_from_mac'],
   });
 });
@@ -147,11 +147,15 @@ test('GitHub が読めない回は github:<name> の状態を消さない（通�
     const fail = repo({ defaultBranchRef: { name: 'master', target: { oid: 'a', statusCheckRollup: { state: 'FAILURE' } } } });
     const good = { run: async () => ok({ r0: fail, r1: repo() }), bin: GITHUB_BINS[0], owner: 'o', repos: ['a'] };
     const down = { ...good, run: async () => ({ code: 1, stdout: '', timedOut: false }) };
-    const r1 = await runHostHealth({ ...base, github: good, now: () => new Date(NOW) });
-    assert.ok(r1.notify.some((n) => n.id === 'github:a'));
-    await runHostHealth({ ...base, github: down, now: () => new Date(Date.parse(NOW) + 60_000) });
-    const r3 = await runHostHealth({ ...base, github: good, now: () => new Date(Date.parse(NOW) + 120_000) });
-    assert.ok(!r3.notify.some((n) => n.id === 'github:a'));
+    const at = (ms) => () => new Date(Date.parse(NOW) + ms);
+    const r1 = await runHostHealth({ ...base, github: good, now: at(0) });
+    assert.ok(!r1.notify.some((n) => n.id === 'github:a'), 'WARN はまず記録だけ');
+    await runHostHealth({ ...base, github: down, now: at(60_000) });
+    const r3 = await runHostHealth({ ...base, github: good, now: at(24 * 3_600_000) });
+    assert.ok(r3.notify.some((n) => n.id === 'github:a'), '読めない回を挟んでも続いた時間を失わない');
+    await runHostHealth({ ...base, github: down, now: at(24 * 3_600_000 + 60_000) });
+    const r5 = await runHostHealth({ ...base, github: good, now: at(24 * 3_600_000 + 120_000) });
+    assert.ok(!r5.notify.some((n) => n.id === 'github:a'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
