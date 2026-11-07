@@ -126,11 +126,11 @@ const PASS = 'synthetic-passphrase-0123456789';
 const TOKEN = 'github_pat_SYNTHETIC0000';
 const creds = (over = {}) => async (t) => ({ 'E-NEXUS/edl/backup-passphrase': PASS, 'E-NEXUS/edl/backup-token': TOKEN, ...over })[t] ?? null;
 const EXPIRY = '2027-02-03 08:39:03 UTC';
-const reply = (status, json = null, bytes = null) => ({ status, json: async () => json, arrayBuffer: async () => bytes, headers: { get: (k) => (k === 'github-authentication-token-expiration' ? EXPIRY : null) } });
+const reply = (status, json = null, bytes = null, extra = {}) => ({ status, json: async () => json, arrayBuffer: async () => bytes, headers: { get: (k) => (k === 'github-authentication-token-expiration' ? EXPIRY : extra[k] ?? null) } });
 const blob = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 
 /** 保存先の役。files に置いたものを読み直しで返す。tamper で読み直しの中身を変える */
-function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, otherJson = {}, refProbe = 403, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
+function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, otherJson = {}, refProbe = 403, probeHeaders = {}, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
   return async (url, opts) => {
     const u = new URL(url);
     calls.push([opts.method, u.pathname, opts.body ?? null, opts.headers.authorization]);
@@ -138,7 +138,7 @@ function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, def
     if (u.pathname === '/repos/o/backup') return reply(repo ? 200 : 404, repo);
     if (u.pathname === '/user/repos') return reply(list === 'denied' ? 403 : 200, list === 'denied' ? {} : list);
     if (u.pathname === '/repos/o/private-other') return reply(other, otherJson);
-    if (u.pathname === '/repos/o/private-other/git/refs') return reply(refProbe, {});
+    if (u.pathname === '/repos/o/private-other/git/refs') return reply(refProbe, {}, null, probeHeaders);
     if (u.pathname === '/repos/o/backup/keys') return reply(keys, []);
     if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.entries()].map(([n, b]) => ({ name: path.basename(n), sha: blob(b) })));
     if (opts.method === 'PUT') {
@@ -628,6 +628,35 @@ test('送る条件：公開の repo へ書ける token は通さない。確か�
     assert.deepEqual([r.code, r.failure], [3, 'token_too_broad']);
     const down = await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe: 502 }) });
     assert.equal(down.failure, 'scope_unverified');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('送る条件：レート制限の 403・429 は「書けない」の証拠に数えない（確かめられなければ送らない）', async () => {
+  const { home, src, base } = setup();
+  try {
+    const pub = { private: false };
+    for (const [refProbe, probeHeaders] of [[403, { 'x-ratelimit-remaining': '0' }], [403, { 'retry-after': '60' }], [429, {}]]) {
+      const r = await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe, probeHeaders }) });
+      assert.deepEqual([r.code, r.failure], [3, 'scope_unverified']);
+    }
+    assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe: 403, probeHeaders: { 'x-ratelimit-remaining': '4999' } }) })).code, 0, '権限の 403 は通す');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('verify は送らないので、公開の repo へ書き込みの要求を出さない（run は毎回確かめる）', async () => {
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    const pub = { private: false };
+    assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ files, other: 200, otherJson: pub }) })).code, 0);
+    const calls = [];
+    assert.equal((await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files, other: 200, otherJson: pub, calls }) })).status, 'verified');
+    assert.deepEqual(calls.filter(([m]) => m !== 'GET'), [], 'verify の要求は全部 GET');
+    assert.equal(calls.some(([, p]) => p.endsWith('/git/refs')), false);
   } finally {
     clean(home, src);
   }

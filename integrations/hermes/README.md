@@ -1,7 +1,9 @@
-# Hermes（Mac mini 常駐 Agent・設計のみ・未導入）から使う
+# Hermes（Mac mini 常駐 Agent）から使う
+
+**2026-11-04〜：Hermes は Mac mini で常駐中。ただし Decision Layer には未接続**（接続の開始は Human の判断。形は `docs/runtime-monitoring.md` §9）。今 Hermes が読むのは host-health の要約だけ（同 §6）。
 
 **2026-09-25〜：Hermes の入口は Common Decision Gateway（`docs/gateway.md`）の HTTP（`POST /v1/decisions`）または MCP。**
-Hermes 未導入のため未接続（完成扱いにしない）。導入時は Hermes 側に consumer adapter（request を組み envelope を読む層）を置くだけで、core・Gateway は変えない。
+未接続（完成扱いにしない）。接続する時は Hermes 側に consumer adapter（request を組み envelope を読む層）を置くだけで、core・Gateway は変えない。
 Mac mini 常駐で HTTP を使う場合は `EDL_GATEWAY_TOKEN`（Human 発行）必須。
 
 **2026-09-29 接続口は用意済み**：Python の HTTP transport `consumer-kit/python/enexus_http_transport.py`（標準ライブラリだけ・https 必須〈dev の loopback は http 可〉・環境照合・fail-closed）。Hermes 側の adapter はこれをコピーし、request を組んで envelope の `decision.tier`・`human_gate.required`・`failure` を読むだけ。Mac mini で Gateway を常駐させる定義は `scripts/gateway-service.mjs --target launchd`（生成のみ）、手順は `docs/deploy-production-gateway.md`（すべて Human-only）。Hermes 本体の導入・OS ユーザー・Secret は引き続き MA-24 の Human 判断（Q6〜Q8）の後。

@@ -11,7 +11,7 @@
  *
  * 本番データを外へ送る条件（**1 つでも欠ければ送らない**・毎回確かめる）：
  *   1. 保存先が Private（API の private と visibility）
- *   2. token が fine-grained で、見える private repo が保存先だけ（一覧と、管理対象の private repo の個別の確認の両方）・公開の repo へ書けない・Administration の権限が無い
+ *   2. token が fine-grained で、見える private repo が保存先だけ（一覧と、管理対象の private repo の個別の確認の両方）・公開の repo へ書けない・Administration の権限が無い（書けないことの確かめは run と check だけ。verify は送らないので確かめない）
  *   3. passphrase が Keychain にあり、Mac の外の控えの確認が済んでいる（passphrase を変えると確認も無効）
  *   4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
  * 届いたことの実証：送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（~/.enexus/backup/last.json）に restore_verified_at を書く。
@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { MAX_BYTES, manifestOf, pack, restore, unpack } from './lib/backup-archive.mjs';
 import { backupSources, planBackup, policyViolations, retentionPlan } from './lib/backup-plan.mjs';
 import { readCredential } from './lib/env-file.mjs';
-import { GITHUB_API, GITHUB_OWNER, GITHUB_TOKEN_PREFIX } from './lib/github-guard.mjs';
+import { GITHUB_API, GITHUB_OWNER, GITHUB_TOKEN_PREFIX, isRateLimited } from './lib/github-guard.mjs';
 import { BACKUP_RECEIPT_SCHEMA, defaultGuard } from './lib/runtime-guard.mjs';
 import { runDrill } from './backup-drill.mjs';
 
@@ -105,7 +105,7 @@ function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
       const seen = Date.parse(res.headers?.get?.('github-authentication-token-expiration'));
       if (Number.isFinite(seen)) expires = new Date(seen).toISOString();
       if (raw) return { status: res.status, bytes: res.status === 200 ? Buffer.from(await res.arrayBuffer()) : null };
-      return { status: res.status, json: await res.json().catch(() => null) };
+      return { status: res.status, limited: isRateLimited(res), json: await res.json().catch(() => null) };
     } catch {
       throw new Stop('github_unreachable');
     } finally {
@@ -116,8 +116,12 @@ function makeApi({ token, fetchImpl, timeoutMs = HTTP_TIMEOUT_MS }) {
   return api;
 }
 
-/** 条件 1・2・3。戻り値は送るのに使うもの。揃わなければ notReady を投げる */
-export async function checkGates({ owner, repo, home, otherRepos, read = readCredential, fetchImpl = globalThis.fetch }) {
+/**
+ * 条件 1・2・3。戻り値は送るのに使うもの。揃わなければ notReady を投げる。
+ * 公開の repo へ書けないことは、必ず失敗する要求でしか確かめられない（実測 2026-11-07：GET の permissions は token でなく人の権限を返す。fine-grained の権限は値を変えずに編集できる）。
+ * 送らない回（verify）は writeProbe: false で、公開の repo へ要求を出さない。
+ */
+export async function checkGates({ owner, repo, home, otherRepos, read = readCredential, fetchImpl = globalThis.fetch, writeProbe = true }) {
   const passphrase = await read(PASSPHRASE_CREDENTIAL).catch(() => null);
   if (!passphrase) throw notReady('no_passphrase');
   if (passphrase.length < MIN_PASSPHRASE) throw notReady('weak_passphrase');
@@ -138,9 +142,10 @@ export async function checkGates({ owner, repo, home, otherRepos, read = readCre
   for (const name of otherRepos) {
     const other = await api('GET', `/repos/${owner}/${name}`);
     if (other.status === 200 && other.json?.private === false) {
-      // 公開の repo は誰でも見えるので、書けないことを確かめる（不正な ref は 422 で、何も作られない。token の範囲の外なら 403／404）
+      if (!writeProbe) continue;
+      // 公開の repo は誰でも見えるので、書けないことを確かめる（不正な ref は 422 で、何も作られない。token の範囲の外なら 403／404。レート制限の 403 は答えでない）
       const probe = await api('POST', `/repos/${owner}/${name}/git/refs`, { body: { ref: 'invalid', sha: '0'.repeat(40) } });
-      if (probe.status >= 500) throw notReady('scope_unverified');
+      if (probe.status >= 500 || probe.limited) throw notReady('scope_unverified');
       if (![403, 404].includes(probe.status)) throw notReady('token_too_broad');
       continue;
     }
@@ -246,7 +251,7 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
   const receipt = path.join(backupDir(home), 'last.json');
   const at = now().toISOString();
   try {
-    const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl });
+    const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl, writeProbe: false });
     const stored = await storedArchives({ api, owner, repo });
     if (!stored.length) throw new Stop('nothing_stored');
     const picks = [...new Set([stored.at(-1), stored[0]])];

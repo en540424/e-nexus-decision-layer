@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { publishStatus } from '../scripts/host-health.mjs';
 import { classify, fixedTexts, OPS_CLASSES } from '../scripts/lib/ops-classify.mjs';
-import { BRIEF_FILE, BRIEF_SCHEMA, GUIDE_FILE, boundaryViolations, buildBrief, externalView, readBrief, renderReply } from '../scripts/lib/runtime-brief.mjs';
+import { BRIEF_FILE, BRIEF_SCHEMA, GUIDE_FILE, boundaryViolations, briefInconsistencies, buildBrief, externalView, readBrief, renderReply } from '../scripts/lib/runtime-brief.mjs';
 import { buildStatusSummary } from '../scripts/lib/runtime-status-summary.mjs';
 
 const NOW = new Date('2026-11-05T10:20:00.000Z');
@@ -114,6 +114,8 @@ test('読む側：壊れ・違う schema・境界の外れ・期限切れ・監�
   assert.equal(readBrief('{"schema":"x"}', { now: NOW }).reason, 'schema');
   assert.equal(readBrief(JSON.stringify({ ...b, extra: 1 }), { now: NOW }).reason, 'boundary');
   assert.equal(readBrief(text, { now: new Date(NOW.getTime() + 91 * 60_000) }).reason, 'stale');
+  assert.equal(readBrief(text, { now: new Date(NOW.getTime() - 6 * 60_000) }).reason, 'future');
+  assert.equal(readBrief(text, { now: new Date(NOW.getTime() - 4 * 60_000) }).ok, true, '時計の小さなずれは許す');
   assert.equal(readBrief(JSON.stringify(buildBrief(stateOf(OK_ITEMS), { items: OK_ITEMS, now: NOW, paused: true })), { now: NOW }).reason, 'monitor_paused');
   const r = readBrief(text, { now: NOW });
   assert.equal(r.ok, true);
@@ -151,4 +153,25 @@ test('仕分け：全部の文が固定で、class は 3 種類。分からな�
   assert.equal(classify('something_new').class, 'human');
   assert.equal(classify('hermes_isolation').class, 'human');
   assert.equal(classify('hermes_service').class, 'human', 'AI は Hermes を再起動しない');
+});
+
+test('矛盾の検知：数の合わない要約・異常があるのに ok の要約・長すぎる有効期限を信じない。書き手の出す形は通る', () => {
+  const ok = buildBrief(stateOf(OK_ITEMS), { items: OK_ITEMS, now: NOW });
+  assert.deepEqual(briefInconsistencies(ok), []);
+  const row = { id: 'heartbeat', level: 'crit', days: 1, class: 'human', cause: classify('heartbeat').cause, next: classify('heartbeat').next };
+  const counts = { open: 1, human: 1, ai: 0, auto: 0 };
+  assert.deepEqual(briefInconsistencies({ ...ok, open_items: [row] }), ['counts_open', 'counts_class', 'overall_below_crit']);
+  assert.deepEqual(briefInconsistencies({ ...ok, overall: 'crit', open_items: [row] }), ['counts_open', 'counts_class']);
+  assert.deepEqual(briefInconsistencies({ ...ok, counts: { ...counts, human: 0, ai: 1 }, overall: 'crit', open_items: [row] }), ['counts_class']);
+  assert.deepEqual(briefInconsistencies({ ...ok, counts, overall: 'warn', open_items: [row] }), ['overall_below_crit']);
+  assert.deepEqual(briefInconsistencies({ ...ok, counts, overall: 'ok', open_items: [{ ...row, level: 'warn' }] }), ['overall_below_warn']);
+  assert.deepEqual(briefInconsistencies({ ...ok, counts, overall: 'crit', open_items: [row] }), []);
+  assert.deepEqual(briefInconsistencies({ ...ok, valid_until: new Date(NOW.getTime() + 24 * 3_600_000).toISOString() }), ['valid_until'], '有効期限を延ばした要約');
+  assert.deepEqual(briefInconsistencies({ ...ok, valid_until: ok.generated_at }), ['valid_until']);
+  assert.equal(readBrief(JSON.stringify({ ...ok, overall: 'ok', counts, open_items: [row] }), { now: NOW }).reason, 'inconsistent');
+  // 書き手が作る異常の要約・止まっている時の要約は通る
+  const bad = [...OK_ITEMS.filter((x) => x.id !== 'disk_free_gib'), { id: 'disk_free_gib', level: 'crit', value: 1, kind: 'state' }];
+  assert.deepEqual(briefInconsistencies(buildBrief(stateOf(bad), { items: bad, now: NOW })), []);
+  assert.deepEqual(briefInconsistencies(buildBrief(stateOf(OK_ITEMS), { items: OK_ITEMS, now: NOW, paused: true })), []);
+  assert.deepEqual(briefInconsistencies(buildBrief(null, { now: NOW, disabled: true })), []);
 });

@@ -172,9 +172,16 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 3. passphrase が Keychain にあり、**Mac の外の控えから打ち直して一致した記録がある**（passphrase を変えると無効）
 4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
 
+公開の repo へ書けないことの確かめ（`check`・`run`）：管理対象の公開 repo へ、必ず失敗する要求（不正な ref とゼロの sha）を 1 回出す。書ける token でも 422 で、何も作られない。token の範囲の外なら 403／404。
+- 残している理由：読み取りでは代わりにならない。`GET /repos/...` の `permissions` は token でなく人の権限を返す（2026-11-07 に実測）。fine-grained の権限は値を変えずに編集できるので、最初の 1 回だけの確認でも足りない
+- 出さない回：`verify` は送らないので出さない（定期の 30 日ごとの検証も含む）。送る経路は `run` だけ
+- レート制限の 403・429 は答えとして数えない（`scope_unverified` で送らない）。要求の形は test で固定している
+
 ### 世代と容量
 
 毎日 1 回。新しい 14 世代と月ごとの最新 12 か月分を repo の先頭に残す（1 回に 5 件まで消す）。消したものも Git の履歴に残る。1 アーカイブ 20 MiB まで・repo 全体 800 MiB を超えたら止めて知らせる（整理は Human）。
+
+**定期の時刻**：plist の `StartCalendarInterval` は launchd が持つ時刻帯で読まれる。Mac の起動の後に時刻帯を変えると、次の起動まで前の時刻帯のまま動く（時と分の指定だけが影響を受け、毎時の job はずれない）。実際の時刻は受領票の `finished_at` で確かめる。見張りは経過時間で判定するので、時刻がずれても検知は変わらない。
 
 ### 監視
 
@@ -226,7 +233,22 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 
 見張りの項目（隔離・固定ファイル・常駐・監視の定義・user 範囲）は §6 と同じく渡さない。
 
-**未確認**：Hermes の実際の読み取りは API を使うので、Console の計上先の確認（Human）まで試さない。OS の権限（group の読み取り）は確認済みで、読む側の手順は `runtime-ops brief` が API なしで同じ判定をする。
+**読む側の検査**（`readBrief`）：形（入力境界）に加えて、中身の矛盾（`briefInconsistencies`：件数と `open_items` が合わない・異常があるのに `overall` が低い・有効期限が 90 分を超える）と未来の時刻（5 分を超える）を信じない。`runtime-ops brief` は `要約を信じられない（理由）` と答える。
+
+### 6-2. Hermes の実読み取りの検証（2026-11-07）
+
+実際の API を使う検証は `deploy/macos/hermes-read-check.sh`。**Human が 1 回だけ実行する**（`sudo` のパスワードが要る。Claude Code は `hermes` として動けず、`.env` も読まない）。
+
+```
+sh deploy/macos/hermes-read-check.sh <証跡のフォルダの絶対パス>
+```
+
+- `hermes -z`（one-shot）を 1 回。道具は `file` だけ、90 秒で強制終了、環境は LaunchDaemon の plist と同じ。Hermes の設定・権限は変えない
+- 読む物：`README.txt`・実物の `runtime-brief.json`・合成の `fixture.json`（human・ai・auto が 1 件ずつ。実物は平常なら異常 0 件なので、見分ける力はこれで試す。`status` の外に置き、終わったら消す）
+- **API の回数**：Hermes がファイルを読むには、読む指示の応答と答えで Messages API の要求が 2 回以上になる。`-z` に回数の上限は無い（`--max-turns` は `chat` だけで、`chat` に `--usage-file` は無い）ので、時間の上限で止める。一時的な障害なら Hermes が再試行する（`agent.api_max_retries`・`auto_recovery_cycles` は既定のまま）。回数は結果の `api_calls`
+- 採点は決定的（`scripts/lib/hermes-read-check.mjs`）：実物の値・合成の分類・書かれていないことを補っていないか・Secret の形・model と provider・回数。結果は証跡の `result.json`、一覧は `runtime-ops overview`
+- 同じ証跡のフォルダでは 2 回目を拒む。もう 1 回は Human の判断
+- **計上先はここでは決めない**。鍵の値を読まずに確かめるため、結果の時刻・model・トークン数を Console の Usage の鍵ごとの表示と Human が突き合わせる。Usage の反映には遅れがあり、直後の 0 は失敗の証拠ではない
 
 ## 7. 役割の分担
 
@@ -307,9 +329,13 @@ Human ──質問──▶ Hermes ──読むだけ──▶ runtime-brief.jso
 
 | 命令 | 使う場面 |
 |---|---|
-| `acceptance [--days 7]` | H2〜H6 と観察の判定（pass／pending／fail）。定期の回の結果を後から確かめる。fail があれば exit 1 |
+| `acceptance [--days 7]` | H2〜H6 と観察（H8）の判定（pass／pending／fail）。定期の回の結果を後から確かめる。fail があれば exit 1 |
 | `why <項目の id>` | 項目の経過・通知の有無・担当・確かめ方。異常の調査の入口 |
 | `human [--ledger <abs>]` | Human が要ることの一覧。台帳（公開 repo に置かない `mac-runtime-state/human-required.json`）＋今の異常＋token の期限 |
 | `brief [--external]` | Hermes が読む要約を読む側の手順で読み、答えの形にする |
+| `timeline [--days 7]` | 全項目の変わり目・出来事・通知を時刻の順に。同じ出来事の連続は 1 行。値は通知と同じ関所を通す |
+| `overview [--days 7]` | 検収・今の状態・Human が要ること・Hermes の読み取りの検証を 1 画面に。新しい判定は足さない |
+
+観察（H8）の窓は `--days` と別に 8 日分を読み、幅が 7 日に届けば判定する。合格の目安：`hermes_service` の異常なし・`hermes_restarted` なし（Human の操作の分は事実を見て Human が判断する）・`hermes_files_changed` なし・RSS のピーク 3 GiB 未満・`memory_pressure` と `swap_used_gib` の警告なし・記録の空白なし（Mac の再起動の分は除く）。1 つでも外れれば fail で、`facts` にどれかが出る。
 
 バックアップの検証は `backup-run.mjs verify`、監視の記録の要約は `host-health.mjs --report`。

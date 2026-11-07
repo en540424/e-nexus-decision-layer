@@ -29,6 +29,9 @@ class GithubFailure extends Error {
   }
 }
 
+/** レート制限の応答か。403 でも権限の答えではないので、「書けない」の証拠に数えない */
+export const isRateLimited = (res) => res.status === 429 || (res.status === 403 && (res.headers?.get?.('x-ratelimit-remaining') === '0' || Boolean(res.headers?.get?.('retry-after'))));
+
 /** token を閉じ込めた GET。宛先は api.github.com の固定、redirect に従わない。読めない応答は投げる（token を含む文は作らない） */
 export function makeGithubGet({ token, fetchImpl = globalThis.fetch, signal }) {
   return async (resource) => {
@@ -39,7 +42,7 @@ export function makeGithubGet({ token, fetchImpl = globalThis.fetch, signal }) {
       throw new GithubFailure('failed');
     }
     if (res.status === 401) throw new GithubFailure('auth');
-    if (res.status === 429 || (res.status === 403 && (res.headers?.get?.('x-ratelimit-remaining') === '0' || res.headers?.get?.('retry-after')))) throw new GithubFailure('failed');
+    if (isRateLimited(res)) throw new GithubFailure('failed');
     if (res.status === 403) throw new GithubFailure('auth'); // 権限の足りない token
     if (res.status >= 500) throw new GithubFailure('failed');
     let json = null;
@@ -206,7 +209,7 @@ export async function verifyMonitorToken({ token, owner, repos, now, fetchImpl =
     if (keys === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' };
     if (keys !== 403 && keys !== 404) return { ok: false, code: 'SCOPE_UNVERIFIED' };
     const probe = await call(`/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
-    if (probe.status >= 500) return { ok: false, code: 'GITHUB_UNREACHABLE' };
+    if (probe.status >= 500 || isRateLimited(probe)) return { ok: false, code: 'GITHUB_UNREACHABLE' };
     if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };
   } catch {
     return { ok: false, code: 'GITHUB_UNREACHABLE' };

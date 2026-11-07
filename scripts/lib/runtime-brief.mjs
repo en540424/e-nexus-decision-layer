@@ -15,6 +15,8 @@ export const BRIEF_SCHEMA = 'runtime-brief/v1';
 export const BRIEF_FILE = 'runtime-brief.json';
 export const GUIDE_FILE = 'README.txt';
 const DAY = 86_400_000;
+/** 読む側の時計のずれの許容。これより先の時刻の要約は信じない */
+const CLOCK_SKEW_MS = 5 * 60_000;
 /** 名前を出してよい項目。repo・job・GitHub は群にまとめて件数だけ */
 const NAMED = Object.freeze(['disk_free_gib', 'memory_pressure', 'swap_used_gib', 'load_15m', 'thermal', 'power', 'network_default_route', 'data_gib', 'hermes_rss_gib', 'hermes_service', 'backup_time_machine', 'backup_archive', 'backup_history', 'credential_backup_token', 'heartbeat', 'notify_channel', 'relay_outbox', 'github_api']);
 const GROUPED = Object.freeze([['repos', (id) => id.startsWith('repo:')], ['jobs', (id) => id.startsWith('job:')], ['github', (id) => id.startsWith('github:')]]); // github_api は token の話なので群に混ぜない（担当が違う）
@@ -102,7 +104,7 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const KEYS = new Set(['schema', 'generated_at', 'source_updated_at', 'valid_until', 'monitor', 'overall', 'counts', 'open', 'human', 'ai', 'auto', 'sections', 'host', 'hermes', 'jobs', 'repos', 'github', 'backup', 'heartbeat', 'notify', 'relay', 'level', 'not_ok', 'ci_failing', 'token_days_left', 'age_days', 'restore_age_days', 'failing', 'history', 'state', 'outbox', 'unacked', 'open_items', 'id', 'days', 'class', 'cause', 'next', 'groups', 'attention', 'group']);
 const WORDS = new Set([BRIEF_SCHEMA, 'runtime-status-summary/v1', 'running', 'paused', 'stale', 'disabled', ...LEVELS, ...HEARTBEAT, ...CHANNEL, ...HISTORY, ...OPS_CLASSES, ...NAMED, 'group_repos', 'group_jobs', 'group_github', 'host', 'hermes', 'backup', 'jobs', 'repos', 'github']);
 /** 許す文字列に紛れても出さない形（二重の防御）。パス・IP・メール・Secret・Trading Lab */
-const DENY_SHAPES = Object.freeze([/\/(?:Users|home|private|var|Volumes|etc)\//i, /\b\d{1,3}(?:\.\d{1,3}){3}\b/, /[\w.+-]+@[\w-]+\.[\w.-]+/, /\bgithub_pat_|\bgh[pousr]_|\bsk-[A-Za-z0-9]|discord(?:app)?\.com\/api|xai-[A-Za-z0-9]/i, /trading[\s._-]*lab|parallels/i]);
+export const DENY_SHAPES = Object.freeze([/\/(?:Users|home|private|var|Volumes|etc)\//i, /\b\d{1,3}(?:\.\d{1,3}){3}\b/, /[\w.+-]+@[\w-]+\.[\w.-]+/, /\bgithub_pat_|\bgh[pousr]_|\bsk-[A-Za-z0-9]|discord(?:app)?\.com\/api|xai-[A-Za-z0-9]/i, /trading[\s._-]*lab|parallels/i]);
 
 /**
  * 渡してよい形かを確かめる。戻り値は外れた場所の一覧（値は入れない＝ここからも漏らさない）。空なら通す。
@@ -134,7 +136,23 @@ export function boundaryViolations(doc, { texts = fixedTexts() } = {}) {
 
 // ─── 読む側（Hermes・将来の読み手の手順。API なしで同じ判定を確かめる）───
 
-/** 読む時の判定。信じてよい時だけ brief を返す。reason：unreadable／schema／boundary／stale／monitor_<状態> */
+/** 要約の中の矛盾。形は正しくても数が合わなければ、書き手の不具合か差し替えの疑いなので内容を信じない。戻り値は場所の名前だけ */
+export function briefInconsistencies(doc) {
+  const bad = [];
+  const open = Array.isArray(doc.open_items) ? doc.open_items : [];
+  const c = doc.counts ?? {};
+  if (c.open !== open.length) bad.push('counts_open');
+  if (OPS_CLASSES.some((k) => c[k] !== open.filter((o) => o.class === k).length)) bad.push('counts_class');
+  if (doc.monitor === 'running') {
+    if (open.some((o) => o.level === 'crit') && doc.overall !== 'crit') bad.push('overall_below_crit');
+    if (open.some((o) => o.level === 'warn') && doc.overall === 'ok') bad.push('overall_below_warn');
+  }
+  const life = Date.parse(doc.valid_until) - Date.parse(doc.generated_at);
+  if (!(life > 0 && life <= STALE_MS)) bad.push('valid_until');
+  return bad;
+}
+
+/** 読む時の判定。信じてよい時だけ brief を返す。reason：unreadable／schema／boundary／inconsistent／future／stale／monitor_<状態> */
 export function readBrief(text, { now = new Date() } = {}) {
   let doc;
   try {
@@ -144,6 +162,8 @@ export function readBrief(text, { now = new Date() } = {}) {
   }
   if (doc?.schema !== BRIEF_SCHEMA) return { ok: false, reason: 'schema' };
   if (boundaryViolations(doc).length) return { ok: false, reason: 'boundary' };
+  if (briefInconsistencies(doc).length) return { ok: false, reason: 'inconsistent' };
+  if (Date.parse(doc.generated_at) - now.getTime() > CLOCK_SKEW_MS) return { ok: false, reason: 'future' };
   if (!(now.getTime() <= Date.parse(doc.valid_until))) return { ok: false, reason: 'stale' };
   if (doc.monitor !== 'running') return { ok: false, reason: `monitor_${doc.monitor}` };
   return { ok: true, brief: doc };
@@ -185,5 +205,6 @@ runtime-status.json：水準と件数だけの要約（runtime-status-summary/v1
 1. valid_until を過ぎていたら内容を信じず「監視の要約が古い」と答える
 2. monitor が running 以外なら overall を使わず、その状態だけを答える
 3. open_items の class が human なら Human に確認を求める。ai は Claude Code の作業、auto は対応不要
-4. ここに無いこと（値・パス・repo 名）は推測しない。承認・実行・再起動の判断はしない
+4. counts と open_items の数が合わない時は内容を信じず「要約に矛盾がある」と答える
+5. ここに無いこと（値・パス・repo 名）は推測しない。承認・実行・再起動の判断はしない
 `;

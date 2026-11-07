@@ -11,7 +11,7 @@ import { monitorWebhookItem } from '../scripts/host-health-watchdog.mjs';
 import { collectGithub } from '../scripts/lib/github-guard.mjs';
 import { ruleOf } from '../scripts/lib/alert-policy.mjs';
 import { collectGuard, evaluateGuard, evaluateGuardEvents, plistArgs } from '../scripts/lib/runtime-guard.mjs';
-import { acceptanceOf, humanRequired, parse, readRecords, validate, whyOf } from '../scripts/runtime-ops.mjs';
+import { OBSERVE_WINDOW_DAYS, acceptanceOf, humanRequired, parse, readRecords, renderOverview, renderTimeline, timelineOf, validate, whyOf } from '../scripts/runtime-ops.mjs';
 
 const NOW = Date.parse('2026-11-08T10:20:00.000Z');
 const at = (h) => new Date(NOW - h * 3_600_000).toISOString();
@@ -32,6 +32,62 @@ const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r.verdict]));
 test('検収：記録で揃えば pass。観察は 7 日たつまで pending', () => {
   const v = byId(acceptanceOf(base()));
   assert.deepEqual(v, { H2: 'pass', H3: 'pass', H4: 'pass', H5: 'pass', H6: 'pass', H8: 'pending' });
+});
+
+test('観察：窓が 7 日ちょうどでも届くように別に読む。--days が短くても観察の幅は変わらない', () => {
+  const week = Array.from({ length: 7 * 48 + 2 }, (_, i) => row((7 * 48 + 1 - i) / 2, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }]));
+  const h8 = (b) => acceptanceOf(b).find((r) => r.id === 'H8');
+  assert.ok(OBSERVE_WINDOW_DAYS > 7);
+  assert.equal(h8({ ...base(), observation: week }).verdict, 'pass');
+  assert.equal(h8({ ...base(), observation: week.slice(-48 * 3) }).verdict, 'pending', '3 日分だけなら合格にしない');
+  assert.equal(h8({ ...base(), records: week.slice(-10), observation: week }).verdict, 'pass', '--days 3 でも観察の結果は同じ');
+});
+
+test('観察：合格の目安を全部見る（常駐・再起動・固定ファイル・RSS・メモリ・空白。Mac の再起動の空白は除く）', () => {
+  const ok = (h, extra = []) => row(h, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }, { id: 'memory_pressure', level: 'ok', value: 1 }, ...extra]);
+  const obs = (extra) => [ok(3), ok(2.5, extra), ok(2)];
+  const h8 = (observation) => acceptanceOf({ ...base(), observation }).find((r) => r.id === 'H8');
+  assert.equal(h8(obs()).verdict, 'pending');
+  for (const [item, key] of [[{ id: 'hermes_restarted', level: 'warn' }, 'hermes_restarted'], [{ id: 'hermes_files_changed', level: 'warn' }, 'hermes_files_changed']]) {
+    const r = h8(obs([item]));
+    assert.deepEqual([r.verdict, r.facts[key]], ['fail', 1]);
+  }
+  assert.equal(h8([ok(3), row(2.5, [{ id: 'hermes_service', level: 'warn', value: 'stopped' }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [{ id: 'hermes_rss_gib', level: 'ok', value: 3.1 }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [{ id: 'memory_pressure', level: 'warn', value: 2 }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [{ id: 'swap_used_gib', level: 'crit', value: 9 }])]).verdict, 'fail');
+  const gap = h8([ok(5), ok(2)]);
+  assert.deepEqual([gap.verdict, gap.facts.gaps], ['fail', 1]);
+  assert.equal(h8([ok(5), ok(2, [{ id: 'rebooted', level: 'warn' }])]).facts.gaps, 0, 'Mac の再起動の分は除く');
+});
+
+test('時系列：変わり目と出来事と通知だけ。最初の ok は出さない・連続する同じ出来事は 1 行に・値は関所を通す', () => {
+  const rows = timelineOf([
+    row(5, [{ id: 'disk_free_gib', level: 'ok', value: 300 }, { id: 'monitor_config_changed', level: 'warn', value: 'monitor_plist' }]),
+    row(4.5, [{ id: 'disk_free_gib', level: 'ok', value: 299 }, { id: 'monitor_config_changed', level: 'warn', value: 'monitor_plist' }]),
+    row(4, [{ id: 'disk_free_gib', level: 'warn', value: 20 }], { notify: [{ id: 'disk_free_gib', change: 'warn' }], notify_code: 'SENT' }),
+    row(3.5, [{ id: 'disk_free_gib', level: 'warn', value: 19 }]),
+    row(3, [{ id: 'disk_free_gib', level: 'ok', value: 200 }, { id: 'github:private-name', level: 'warn', value: '/Users/someone/secret' }], { notify: [{ id: 'disk_free_gib', change: 'recovered' }], notify_code: 'WEBHOOK_CREDENTIAL_MISSING' }),
+  ]);
+  assert.deepEqual(rows.map((x) => [x.kind, x.id, x.level, x.count ?? null, x.sent ?? null]), [
+    ['event', 'monitor_config_changed', 'warn', 2, null],
+    ['level', 'disk_free_gib', 'warn', null, 'warn'],
+    ['level', 'disk_free_gib', 'ok', null, null],
+    ['level', 'github:private-name', 'warn', null, null],
+  ]);
+  const text = renderTimeline(rows);
+  assert.match(text, /monitor_config_changed ×2/);
+  assert.match(text, /disk_free_gib ok→warn .*［通知：warn］/);
+  assert.doesNotMatch(text, /someone/, '値は関所を通す');
+  assert.equal(renderTimeline([]), '変わり目はありません');
+});
+
+test('1 画面：検収・状態・Human・読み取りの検証を並べる。判定を足さない', () => {
+  const rows = acceptanceOf(base());
+  const text = renderOverview({ rows, reply: '異常はありません', human: [{ priority: 1, title: 'X', due: '2026-11-12', overdue: false }], readCheck: { state: 'not_run' } });
+  for (const s of ['【検収】', 'PASS    H2', '異常はありません', '[高] 〜2026-11-12 X', '未実施']) assert.ok(text.includes(s), s);
+  assert.match(renderOverview({ rows, reply: 'x', human: [], readCheck: { state: 'fail', failed: ['no_invention'], api_calls: 2, total_tokens: 9000 } }), /fail（no_invention）・API 2 回・9000 token/);
+  assert.match(renderOverview({ rows, reply: 'x', human: [], readCheck: { state: 'not_run' } }), /【Human が要ること】\nありません/);
 });
 
 test('検収：正常の項目を送っていれば H2 は fail（異常・出来事・回復は送ってよい）', () => {

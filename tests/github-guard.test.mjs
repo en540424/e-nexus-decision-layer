@@ -269,6 +269,7 @@ test('token の検収：範囲が 6 repo の中で、読める・書けない to
   assert.equal((await verify(scoped(422))).code, 'TOKEN_CAN_WRITE');
   assert.equal((await verify(scoped(201))).code, 'TOKEN_CAN_WRITE');
   assert.equal((await verify(scoped(503))).code, 'GITHUB_UNREACHABLE', '5xx を書けると言わない');
+  assert.equal((await verify(scoped(429))).code, 'GITHUB_UNREACHABLE', 'レート制限を書けると言わない');
   assert.equal((await verify(scoped(403, { list: [{ name: 'a' }, { name: 'other-private' }] }))).code, 'TOKEN_TOO_BROAD', 'All repositories の token');
   assert.equal((await verify(scoped(403, { keys: 200 }))).code, 'TOKEN_TOO_BROAD', 'Administration の権限');
   assert.equal((await verify(scoped(403, { listStatus: 403 }))).code, 'SCOPE_UNVERIFIED', '確かめられなければ合格にしない');

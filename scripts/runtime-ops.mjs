@@ -6,6 +6,8 @@
  *   node scripts/runtime-ops.mjs why <項目の id> [--days 14]        項目の経過・誰が動くか・確かめ方（原因調査の入口）
  *   node scripts/runtime-ops.mjs human [--ledger <abs>] [--json]    Human が要ることを優先度の順に集める（台帳＋今の異常＋token の期限）
  *   node scripts/runtime-ops.mjs brief [--external] [--file <abs>]  Hermes が読む要約を、読む側の手順で読んで答えの形にする（Hermes の API は使わない）
+ *   node scripts/runtime-ops.mjs timeline [--days 7] [--json]       全項目の変わり目・出来事・通知を時刻の順に（同じ出来事の連続は 1 行にまとめる）
+ *   node scripts/runtime-ops.mjs overview [--days 7]                検収・今の状態・Human が要ること・Hermes の読み取りの検証を 1 画面に
  *        共通：[--state-dir <abs>]
  *
  * 台帳（--ledger）は公開 repo に置かない（既定 <repo の親>/mac-runtime-state/human-required.json）。
@@ -16,9 +18,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_STATE_DIR, TRADING_LAB_PATH, WATCHDOG_LABEL, WATCHDOG_STALE_MS, makeRunner, parseLaunchctlPrint, safeValue } from './host-health.mjs';
+import { READ_CHECK_DIR, readCheckState } from './lib/hermes-read-check.mjs';
 import { classify } from './lib/ops-classify.mjs';
 import { BRIEF_FILE, externalView, readBriefFile, renderReply } from './lib/runtime-brief.mjs';
-import { GUARD_LIMITS, MONITOR_LABEL } from './lib/runtime-guard.mjs';
+import { EVENT_IDS, GUARD_LIMITS, MONITOR_LABEL } from './lib/runtime-guard.mjs';
 import { STATUS_DIR } from './lib/runtime-status-summary.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,6 +30,11 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 export const TOKEN_NOTICE_DAYS = 30;
 const OBSERVE_DAYS = 7;
+const OBSERVE_RSS_LIMIT_GIB = 3;
+/** 観察の窓。--days と別に読む（窓が 7 日ちょうどだと記録の幅は 7 日に届かず、いつまでも pending になる） */
+export const OBSERVE_WINDOW_DAYS = OBSERVE_DAYS + 1;
+/** 記録の間隔がこれを超えたら空白（host-health の report と同じ。30 分の 1.5 倍） */
+const GAP_MS = 45 * 60_000;
 
 function readJson(file) {
   try {
@@ -56,7 +64,7 @@ const hoursAgo = (at, now) => (now - Date.parse(at)) / HOUR;
 const check = (id, title, verdict, facts) => ({ id, title, verdict, facts });
 
 /** 記録だけから判定する（Keychain も通信も使わない）。jobs は launchctl の読み取りの結果 */
-export function acceptanceOf({ state, watchdog, receipt, records, jobs, briefAge = null, now }) {
+export function acceptanceOf({ state, watchdog, receipt, records, observation = records, jobs, briefAge = null, now }) {
   const last = records.at(-1);
   const out = [];
   const sent = {};
@@ -87,11 +95,15 @@ export function acceptanceOf({ state, watchdog, receipt, records, jobs, briefAge
   const code = state?.heartbeat?.code ?? null;
   const beats = records.filter((r) => itemOf(r, 'heartbeat')?.value === 'sent').length;
   out.push(check('H6', '外部の死活監視への生存信号', ['failed', 'rejected', 'config_invalid'].includes(code) ? (state?.heartbeat?.fail_since && hoursAgo(state.heartbeat.fail_since, now) >= 1 ? 'fail' : 'pending') : code === 'sent' && beats >= 2 ? 'pass' : 'pending', { code, beats, note: code === 'off' ? 'Keychain を読めていないか、まだ定期の回が来ていない' : null }));
-  // Hermes の観察
-  const span = records.length ? (Date.parse(last.at) - Date.parse(records[0].at)) / DAY : 0;
-  const hermesBad = records.filter((r) => ['warn', 'crit'].includes(itemOf(r, 'hermes_service')?.level)).length;
-  const peak = Math.max(0, ...records.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
-  out.push(check('H8', 'Hermes の稼働の観察', hermesBad ? 'fail' : span >= OBSERVE_DAYS ? 'pass' : 'pending', { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: hermesBad, rss_peak_gib: peak }));
+  // Hermes の観察。合格の目安：常駐の異常なし・再起動なし（Human の操作の分は Human が見る）・固定ファイルの変化なし・RSS のピークが上限の未満・メモリと swap の警告なし・記録の空白なし（Mac の再起動の分は除く）
+  const span = observation.length ? (Date.parse(observation.at(-1).at) - Date.parse(observation[0].at)) / DAY : 0;
+  const bad = (id) => observation.filter((r) => ['warn', 'crit'].includes(itemOf(r, id)?.level)).length;
+  const seen = (id) => observation.filter((r) => itemOf(r, id)).length;
+  const peak = Math.max(0, ...observation.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
+  const gaps = observation.filter((r, i) => i && Date.parse(r.at) - Date.parse(observation[i - 1].at) > GAP_MS && !itemOf(r, 'rebooted')).length;
+  const facts = { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: bad('hermes_service'), hermes_restarted: seen('hermes_restarted'), hermes_files_changed: seen('hermes_files_changed'), rss_peak_gib: peak, memory_not_ok: bad('memory_pressure') + bad('swap_used_gib'), gaps };
+  const observeBad = facts.hermes_service_not_ok || facts.hermes_restarted || facts.hermes_files_changed || peak >= OBSERVE_RSS_LIMIT_GIB || facts.memory_not_ok || gaps;
+  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS ? 'pass' : 'pending', facts));
   return out;
 }
 
@@ -109,6 +121,51 @@ export function whyOf(id, records) {
   }
   const rule = classify(id);
   return { id, class: rule.class, cause: rule.cause, next: rule.next, checks: rule.checks, seen: records.filter((r) => itemOf(r, id)).length, timeline: rows.slice(-40) };
+}
+
+/** 全項目の変わり目と出来事と通知を時刻の順に。最初に見えた ok は行にしない。同じ出来事の連続は 1 行にして回数を付ける。値は通知と同じ関所を通す */
+export function timelineOf(records) {
+  const prev = new Map();
+  const rows = [];
+  for (const r of records) {
+    for (const it of r.items ?? []) {
+      const notified = (r.notify ?? []).find((n) => n.id === it.id);
+      const sent = notified && r.notify_code === 'SENT' ? notified.change : null;
+      const value = safeValue(it.id, it.value);
+      if (EVENT_IDS.includes(it.id)) {
+        const last = rows.at(-1);
+        if (last?.kind === 'event' && last.id === it.id && last.value === value && !sent) {
+          last.count += 1;
+          last.until = r.at;
+        } else rows.push({ at: r.at, kind: 'event', id: it.id, level: it.level, value, count: 1, ...(sent ? { sent } : {}) });
+        continue;
+      }
+      const before = prev.get(it.id) ?? 'ok';
+      prev.set(it.id, it.level);
+      if (before !== it.level || sent) rows.push({ at: r.at, kind: 'level', id: it.id, from: before, level: it.level, value, ...(sent ? { sent } : {}) });
+    }
+  }
+  return rows;
+}
+const atLocal = (iso) => {
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+export function renderTimeline(rows) {
+  if (!rows.length) return '変わり目はありません';
+  return rows.map((x) => {
+    const what = x.kind === 'event' ? `${x.id}${x.count > 1 ? ` ×${x.count}（〜${atLocal(x.until)}）` : ''}` : `${x.id} ${x.from}→${x.level}`;
+    return `${atLocal(x.at)} ${what}${x.value == null ? '' : ` ${x.value}`}${x.sent ? ` ［通知：${x.sent}］` : ''}`;
+  }).join('\n');
+}
+
+/** 1 画面の形。各部は既存の道具の結果をそのまま並べる（判定を足さない） */
+export function renderOverview({ rows, reply, human, readCheck }) {
+  const lines = ['【検収】', ...rows.map((r) => `${r.verdict.toUpperCase().padEnd(7)} ${r.id} ${r.title}`), '', '【今の状態】', reply, '', '【Human が要ること】'];
+  lines.push(...(human.length ? human.map((r) => `[${PRIORITY[r.priority] ?? r.priority}]${r.overdue ? '【期限切れ】' : ''}${r.due ? ` 〜${r.due}` : ''} ${r.title}`) : ['ありません']));
+  lines.push('', '【Hermes の読み取りの検証】', readCheck.state === 'not_run' ? '未実施' : `${readCheck.state}${readCheck.failed?.length ? `（${readCheck.failed.join('・')}）` : ''}${readCheck.api_calls == null ? '' : `・API ${readCheck.api_calls} 回`}${readCheck.total_tokens == null ? '' : `・${readCheck.total_tokens} token`}`);
+  return lines.join('\n');
 }
 
 const PRIORITY = { 1: '高', 2: '中', 3: '低' };
@@ -146,7 +203,7 @@ export function parse(argv) {
 }
 export function validate(a) {
   const errors = [];
-  if (!['acceptance', 'why', 'human', 'brief'].includes(a.command)) errors.push('command must be acceptance|why|human|brief');
+  if (!['acceptance', 'why', 'human', 'brief', 'timeline', 'overview'].includes(a.command)) errors.push('command must be acceptance|why|human|brief|timeline|overview');
   if (a.command === 'why' && !/^[a-z0-9_]{1,40}(?::[A-Za-z0-9._-]{1,100})?$/.test(a.positional[0] ?? '')) errors.push('why needs an item id');
   if (a.days !== undefined && !/^[1-9]\d{0,2}$/.test(a.days)) errors.push('--days must be 1-999');
   for (const [k, v] of [['--state-dir', a.stateDir], ['--ledger', a.ledger], ['--file', a.file]]) {
@@ -173,16 +230,32 @@ async function main(argv) {
   const since = (days) => new Date(now - days * DAY).toISOString();
   const receipt = readJson(path.join(homedir(), '.enexus', 'backup', 'last.json'));
   const state = readJson(path.join(stateDir, 'state.json'));
-  if (a.command === 'acceptance') {
+  const accept = async () => {
     const records = readRecords(stateDir, { since: since(Number(a.days ?? 7)) });
+    const observation = readRecords(stateDir, { since: since(OBSERVE_WINDOW_DAYS) });
     const jobs = await readJobs(makeRunner({ allowed: ['/bin/launchctl'] }), process.getuid());
     let briefAge = null;
     try {
       briefAge = Math.round(((now - statSync(path.join(STATUS_DIR, BRIEF_FILE)).mtimeMs) / HOUR) * 10) / 10;
     } catch { /* まだ書いていない */ }
-    const rows = acceptanceOf({ state, watchdog: readJson(path.join(stateDir, 'watchdog.json')), receipt, records, jobs, briefAge, now });
+    return acceptanceOf({ state, watchdog: readJson(path.join(stateDir, 'watchdog.json')), receipt, records, observation, jobs, briefAge, now });
+  };
+  const humanRows = () => humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last: readRecords(stateDir, { since: since(1) }).at(-1), state, receipt, now });
+  if (a.command === 'acceptance') {
+    const rows = await accept();
     if (a.json) console.log(JSON.stringify(rows, null, 2));
     else for (const r of rows) console.log(`${r.verdict.toUpperCase().padEnd(7)} ${r.id} ${r.title}  ${JSON.stringify(r.facts)}`);
+    return rows.some((r) => r.verdict === 'fail') ? 1 : 0;
+  }
+  if (a.command === 'timeline') {
+    const rows = timelineOf(readRecords(stateDir, { since: since(Number(a.days ?? 7)) }));
+    console.log(a.json ? JSON.stringify(rows, null, 2) : renderTimeline(rows));
+    return 0;
+  }
+  if (a.command === 'overview') {
+    const rows = await accept();
+    const b = readBriefFile(a.file ?? path.join(STATUS_DIR, BRIEF_FILE));
+    console.log(renderOverview({ rows, reply: b.ok ? renderReply(b.brief) : `要約を信じられない（${b.reason}）`, human: humanRows(), readCheck: readCheckState(path.join(REPO, '..', READ_CHECK_DIR, 'result.json')) }));
     return rows.some((r) => r.verdict === 'fail') ? 1 : 0;
   }
   if (a.command === 'why') {
@@ -191,8 +264,7 @@ async function main(argv) {
     return 0;
   }
   if (a.command === 'human') {
-    const ledger = readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json'));
-    const rows = humanRequired({ ledger, last: readRecords(stateDir, { since: since(1) }).at(-1), state, receipt, now });
+    const rows = humanRows();
     if (a.json) console.log(JSON.stringify(rows, null, 2));
     else for (const r of rows) console.log(`[${PRIORITY[r.priority] ?? r.priority}]${r.overdue ? '【期限切れ】' : ''}${r.due ? ` 〜${r.due}` : ''} ${r.title}`);
     if (!rows.length) console.log('Human の対応が要るものはありません');
