@@ -4,7 +4,7 @@
  *   重大（crit）：すぐ 1 回。続けば 24 時間後・48・96・…（上限 7 日）に控えめに再通知。回復は 1 回だけ。送れない間に解消したものも後で 1 回
  *   軽微（warn）：記録だけ。hold の間続いた時に 1 回だけ。再通知も回復の通知もない。crit へ悪化すればすぐ
  *   promote：hold の間続いたら重大として扱う（再通知・回復の通知あり）
- *   出来事：1 回。同じ出来事は 24 時間に FLAP.max_sends 通まで（超えた分は記録だけ）。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
+ *   出来事：1 回。同じ項目の同じ値は 24 時間に FLAP.max_sends 通まで（値が違えば別に数える・重大は上限の外・超えた分は明けた回に 1 通）。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
  *   codes：値がコードの一覧の項目は、知らせた後に新しいコードが増えれば知らせ直す
  *   noCooldown：回復の直後の戻りも待たない（セキュリティ・電源・回線・監視の停止）
  *   flap：行き来を数える（重大になりうる項目と再起動・監視の空白）。1 回目はふつうに知らせ、FLAP.window_ms の間に FLAP.count 回に達したら「反復」を 1 通だけ送り、
@@ -66,7 +66,7 @@ const RULES = Object.freeze([
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
   [/^monitor_blind$/, { target: '監視の項目', what: '読めない状態が 24 時間以上続いている', action: CHECK, hold: 0 }],
   [/^monitor_args$/, { target: '監視の job の定義', what: '通知か見張りの引数が欠けている', action: ACT, hold: 0, codes: true, flap: '欠けては戻るを繰り返している' }],
-  [/^monitor_webhook$/, { target: '監視の job の定義', what: (value) => (value === 'no_guard' ? '見張りを止める引数が入っている' : '通知の引数が無く、異常を知らせられない'), action: ACT, hold: 0 }],
+  [/^monitor_webhook$/, { target: '監視の job の定義', what: (value) => (value === 'no_guard' ? '見張りを止める引数が入っている' : '通知の引数が無く、異常を知らせられない'), action: ACT, hold: 0, codes: true }],
   [/^monitor_fingerprint$/, { target: '監視の固定ファイルの見張り', what: '読めないファイルがある', action: CHECK }],
   [/^monitor_state_reset$/, { target: '監視の記録', what: '基準が初期化された（state が消えたか壊れた）', action: IF_UNKNOWN }],
   [/^notify_channel$/, { target: '通知の Webhook', what: '使えない', action: ACT }],

@@ -297,7 +297,7 @@ function writeReceipt(file, body) {
 }
 
 /** 毎回の受領票へ持ち越す項目（古い世代の検証と token の期限） */
-const keptFields = (prev) => Object.fromEntries(['history_verified_at', 'history_failure', 'token_expires_at'].filter((k) => prev?.[k] != null).map((k) => [k, prev[k]]));
+const keptFields = (prev) => Object.fromEntries(['history_verified_at', 'history_failure', 'token_expires_at', 'sources_missing'].filter((k) => prev?.[k] != null).map((k) => [k, prev[k]]));
 
 /** 1 回分。plan・read・fetchImpl・now を差し替えて test する（実データも GitHub も使わずに回せる） */
 export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan = null, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date(), drill = runDrill }) {

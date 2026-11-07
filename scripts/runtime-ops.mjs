@@ -31,6 +31,8 @@ const DAY = 24 * HOUR;
 export const TOKEN_NOTICE_DAYS = 30;
 const OBSERVE_DAYS = 7;
 const OBSERVE_RSS_LIMIT_GIB = 3;
+/** launchctl の一時的な読み損ねで何日も pending にしない。これを超えて見えなかった回があれば合格にしない */
+const OBSERVE_UNSEEN_RATIO = 0.02;
 /** 観察の窓。--days と別に読む（窓が 7 日ちょうどだと記録の幅は 7 日に届かず、いつまでも pending になる） */
 export const OBSERVE_WINDOW_DAYS = OBSERVE_DAYS + 1;
 /** 記録の間隔がこれを超えたら空白（host-health の report と同じ。30 分の 1.5 倍） */
@@ -98,8 +100,8 @@ export function acceptanceOf({ state, watchdog, receipt, records, observation = 
   // Hermes の観察。幅は Hermes の常駐を ok と見た最初の回から測る（記録だけ古くても合格にしない）。
   // 合格の目安：常駐の異常なし・再起動なし（Human の操作の分は Human が見る）・固定ファイルの変化なし・RSS のピークが上限の未満・メモリと swap の警告なし・記録の空白なし（Mac の再起動の分は除く）
   const startAt = observation.findIndex((r) => itemOf(r, 'hermes_service')?.level === 'ok');
-  const watched = startAt < 0 ? [] : observation.slice(startAt);
-  const span = watched.length ? (Date.parse(watched.at(-1).at) - Date.parse(watched[0].at)) / DAY : 0;
+  const watched = startAt < 0 ? observation : observation.slice(startAt); // 窓の全部で止まっている時も異常を数える
+  const span = startAt >= 0 ? (Date.parse(watched.at(-1).at) - Date.parse(watched[0].at)) / DAY : 0;
   const bad = (id) => watched.filter((r) => ['warn', 'crit'].includes(itemOf(r, id)?.level)).length;
   const seen = (id) => watched.filter((r) => itemOf(r, id)).length;
   const peak = Math.max(0, ...watched.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
@@ -107,7 +109,7 @@ export function acceptanceOf({ state, watchdog, receipt, records, observation = 
   const unseen = watched.filter((r) => !['ok', 'warn', 'crit'].includes(itemOf(r, 'hermes_service')?.level)).length; // 見えなかった回は「異常なし」に数えない
   const facts = { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: bad('hermes_service'), hermes_service_unseen: unseen, hermes_restarted: seen('hermes_restarted'), hermes_files_changed: seen('hermes_files_changed'), rss_peak_gib: peak, memory_not_ok: bad('memory_pressure') + bad('swap_used_gib'), gaps };
   const observeBad = facts.hermes_service_not_ok || facts.hermes_restarted || facts.hermes_files_changed || peak >= OBSERVE_RSS_LIMIT_GIB || facts.memory_not_ok || gaps;
-  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS && !unseen ? 'pass' : 'pending', facts));
+  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS && unseen <= watched.length * OBSERVE_UNSEEN_RATIO ? 'pass' : 'pending', facts));
   return out;
 }
 

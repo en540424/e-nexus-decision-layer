@@ -439,6 +439,11 @@ test('監視の記録：jsonl を書けない回は成功に数えず積み上�
     assert.deepEqual(r1.notify.filter((n) => n.id === 'monitor_state_reset').map((n) => n.change), ['event']);
     const r2 = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(60 * 60_000) });
     assert.equal(r2.notify.some((n) => n.id === 'monitor_state_reset'), false, '1 回だけ');
+    rmSync(path.join(dir, 'state.json'));
+    await recordFailure({ stateDir: dir, at: later(70 * 60_000)().toISOString() });
+    assert.equal(JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8')).state_reset_pending, true, '失敗の回で作った state に隠れない');
+    const r2b = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(75 * 60_000) });
+    assert.equal(r2b.notify.filter((n) => n.id === 'monitor_state_reset').length, 1);
     const month = readdirSync(dir).find((f) => f.endsWith('.jsonl'));
     rmSync(path.join(dir, month));
     mkdirSync(path.join(dir, month));
@@ -451,17 +456,92 @@ test('監視の記録：jsonl を書けない回は成功に数えず積み上�
   }
 });
 
-test('出来事：同じ出来事は 24 時間に 3 通まで。超えた分は bursts の数が増えない。窓が明ければ戻る', () => {
-  const ev = [{ id: 'monitor_config_changed', level: 'warn', value: 'monitor_plist', kind: 'event' }];
-  let prev = null;
-  let sent = 0;
-  for (let i = 0; i < 48; i += 1) {
-    const d = decide(ev, prev, { now: new Date(T0.getTime() + i * 30 * 60_000).toISOString() });
-    sent += d.notify.length;
-    prev = { items: d.items, bursts: d.bursts };
+const atMin = (m) => new Date(T0.getTime() + m * 60_000).toISOString();
+const steps = (list, prev = null) => {
+  const out = [];
+  let s = prev;
+  for (const [m, items] of list) {
+    const d = decide(items, s, { now: atMin(m) });
+    out.push(d.notify);
+    s = { items: d.items, bursts: d.bursts };
   }
-  assert.equal(sent, 3);
-  assert.equal(decide(ev, prev, { now: new Date(T0.getTime() + 25 * 3_600_000).toISOString() }).notify.length, 1);
+  return { out, state: s };
+};
+const changed = (value, id = 'hermes_files_changed', level = 'warn') => [{ id, level, value, kind: 'event' }];
+
+test('出来事の上限：同じ項目の同じ値が毎回続く時だけ 24 時間に 3 通まで', () => {
+  const { out } = steps(Array.from({ length: 48 }, (_, i) => [i * 30, changed('vault_copy')]));
+  assert.equal(out.flat().length, 3);
+});
+
+test('出来事の上限：別の値は黙らせない（固定ファイルの変化が続いた後の wrapper の改ざんを知らせる）', () => {
+  const { out } = steps([[0, changed('vault_copy')], [30, changed('vault_copy')], [60, changed('vault_copy')], [90, changed('wrapper')]]);
+  assert.deepEqual(out[3].map((n) => n.value), ['wrapper']);
+});
+
+test('出来事の上限：重大は上限の外（公開範囲が public になった変化を落とさない）', () => {
+  const pub = changed('a:PRIVATE->PUBLIC', 'github_visibility_changed', 'crit');
+  const { out } = steps([[0, pub], [30, pub], [60, pub], [90, pub], [120, pub]]);
+  assert.equal(out.flat().length, 5);
+});
+
+test('出来事の上限：超えた分は捨てず、明けた回に 1 通。保守窓の間は送らない。鍵は増え続けない', () => {
+  const first = steps([[0, changed('vault_copy')], [30, changed('vault_copy')], [60, changed('vault_copy')], [90, changed('vault_copy')]]);
+  assert.deepEqual(first.out.map((x) => x.length), [1, 1, 1, 0]);
+  assert.equal(decide([], first.state, { now: atMin(25 * 60), paused: true }).notify.length, 0);
+  const later1 = decide([], first.state, { now: atMin(25 * 60) });
+  assert.deepEqual(later1.notify.map((n) => [n.id, n.value, n.change]), [['hermes_files_changed', 'vault_copy', 'event']]);
+  const next = { items: later1.items, bursts: later1.bursts };
+  assert.equal(decide([], next, { now: atMin(25 * 60 + 30) }).notify.length, 0, '1 通だけ');
+  assert.deepEqual(decide([], next, { now: atMin(50 * 60) }).bursts, {});
+});
+
+test('出来事の上限：持ち越しと同じ回に同じ値の出来事が来ても 1 通', () => {
+  const first = steps([[0, changed('vault_copy')], [30, changed('vault_copy')], [60, changed('vault_copy')], [90, changed('vault_copy')]]);
+  assert.equal(decide(changed('vault_copy'), first.state, { now: atMin(25 * 60) }).notify.length, 1);
+});
+
+test('送れなかった回の後も持ち越しは残る（host-health は bursts を前の値へ戻す）', () => {
+  const first = steps([[0, changed('vault_copy')], [30, changed('vault_copy')], [60, changed('vault_copy')], [90, changed('vault_copy')]]);
+  assert.equal(decide([], first.state, { now: atMin(25 * 60) }).notify.length, 1);
+  assert.equal(decide([], first.state, { now: atMin(25 * 60 + 30) }).notify.length, 1, '前の state からならもう一度出る');
+});
+
+test('反復の上限の後も持ち越す：WARN は上限の間に回復でき、続いていれば明けた回に知らせる', () => {
+  const warn = [{ id: 'agent_scope', level: 'warn', value: 'user_rules', kind: 'state' }];
+  const ok = [{ id: 'agent_scope', level: 'ok', value: 'ok', kind: 'state' }];
+  const list = [];
+  for (let i = 0; i < 12; i += 1) list.push([i * 60, i % 3 === 0 ? warn : ok]);
+  const { out, state } = steps(list);
+  assert.equal(out.flat().length, 3);
+  const rest = steps(Array.from({ length: 96 }, (_, i) => [12 * 60 + i * 30, warn]), state);
+  assert.ok(rest.out.flat().length >= 1, '48 時間続けば知らせる');
+});
+
+test('監視の引数の見張り：no_webhook から no_guard へ変われば知らせ直す', () => {
+  const item = (value) => [{ id: 'monitor_webhook', level: 'warn', value, kind: 'state' }];
+  const { out } = steps([[0, item('no_webhook')], [30, item('no_webhook')], [60, item('no_guard')]]);
+  assert.deepEqual(out.map((x) => x.length), [1, 0, 1]);
+});
+
+test('記録を書けない時は通知を送らない（送った印が残らず同じ通知を重ねない）', async () => {
+  const dir = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
+    const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    const run = (over = {}) => fixtureRunner({ '/usr/bin/pmset -g ps': { code: 0, stdout: OUT.ps.replace('AC Power', 'Battery Power') }, ...over }).run;
+    await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(0) });
+    const month = readdirSync(dir).find((f) => f.endsWith('.jsonl'));
+    rmSync(path.join(dir, month));
+    mkdirSync(path.join(dir, month));
+    posted.length = 0;
+    for (const i of [1, 2]) await runHostHealth({ ...opts, run: run(), now: later(i * 30 * 60_000) });
+    assert.equal(posted.filter((n) => n.id === 'power').length, 0);
+    assert.notEqual(OUT.ps.replace('AC Power', 'Battery Power'), OUT.ps, 'test の入力が異常の形になっている');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('反復の上限：監視の引数のコードの交互・user 範囲の行き来も 24 時間に 3 通まで', () => {

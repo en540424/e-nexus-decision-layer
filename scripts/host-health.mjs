@@ -372,10 +372,15 @@ export function decide(items, prev, { now, paused = false }) {
         continue;
       }
       if (!rule.burst) {
-        // 毎回の変化で通知を重ねない。上限を超えた分は記録に残るだけ（基準が動かない回は bursts を戻すので数えない）
-        const sentHits = recent(bursts[it.id]?.hits);
-        if (sentHits.length >= FLAP.max_sends) continue;
-        bursts[it.id] = { hits: [...sentHits, now] };
+        // 同じ変化が毎回続く時だけ間引く。上限は id＋値ごと（別のファイルの変化を黙らせない）で、重大は上限の外。
+        // 超えた分は捨てない：明けた回に 1 通送る（基準は進むので、ここで持たないと二度と出ない）
+        const key = `cap:${it.id}|${it.value}`;
+        const sentHits = recent(bursts[key]?.hits);
+        if (it.level !== 'crit' && sentHits.length >= FLAP.max_sends) {
+          bursts[key] = { ...bursts[key], hits: sentHits, held: { id: it.id, level: it.level, value: it.value } };
+          continue;
+        }
+        bursts[key] = { hits: [...sentHits, now] };
         notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' });
         continue;
       }
@@ -394,7 +399,8 @@ export function decide(items, prev, { now, paused = false }) {
     if (it.level === 'ok') {
       if (p.level !== 'ok') {
         const okRuns = (p.ok_runs ?? 0) + 1;
-        if (okRuns < RECOVER_RUNS || hushed) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
+        // 上限の間も、知らせることの無い回復（WARN）は進める。止めると次の異常を「続き」と読んで持ち越せない
+        if (okRuns < RECOVER_RUNS || (hushed && (p.notified === 'crit' || p.missed_at))) { next[it.id] = { ...p, ok_runs: okRuns }; continue; }
       } else if (!p.missed_at) { next[it.id] = p; continue; }
       let change = p.notified === 'crit' ? 'recovered' : p.missed_at ? 'recovered_missed' : null;
       // 回線断は送信も失敗するので、行き来は「知らせられなかった」の回数でも数える
@@ -443,6 +449,16 @@ export function decide(items, prev, { now, paused = false }) {
       ...(rule.flap ? { flap_hits: hits, flap_sends: sends(change), flap_quiet_until: repeat ? quietEnd : (p.flap_quiet_until ?? null), flap_in: level === 'crit', ...(rule.codes ? { flap_codes: change ? [...new Set([...seenCodes, ...codesOf(it.value)])] : seenCodes } : {}) } : {}),
     };
     if (change) notify.push({ id: it.id, level, value: it.value, change, ...(repeat ? { repeat } : {}) });
+  }
+  if (!paused) {
+    for (const [key, b] of Object.entries(bursts)) {
+      if (!key.startsWith('cap:')) continue;
+      const hits = recent(b.hits);
+      if (b.held && hits.length < FLAP.max_sends) {
+        bursts[key] = { hits: [...hits, now] };
+        if (!notify.some((n) => n.id === b.held.id && n.value === b.held.value)) notify.push({ ...b.held, change: 'event' });
+      } else if (!hits.length && !b.held) delete bursts[key]; // 値ごとの鍵が増え続けない
+    }
   }
   return { notify, items: next, bursts };
 }
@@ -622,7 +638,13 @@ function writeState(dir, s) {
   writeFileSync(tmp, `${JSON.stringify(s, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, f);
 }
-const hasRecords = (dir) => readdirSync(dir).some((f) => /^\d{4}-\d{2}\.jsonl$/.test(f));
+function hasRecords(dir) {
+  try {
+    return readdirSync(dir).some((f) => /^\d{4}-\d{2}\.jsonl$/.test(f));
+  } catch {
+    return false; // フォルダが読めない時は別の失敗として知らせる
+  }
+}
 function setFlag(dir, name, on, text) {
   const f = path.join(dir, name);
   if (on) writeFileSync(f, `${text}\n`, { mode: 0o600 });
@@ -667,7 +689,8 @@ export async function recordFailure({ stateDir, at, webhook = null, webhookForma
   const prev = readState(stateDir);
   const failures = (prev?.consecutive_failures ?? 0) + 1;
   const gap = monitorGapEvent(prev, at)[0]?.value;
-  const state = { ...(prev ?? { schema: STATE_SCHEMA, items: {} }), updated_at: at, consecutive_failures: failures, ...(gap ? { gap_pending: gap } : {}) };
+  // state が無いまま失敗した回で state を作ると、次の回に「消えた」ことが見えなくなる
+  const state = { ...(prev ?? { schema: STATE_SCHEMA, items: {} }), updated_at: at, consecutive_failures: failures, ...(gap ? { gap_pending: gap } : {}), ...(!prev && hasRecords(stateDir) ? { state_reset_pending: true } : {}) };
   try {
     writeState(stateDir, state);
   } catch {
@@ -802,8 +825,9 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     let nextItems = Object.fromEntries(Object.entries(d.items).filter(([id]) => keep(id)));
     let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
     if (d.notify.length && webhook) {
-      // 送れた印を残せないなら送らない（書けない間に同じ通知を毎回重ねない）。書けないことは recordFailure が知らせる
+      // 送れた印を残せないなら送らない（書けない間に同じ通知を毎回重ねない）。書けないことは recordFailure が知らせる。記録も同じ
       writeState(stateDir, prev ?? { schema: STATE_SCHEMA, items: {} });
+      appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), '', { mode: 0o600 });
       const r = await post(d.notify, { spec: webhook, format: webhookFormat, at });
       notifyCode = r.code;
       if (!r.sent) {

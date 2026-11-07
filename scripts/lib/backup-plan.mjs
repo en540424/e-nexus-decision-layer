@@ -174,7 +174,9 @@ export function planBackup({ sources, denyText, tmpRoot }) {
 
 /** 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない） */
 export function policyViolations(rows, denyText, tmpRoot) {
-  const clean = (r) => !SKIP_NAME.test(r.rel) && !mentionsTradingLab(r.rel) && !hasSecret(r.body.toString('utf8')) && !mentionsTradingLab(r.body.toString('utf8'));
+  // 保存物はファイルの名前だけ見る（フォルダの規則は後から足したので、前の世代を違反にしない）。長い行は判定できないだけで違反ではない
+  const secretIn = (text) => !hasLongLine(text) && hasSecret(text);
+  const clean = (r) => !SKIP_NAME.test(path.basename(r.rel)) && !mentionsTradingLab(r.rel) && !secretIn(r.body.toString('utf8')) && !mentionsTradingLab(r.body.toString('utf8'));
   return rows.filter((r) => !clean(r)).length + deniedIndexes(rows, denyText, tmpRoot).size;
 }
 

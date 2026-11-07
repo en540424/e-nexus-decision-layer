@@ -68,7 +68,11 @@ test('観察：合格の目安を全部見る（常駐・再起動・固定フ�
   assert.equal(h8(days(8, [svc('hermes_service', 'unknown')])).verdict, 'pending', 'ずっと見えていない');
   const blind = days(8, [svc()]);
   blind[50] = row((8 * 48 - 50) / 2, [svc('hermes_service', 'unknown')]);
-  assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pending', 1], '見えなかった回を異常なしに数えない');
+  assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pass', 1], '1 回の読み損ねで何日も止めない');
+  for (let i = 50; i < 70; i += 1) blind[i] = row((8 * 48 - i) / 2, [svc('hermes_service', 'unknown')]);
+  assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pending', 20], '見えない回が多ければ異常なしに数えない');
+  const down = h8(days(8, [svc('hermes_service', 'warn')]));
+  assert.deepEqual([down.verdict, down.facts.hermes_service_not_ok, down.facts.days_observed], ['fail', 385, 0], '窓の全部で止まっている時も fail');
   assert.equal(h8(days(8, [svc()])).verdict, 'pass');
 });
 

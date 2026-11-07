@@ -668,6 +668,18 @@ test('除外：フォルダの名前も見る・長すぎる行は判定せず�
   }
 });
 
+test('保存済みの世代の検証：後から足した規則（フォルダの名前・長い行）で前の世代を違反にしない。ファイルの名前と Secret は今までどおり', () => {
+  const dir = tmp();
+  try {
+    const row = (rel, body = 'x') => ({ rel, body: Buffer.from(body) });
+    assert.equal(policyViolations([row('token-notes/a.md'), row('b.md', `${'x'.repeat(MAX_LINE_CHARS + 1)}\n`)], DENY, dir), 0);
+    assert.equal(policyViolations([row('a/secret.md')], DENY, dir), 1);
+    assert.equal(policyViolations([row('b.md', 'password: abcdefghijklmnop1234\n')], DENY, dir), 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('受領票：対象の欠けと読めないものを件数で残す。未来の検証の印では定期の検証を止めない', async () => {
   const { home, src, base } = setup();
   try {
