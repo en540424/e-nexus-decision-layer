@@ -993,3 +993,18 @@ test('再検証の指摘：点字の空白・全角の名前・見えない文�
     clean(home, src);
   }
 });
+
+test('再検証の指摘：後の世代の手元の問題で止まっても、先に見つけた保存物の異常は受領票に残す', async () => {
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    for (const day of ['05', '06']) await runBackup({ ...base, now: () => new Date(`2026-11-${day}T04:40:00.000Z`), fetchImpl: fakeRepo({ files }) });
+    let n = 0;
+    const scan = () => { if (n++ === 0) return 1; throw new ScanTimeout(); }; // 最新は方針の違反・次は時間切れ
+    const v = await verifyBackups({ ...base, scan, fetchImpl: fakeRepo({ files }) });
+    assert.equal(v.failure, 'scan_timeout');
+    assert.equal(receiptOf(home).history_failure, 'policy_violation');
+  } finally {
+    clean(home, src);
+  }
+});

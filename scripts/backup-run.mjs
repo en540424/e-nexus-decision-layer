@@ -272,13 +272,20 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
       try {
         rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
       } catch (err) {
-        if (!(err instanceof Stop) || !STORED_FAILURES.includes(err.code)) throw err;
+        if (!(err instanceof Stop) || !STORED_FAILURES.includes(err.code)) {
+          // 手元の問題で止める前に、もう見つけた保存物の異常は残す（後の世代の通信の失敗で前の世代の壊れを捨てない）
+          const found = STORED_FAILURES.find((c) => failures[c]);
+          const prev = readReceipt(receipt);
+          if (found && prev) writeReceipt(receipt, { ...prev, history_failure: found });
+          throw err;
+        }
         failures[err.code] = (failures[err.code] ?? 0) + 1;
       }
     }
     const worst = STORED_FAILURES.find((c) => failures[c]); // 並びが重さの順（壊れ＞方針）
     if (worst) {
-      writeReceipt(receipt, { ...readReceipt(receipt), history_failure: worst });
+      const prev = readReceipt(receipt);
+      if (prev) writeReceipt(receipt, { ...prev, history_failure: worst }); // 受領票の無い時は作らない（外側の catch と同じ）
       return { code: 1, status: 'failed', failure: worst, failures, stored: stored.length, verified: rows.length };
     }
     writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() });

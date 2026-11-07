@@ -85,7 +85,7 @@ const secretInBatches = (text, tick) => {
       const nl = text.lastIndexOf('\n', to);
       if (nl > from) to = nl + 1;
     }
-    if (anySecret(text.slice(Math.max(0, from - BATCH_CONTEXT), to))) return true;
+    if (anySecret(text.slice(Math.max(0, from - BATCH_CONTEXT), to), { head: from > 0 })) return true; // 前置きは行の途中から始まりうる（先頭の偽の語の境界を数えない）
     from = to;
   }
   return false;
