@@ -11,7 +11,7 @@ import {
   BACKUP_RECEIPT_SCHEMA, GUARD_BINS, GUARD_LIMITS, HERMES_FILES, HERMES_SHARE, RELAY_REPO, WATCHED_POLICIES, collectGuard, evaluateGuard, evaluateGuardEvents, nextGuardState, parseGitStatus,
   parseLatestBackup, parseTimeMachineDestination, readRepoNames, summarizeRecords, treeSignature,
 } from '../scripts/lib/runtime-guard.mjs';
-import { ALLOWED_BINS, TRADING_LAB_PATH, parseArgs, reportOf, runHostHealth, validateArgs } from '../scripts/host-health.mjs';
+import { ALLOWED_BINS, TRADING_LAB_PATH, parseArgs, reportOf, runHostHealth, safeValue, validateArgs } from '../scripts/host-health.mjs';
 
 const CLEAN = '# branch.oid abc\n# branch.head master\n# branch.upstream origin/master\n# branch.ab +0 -0\n';
 const NOW = '2026-11-04T09:00:00.000Z';
@@ -288,6 +288,20 @@ test('バックアップの受領票：無ければ not_configured・古けれ�
   assert.equal((await item(r(1, null))).level, 'warn', '戻せるか確かめていないバックアップは ok にしない');
   assert.equal((await item(r(1, hoursAgo(24 * 40)))).level, 'warn');
   assert.equal((await item('{broken')).level, 'unknown');
+});
+
+test('バックアップの受領票：job があるのに受領票が消えたら warn（黙って not_configured にしない）。job も無ければ未設定のまま', async () => {
+  const item = async (plist) => {
+    const { run } = runner();
+    const base = fakeFs();
+    const fsi = { ...base, existsSync: (p) => (p === '/gone.json' ? false : p.endsWith('com.e-nexus.runtime-backup.plist') ? plist : base.existsSync(p)) };
+    const g = await collectGuard({ run, ...guardArgs(fsi), backupReceipt: '/gone.json' });
+    const it = evaluateGuard(g, null, NOW).find((x) => x.id === 'backup_archive');
+    return [it.level, it.value];
+  };
+  assert.deepEqual(await item(true), ['warn', 'receipt_missing']);
+  assert.deepEqual(await item(false), ['ok', 'not_configured']);
+  assert.equal(safeValue('backup_archive', 'receipt_missing'), 'receipt_missing', '通知の関所を通る');
 });
 
 test('消されたのも変化：固定ファイル・policy・Vault の写しが消えたら知らせる（hash の null は読めないだけ）', async () => {

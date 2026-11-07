@@ -192,9 +192,10 @@ function monitorArgsOf(agents, fsi) {
 function scopeOf(operatorHome, fsi) {
   return [['user_claude_md', ['.claude', 'CLAUDE.md']], ['user_rules', ['.claude', 'rules']]].filter(([, p]) => fsi.existsSync(path.join(operatorHome, ...p))).map(([code]) => code);
 }
-/** バックアップの受領票（保存先の決定の後に backup の道具が書く）。無ければ not_configured */
-function backupReceiptOf(file, fsi) {
-  if (!file || !fsi.existsSync(file)) return { configured: false };
+/** バックアップの受領票（保存先の決定の後に backup の道具が書く）。無ければ not_configured。job があるのに無ければ消えた（黙って見張りから外さない） */
+function backupReceiptOf(file, fsi, { scheduled = false } = {}) {
+  if (!file) return { configured: false };
+  if (!fsi.existsSync(file)) return { configured: false, scheduled };
   try {
     const r = JSON.parse(fsi.readFileSync(file, 'utf8'));
     const failures = Number.isInteger(r?.consecutive_failures) ? r.consecutive_failures : 0;
@@ -233,10 +234,10 @@ export async function collectGuard({ run, hermesUser = null, base, repos, outbox
     const r = await run('/usr/bin/tmutil', ['latestbackup']);
     g.backup = { configured: true, latest: r.code === 0 ? parseLatestBackup(r.stdout) : null, timed_out: Boolean(r.timedOut) };
   }
-  g.backup_receipt = backupReceiptOf(backupReceipt, fsi);
+  const agents = path.join(operatorHome, 'Library', 'LaunchAgents');
+  g.backup_receipt = backupReceiptOf(backupReceipt, fsi, { scheduled: fsi.existsSync(path.join(agents, BACKUP_PLIST)) });
   g.residents = residentsOf(operatorHome, fsi);
   g.scope = scopeOf(operatorHome, fsi);
-  const agents = path.join(operatorHome, 'Library', 'LaunchAgents');
   g.config = { monitor_plist: sha256OfFile(path.join(agents, `${MONITOR_LABEL}.plist`), fsi), watchdog_plist: sha256OfFile(path.join(agents, WATCHDOG_PLIST), fsi), backup_plist: sha256OfFile(path.join(agents, BACKUP_PLIST), fsi) };
   // バックアップの除外の条件そのもの。パスは plist から読む（公開 repo にローカルのパスを置かない）
   const backupArgs = plistArgs(readText(path.join(agents, BACKUP_PLIST), fsi)) ?? [];
@@ -288,7 +289,7 @@ export function evaluateGuard(g, prevGuard, now) {
   if (g.backup_receipt !== undefined) {
     const b = g.backup_receipt;
     if (b == null) add('backup_archive', 'unknown', null);
-    else if (!b.configured) add('backup_archive', 'ok', 'not_configured'); // 保存先の決定は Human
+    else if (!b.configured) add('backup_archive', b.scheduled ? 'warn' : 'ok', b.scheduled ? 'receipt_missing' : 'not_configured'); // 保存先の決定は Human。job の登録の後で無いのは消えたか初回の前
     else {
       const ageDays = (x) => {
         const ms = t - Date.parse(x);

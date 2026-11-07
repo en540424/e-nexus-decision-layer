@@ -47,7 +47,7 @@ host-health を中心にした、決定的な監視（AI を呼ばない）の�
 繰り返す短い WARN（毎回 24 時間に届かない）は知らせない（累積では見ない）。重大が続く間の値の悪化（ディスクの空きがさらに減るなど）は次の再通知まで知らせない。送れた印を残せない時は送らない（記録を書けない間に同じ通知を重ねない。§3）。
 
 - 送れなかった分は次の回にもう一度（30 分に 1 回まで。出来事の基準も進めない）。`PAUSE` の間は記録だけで、状態も出来事の基準も進めず、明けた後に知らせる
-- `PAUSE` は 72 時間で効かなくなる（消し忘れで全部が黙らないように。`monitor_pause=expired` の WARN）
+- `PAUSE` は 72 時間で効かなくなる（消し忘れで全部が黙らないように。`monitor_pause=expired` の WARN）。mtime が未来の `PAUSE` は 10 分先までしか効かない（時計の小さな戻りだけ許す。前は期限の 2 倍＝最大 144 時間黙れた）
 - 本文は 1 行に「対象：何が起きたか → 対応」だけ（例：`【重大】起動ディスク：空きが少ない（18.2） → 要対応`）。文は固定で、値は項目ごとの形（`VALUE_SHAPES`）に合うものだけ通し、それ以外の文字列は `[redacted]` にする（allowlist。項目を足す時はここへも足す）。先頭は `[E-NEXUS Mac Runtime host]`（Trading Lab の通知と取り違えない）。詳細は内部の記録（`YYYY-MM.jsonl`）に残す
 - Discord の mention は `allowed_mentions` で全部無効。`discord` 形式の宛先は Discord の webhook の形だけ・redirect に従わない
 - 宛先が Discord の webhook なら本文は常に Discord の形（`--webhook-format` の付け忘れで送れなくならない）
@@ -200,9 +200,10 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 ### 監視
 
 - 送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（`~/.enexus/backup/last.json`・`runtime-backup-receipt/v1`）に書く（Vault の「同期＝バックアップではない」：届いたことを別の経路で実証する）
-- 保存済みの検証（`verify`）：最新と最古を読み直し、一覧の blob の hash・復号・全ファイルの hash・1 byte の改ざんと別の passphrase が拒まれること・除外の方針（Secret の形・Trading Lab の言及・deny）を確かめる。平文はメモリの上だけで、方針の grep の間だけ `work`（0700）に置く。結果は件数だけ。定期の回の中で 30 日に 1 回動き、保存物の異常は今回の回を成功のまま `backup_history` の WARN にする（45 日より古くなっても WARN）。Keychain・通信の失敗は受領票を変えない。除外の方針を強めた時は、古い世代が世代の整理で消えるまで `history_failed` が続くことがある（中身の判断は Human）
+- 保存済みの検証（`verify`）：保存済みの全世代（上限 30。保持は最大 26）を読み直し、一覧の blob の hash・復号・全ファイルの hash・1 byte の改ざんと別の passphrase が拒まれること・除外の方針（Secret の形・Trading Lab の言及・deny）を確かめる。平文はメモリの上だけで、方針の grep の間だけ `work`（0700）に置く。結果は件数だけ。定期の回の中で 30 日に 1 回動き、保存物の異常は今回の回を成功のまま `backup_history` の WARN にする（45 日より古くなっても WARN）。Keychain・通信の失敗は受領票を変えない。除外の方針を強めた時は、古い世代が世代の整理で消えるまで `history_failed` が続くことがある（中身の判断は Human）。保存物の長い行も窓に分けて全部を検査する（選別の時は長い行のファイルを `long_line` として入れない）
+- 選別の安全：対象のフォルダそのものが symlink なら丸ごと入れず（`source_symlink`）、中の symlink はたどらず数える（`symlink`）。開く前に realpath が対象の中かを確かめ、開いた後に同じファイル（dev・ino）かを確かめる（途中のフォルダの差し替えで外を読まない＝`outside_source`）。`source_symlink`・`outside_source` は受領票の `sources_missing` に入り `backup_sources` の WARN になる。Secret・Trading Lab・deny・名前の判定は、見えない文字（ゼロ幅・BOM・方向の制御など）を除いた形でも行う。選別と検証は全体で 90 秒の時間切れ（超えたら `scan_timeout` で失敗＝送らない・違反なしと言わない）
 - token の期限：応答の header を受領票の `token_expires_at` へ残し、14 日未満で `credential_backup_token` の WARN（切れたら CRIT）
-- host-health の `backup_archive`：受領票が無ければ `not_configured`（異常にしない）。2 回続けて失敗で CRIT（Discord へ 1 回。正常時は送らない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**
+- host-health の `backup_archive`：受領票が無ければ `not_configured`（異常にしない）。ただし job の plist があるのに受領票が無ければ `receipt_missing` の WARN（消えた受領票で見張りから黙って外れない。初回の回の前も WARN）。2 回続けて失敗で CRIT（Discord へ 1 回。正常時は送らない）。3 日で WARN・7 日で CRIT。**復元の確認が無いか 35 日より古ければ WARN**
 
 ### 接続（Human の操作）
 
@@ -346,7 +347,7 @@ Human ──質問──▶ Hermes ──読むだけ──▶ runtime-brief.jso
 |---|---|
 | `acceptance [--days 7]` | H2〜H6 と観察（H8）の判定（pass／pending／fail）。定期の回の結果を後から確かめる。fail があれば exit 1 |
 | `why <項目の id>` | 項目の経過・通知の有無・担当・確かめ方。異常の調査の入口 |
-| `human [--ledger <abs>]` | Human が要ることの一覧。台帳（公開 repo に置かない `mac-runtime-state/human-required.json`）＋今の異常＋token の期限 |
+| `human [--ledger <abs>]` | Human が要ることの一覧。台帳（公開 repo に置かない `mac-runtime-state/human-required.json`）＋今の異常＋token の期限。台帳の行に `"done_when": "read_check_pass"` を付けると、Hermes の読み取りの検証が pass の間は出さない（inconclusive・fail・未実施は出す。知らない条件は出す） |
 | `brief [--external]` | Hermes が読む要約を読む側の手順で読み、答えの形にする |
 | `timeline [--days 7]` | 全項目の変わり目・出来事・通知を時刻の順に。同じ出来事の連続は 1 行。値は通知と同じ関所を通す |
 | `overview [--days 7]` | 検収・今の状態・Human が要ること・Hermes の読み取りの検証を 1 画面に。新しい判定は足さない |

@@ -10,7 +10,7 @@
  *   node scripts/runtime-ops.mjs overview [--days 7]                検収・今の状態・Human が要ること・Hermes の読み取りの検証を 1 画面に
  *        共通：[--state-dir <abs>]
  *
- * 台帳（--ledger）は公開 repo に置かない（既定 <repo の親>/mac-runtime-state/human-required.json）。
+ * 台帳（--ledger）は公開 repo に置かない（既定 <repo の親>/mac-runtime-state/human-required.json）。行の done_when（DONE_WHEN）が記録で満たされたら一覧に出さない。
  * 判定：pass＝記録で確かめた／pending＝定期の回がまだ足りない／fail＝記録に異常がある。exit は 0（fail があれば 1）・2＝引数。
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -179,9 +179,14 @@ export function renderOverview({ rows, reply, human, readCheck }) {
 }
 
 const PRIORITY = { 1: '高', 2: '中', 3: '低' };
-/** Human が要ることの一覧。台帳（手で足した判断待ち）＋今の異常のうち human のもの＋期限の近い token。優先度と期限の順 */
-export function humanRequired({ ledger = [], last = null, state = null, receipt = null, monitor = {}, now }) {
-  const rows = (Array.isArray(ledger) ? ledger : []).filter((x) => !x.done).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
+/** 台帳の done_when：記録で済んだと確かめられる条件。知らない条件は済んだと見ない（一覧に残す） */
+export const DONE_WHEN = Object.freeze({
+  read_check_pass: ({ readCheck }) => readCheck?.state === 'pass', // Hermes の実読み取りの検証が pass（inconclusive・fail は残す）
+});
+/** Human が要ることの一覧。台帳（手で足した判断待ち）＋今の異常のうち human のもの＋期限の近い token。優先度と期限の順。台帳の done_when が記録で満たされた行は出さない */
+export function humanRequired({ ledger = [], last = null, state = null, receipt = null, monitor = {}, readCheck = null, now }) {
+  const doneByRecord = (x) => typeof x.done_when === 'string' && Object.hasOwn(DONE_WHEN, x.done_when) && DONE_WHEN[x.done_when]({ readCheck });
+  const rows = (Array.isArray(ledger) ? ledger : []).filter((x) => x && !x.done && !doneByRecord(x)).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
   // 監視が動いていなければ「対応なし」と言えない
   if (monitor.disabled) rows.push({ id: 'monitor:disabled', priority: 1, title: '監視が止まっている（DISABLED）→ docs/runtime-monitoring.md §3 の手順で原因を確かめて再開する', due: null, source: 'monitor' });
   else if (monitor.stale) rows.push({ id: 'monitor:stale', priority: 1, title: '監視の記録が 24 時間以上ない → node scripts/runtime-ops.mjs acceptance', due: null, source: 'monitor' });
@@ -253,9 +258,10 @@ async function main(argv) {
     } catch { /* まだ書いていない */ }
     return acceptanceOf({ state, watchdog: readJson(path.join(stateDir, 'watchdog.json')), receipt, records, observation, jobs, briefAge, now });
   };
+  const readCheck = readCheckState(path.join(REPO, '..', READ_CHECK_DIR, 'result.json'));
   const humanRows = () => {
     const last = readRecords(stateDir, { since: since(1) }).at(-1);
-    return humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last, state, receipt, monitor: { disabled: existsSync(path.join(stateDir, 'DISABLED')), stale: !last }, now });
+    return humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last, state, receipt, monitor: { disabled: existsSync(path.join(stateDir, 'DISABLED')), stale: !last }, readCheck, now });
   };
   if (a.command === 'acceptance') {
     const rows = await accept();
@@ -271,7 +277,7 @@ async function main(argv) {
   if (a.command === 'overview') {
     const rows = await accept();
     const b = readBriefFile(a.file ?? path.join(STATUS_DIR, BRIEF_FILE));
-    console.log(renderOverview({ rows, reply: b.ok ? renderReply(b.brief) : `要約を信じられない（${b.reason}）`, human: humanRows(), readCheck: readCheckState(path.join(REPO, '..', READ_CHECK_DIR, 'result.json')) }));
+    console.log(renderOverview({ rows, reply: b.ok ? renderReply(b.brief) : `要約を信じられない（${b.reason}）`, human: humanRows(), readCheck }));
     return rows.some((r) => r.verdict === 'fail') ? 1 : 0;
   }
   if (a.command === 'why') {

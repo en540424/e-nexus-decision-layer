@@ -5,15 +5,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createCipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { MAGIC, manifestOf, pack, restore, unpack } from '../scripts/lib/backup-archive.mjs';
 import { runDrill } from '../scripts/backup-drill.mjs';
 import { catalog, inventory } from '../scripts/backup-inventory.mjs';
-import { MAX_LINE_CHARS, backupSources, denyLines, planBackup, policyViolations, retentionPlan } from '../scripts/lib/backup-plan.mjs';
-import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
+import { MAX_LINE_CHARS, ScanTimeout, backupSources, denyLines, planBackup, policyViolations, readPlain, retentionPlan } from '../scripts/lib/backup-plan.mjs';
+import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, VERIFY_MAX_GENERATIONS, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
 import { BACKUP_RECEIPT_SCHEMA } from '../scripts/lib/runtime-guard.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
 
@@ -302,7 +302,7 @@ test('選別：allowlist の外・Secret の形・Trading Lab・deny・symlink�
     symlinkSync('/etc/hosts', path.join(dir, 'link.md'));
     const p = planOf(dir);
     assert.deepEqual(p.files.map((f) => f.rel), ['keep.md', 'sub/state.json']);
-    assert.deepEqual(p.excluded, { file_type: 3, secret: 3, trading_lab: 1, denied: 1, regenerable: 1 });
+    assert.deepEqual(p.excluded, { file_type: 3, secret: 3, trading_lab: 1, denied: 1, regenerable: 1, symlink: 1 });
   } finally {
     clean(dir);
   }
@@ -736,5 +736,132 @@ test('除外の抜けを塞ぐ：全角コロン・Bearer・--token・passphrase
     }
   } finally {
     clean(root);
+  }
+});
+
+test('見えない文字で検出をすり抜けさせない：ゼロ幅・BOM・方向の制御を挟んだ Secret・Trading Lab・deny・名前（選別と保存済みの検証の両方）', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    const zw = '\u200B';
+    w('ok.md', 'plain\n');
+    w('pat.md', `x${zw}ghp_${'A'.repeat(36)}\n`); // 挟むと \b が効く形
+    w('pat2.md', `ghp_${'A'.repeat(18)}${zw}${'A'.repeat(18)}\n`); // 途中に挟む形
+    w('tl.md', `trad\u200Ding${zw}lab\n`);
+    w('rtl.md', `Trading\u202ELab\n`);
+    w('deny.md', `acme-ab\uFEFFcd-id\n`);
+    w(`tra${zw}ding-lab.md`, 'x\n');
+    w(`sec\u200Cret-notes.md`, 'x\n');
+    const p = planOf(dir);
+    assert.deepEqual(p.files.map((f) => f.rel), ['ok.md']);
+    assert.deepEqual(p.excluded, { secret: 2, trading_lab: 3, denied: 1, file_type: 1 });
+    const row = (rel, text) => ({ rel, body: Buffer.from(text) });
+    for (const r of [row('a.md', `ghp_${'A'.repeat(18)}${zw}${'A'.repeat(18)}`), row('a.md', `Trading${zw}Lab`), row(`pass${zw}word.txt`, 'x'), row('a.md', `zzdeny${zw}1`)]) assert.equal(policyViolations([r], VDENY, dir), 1, r.rel);
+    assert.equal(policyViolations([row('a.md', 'plain text 日本語')], VDENY, dir), 0, '普通の本文は違反にしない');
+  } finally {
+    clean(dir);
+  }
+});
+
+test('symlink と realpath：対象のフォルダが symlink なら入れない（知らせる）・中の symlink は数える・途中のフォルダの差し替えで外を読まない', async () => {
+  const outside = tmp();
+  const root = tmp();
+  const work = tmp();
+  try {
+    writeFileSync(path.join(outside, 'x.md'), 'outside\n');
+    const link = path.join(root, 'linked');
+    symlinkSync(outside, link);
+    const p = planBackup({ sources: [{ id: 'l', dir: link }], denyText: DENY, tmpRoot: work });
+    assert.deepEqual([p.files.length, p.excluded], [0, { source_symlink: 1 }]);
+    mkdirSync(path.join(root, 'real'));
+    writeFileSync(path.join(root, 'real', 'in.md'), 'in\n');
+    symlinkSync(outside, path.join(root, 'real', 'dir-link'));
+    const q = planBackup({ sources: [{ id: 'r', dir: path.join(root, 'real') }], denyText: DENY, tmpRoot: work });
+    assert.deepEqual([q.files.map((f) => f.rel), q.excluded], [['in.md'], { symlink: 1 }]);
+    // 途中のフォルダが外への symlink に差し替えられた後で開こうとした形
+    assert.throws(() => readPlain(path.join(link, 'x.md'), realpathSync(path.join(root, 'real'))), (e) => e.code === 'outside_source');
+    assert.equal(readPlain(path.join(root, 'real', 'in.md'), realpathSync(path.join(root, 'real'))).toString(), 'in\n');
+    symlinkSync(path.join(root, 'real', 'in.md'), path.join(root, 'real', 'swapped.md'));
+    assert.throws(() => readPlain(path.join(root, 'real', 'swapped.md'), realpathSync(path.join(root, 'real'))), (e) => e.code === 'outside_source', '中を指す symlink でも開かない');
+    // 受領票の sources_missing に数える（backup_sources が知らせる）
+    const { home, src, base } = setup();
+    try {
+      const planFiles = () => ({ ...base.planFiles(), excluded: { source_symlink: 1, outside_source: 2 } });
+      assert.equal((await runBackup({ ...base, planFiles, fetchImpl: fakeRepo({}) })).code, 0);
+      assert.equal(receiptOf(home).sources_missing, 3);
+    } finally {
+      clean(home, src);
+    }
+  } finally {
+    clean(outside, root, work);
+  }
+});
+
+test('全体の時間切れ：選別と保存済みの検証は予算を超えたら止まる（送らない・違反なしと言わない）。1 回分は scan_timeout で失敗に数える', async () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    for (let i = 0; i < 5; i += 1) w(`n${i}.md`, 'x\n');
+    let t = 0;
+    const clock = () => (t += 1000);
+    assert.throws(() => planOf(dir, { budgetMs: 3000, clock }), ScanTimeout);
+    t = 0;
+    assert.equal(planOf(dir, { budgetMs: 60_000, clock }).files.length, 5, '予算の内なら通る');
+    const rows = Array.from({ length: 5 }, (_, i) => ({ rel: `n${i}.md`, body: Buffer.from('x') }));
+    t = 0;
+    assert.throws(() => policyViolations(rows, VDENY, dir, { budgetMs: 3000, clock }), ScanTimeout);
+    const { home, src, base } = setup();
+    try {
+      const r = await runBackup({ ...base, planFiles: () => { throw new ScanTimeout(); }, fetchImpl: fakeRepo({}) });
+      assert.deepEqual([r.status, r.failure], ['failed', 'scan_timeout']);
+      assert.equal(receiptOf(home).last_failure_code, 'scan_timeout');
+    } finally {
+      clean(home, src);
+    }
+  } finally {
+    clean(dir);
+  }
+});
+
+test('長い行：選別は判定せず外す（long_line に数える）。保存済みの世代は窓に分けて全部を見る（前の世代の長い行の Secret を見逃さない）', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('long.md', `${'-M'.repeat(MAX_LINE_CHARS)}\n`);
+    assert.deepEqual(planOf(dir).excluded, { long_line: 1 });
+    const row = (text) => ({ rel: 'b.md', body: Buffer.from(text) });
+    const pad = '-'.repeat(MAX_LINE_CHARS * 3);
+    assert.equal(policyViolations([row(`${pad}\n`)], VDENY, dir), 0, '長いだけなら違反にしない');
+    assert.equal(policyViolations([row(`${pad} ghp_${'A'.repeat(36)} ${pad}\n`)], VDENY, dir), 1, '長い行の奥の Secret');
+    // 窓の境目をまたぐ位置にも置く
+    for (const at of [MAX_LINE_CHARS - 10, MAX_LINE_CHARS - 1024 - 5, 2 * MAX_LINE_CHARS - 2048 - 3]) {
+      const text = `${'-'.repeat(at)}ghp_${'A'.repeat(36)}${pad}`;
+      assert.equal(policyViolations([row(text)], VDENY, dir), 1, `境目 ${at}`);
+    }
+    const started = Date.now();
+    policyViolations([row(`${'a'.repeat(MAX_LINE_CHARS * 8)}\n`)], VDENY, dir);
+    assert.ok(Date.now() - started < 20_000, '長い行でも時間が延びすぎない');
+  } finally {
+    clean(dir);
+  }
+});
+
+test('保存済みの検証：全世代を読み直す（間の世代も）。上限を超えたら新しい方と最古', async () => {
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    for (const day of ['05', '06', '07']) await runBackup({ ...base, now: () => new Date(`2026-11-${day}T04:40:00.000Z`), fetchImpl: fakeRepo({ files }) });
+    const v = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files }) });
+    assert.deepEqual(v.rows.map((x) => x.archive), ['2026-11-07T0440Z.edlbk', '2026-11-06T0440Z.edlbk', '2026-11-05T0440Z.edlbk']);
+    // 間の世代だけ壊れていても見つける
+    const mid = [...files.keys()].find((k) => k.endsWith('2026-11-06T0440Z.edlbk'));
+    const broken = Buffer.from(files.get(mid));
+    broken[broken.length >> 1] ^= 1;
+    files.set(mid, broken);
+    const t = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files }) });
+    assert.deepEqual([t.status, t.failure], ['failed', 'archive_unreadable']);
+    assert.equal(VERIFY_MAX_GENERATIONS >= 26, true, '保持の最大（14＋12）を全部見られる');
+  } finally {
+    clean(home, src);
   }
 });

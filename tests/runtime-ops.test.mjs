@@ -11,7 +11,7 @@ import { monitorWebhookItem } from '../scripts/host-health-watchdog.mjs';
 import { collectGithub } from '../scripts/lib/github-guard.mjs';
 import { ruleOf } from '../scripts/lib/alert-policy.mjs';
 import { collectGuard, evaluateGuard, evaluateGuardEvents, plistArgs } from '../scripts/lib/runtime-guard.mjs';
-import { OBSERVE_WINDOW_DAYS, acceptanceOf, humanRequired, parse, readRecords, renderOverview, renderTimeline, timelineOf, validate, whyOf } from '../scripts/runtime-ops.mjs';
+import { DONE_WHEN, OBSERVE_WINDOW_DAYS, acceptanceOf, humanRequired, parse, readRecords, renderOverview, renderTimeline, timelineOf, validate, whyOf } from '../scripts/runtime-ops.mjs';
 
 const NOW = Date.parse('2026-11-08T10:20:00.000Z');
 const at = (h) => new Date(NOW - h * 3_600_000).toISOString();
@@ -357,4 +357,14 @@ test('隔離：id が読めない回も権限の崩れは捨てない', async ()
   const g = await collectGuard({ run: async (bin) => ({ code: bin === '/usr/bin/id' ? 1 : 0, stdout: '', timedOut: false }), hermesUser: 'hermes', base: '/b', repos: [], outbox: '/o', operatorHome: '/Users/op', fsi });
   assert.ok(g.isolation.includes('hermes_home_open') && g.isolation.includes('config_not_root_only'), hermes);
   assert.ok(!g.isolation.includes('admin_group'));
+});
+
+test('Human の一覧：台帳の done_when が記録で満たされた行は出さない（pass だけ。inconclusive・fail・未実施・知らない条件は残す）', () => {
+  const ledger = [{ id: 'rc', priority: 1, title: 'read check', done_when: 'read_check_pass' }, { id: 'console', priority: 1, title: 'console' }, { id: 'odd', title: 'odd', done_when: 'no_such_rule' }];
+  const ids = (readCheck) => humanRequired({ ledger, readCheck, now: NOW }).map((r) => r.id);
+  assert.deepEqual(ids({ state: 'pass' }), ['console', 'odd']);
+  for (const state of ['inconclusive', 'fail', 'not_run']) assert.deepEqual(ids({ state }), ['rc', 'console', 'odd'], state);
+  assert.deepEqual(ids(null), ['rc', 'console', 'odd'], '読めなければ残す');
+  assert.deepEqual(humanRequired({ ledger: [null, { id: 'x', title: 'x', done_when: 'toString' }], readCheck: { state: 'pass' }, now: NOW }).map((r) => r.id), ['x'], 'prototype の名前で消さない・壊れた行で止まらない');
+  assert.deepEqual(Object.keys(DONE_WHEN), ['read_check_pass']);
 });

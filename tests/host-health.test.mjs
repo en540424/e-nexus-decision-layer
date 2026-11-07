@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   ALLOWED_BINS, TRADING_LAB_PATH, makeRunner, collect, evaluate, evaluateEvents, decide, runHostHealth, postAlerts, webhookBodyOf,
   parseDfAvailableBytes, parseSwapUsedBytes, parseLoadavg, parseBoottime, parseThermal, parsePowerSource, parseRoute, parseLaunchctlPrint,
-  parseEtimeSeconds, parsePsUsage, parseArgs, validateArgs, DISABLED_REMIND_MS, GAP_MS, PAUSE_MAX_MS, RECOVER_RUNS, alertText, safeValue, isDiscordWebhook, monitorGapEvent, pauseState, recordFailure,
+  parseEtimeSeconds, parsePsUsage, parseArgs, validateArgs, DISABLED_REMIND_MS, GAP_MS, PAUSE_FUTURE_MS, PAUSE_MAX_MS, RECOVER_RUNS, alertText, safeValue, isDiscordWebhook, monitorGapEvent, pauseState, recordFailure,
 } from '../scripts/host-health.mjs';
 
 const OUT = {
@@ -420,6 +420,14 @@ test('PAUSE：未来の mtime は期限の幅を超えたら効かせない（�
     assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: true, expired: false });
     pauseAt(dir, new Date(T0.getTime() + PAUSE_MAX_MS + 60_000));
     assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: false, expired: true });
+    // 期限の内でも未来の印は 10 分まで（前は期限の 2 倍＝最大 144 時間黙った）
+    pauseAt(dir, new Date(T0.getTime() + PAUSE_FUTURE_MS));
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: true, expired: false });
+    pauseAt(dir, new Date(T0.getTime() + PAUSE_FUTURE_MS + 1000));
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: false, expired: true });
+    pauseAt(dir, new Date(T0.getTime() + PAUSE_MAX_MS - 60_000));
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: false, expired: true });
+    assert.deepEqual(pauseState(dir, 'not-a-time'), { paused: false, expired: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

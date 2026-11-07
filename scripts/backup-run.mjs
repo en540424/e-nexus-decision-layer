@@ -5,7 +5,7 @@
  *   node scripts/backup-run.mjs plan --deny-file <abs> [--json]                  選別の結果だけ（送らない・Keychain に触れない）
  *   node scripts/backup-run.mjs check --owner <o> --repo <r> --deny-file <abs>   送る条件を全部確かめる（送らない）
  *   node scripts/backup-run.mjs run   --owner <o> --repo <r> --deny-file <abs>   1 回分（条件が全部揃った時だけ送る）
- *   node scripts/backup-run.mjs verify --owner <o> --repo <r> --deny-file <abs>  保存済みのアーカイブ（最新と最古）を読み直して検証する（送らない・平文を画面へ出さない）
+ *   node scripts/backup-run.mjs verify --owner <o> --repo <r> --deny-file <abs>  保存済みのアーカイブ（全世代・上限 30）を読み直して検証する（送らない・平文を画面へ出さない）
  *   node scripts/backup-run.mjs attest-key   標準入力の passphrase が Keychain と同じなら、Mac の外の控えがあると記録する（connect-backup.sh から）
  *   node scripts/backup-run.mjs restore --archive <file> --target <空のフォルダ>   標準入力の passphrase で復元する（Keychain を使わない。どの PC でも）
  *
@@ -16,7 +16,7 @@
  *   4. 合成データの予行が通り、今回のアーカイブを手元で復元して全ファイルが一致する
  * 届いたことの実証：送った後に GitHub から読み直し、hash の一致と復号を確かめてから受領票（~/.enexus/backup/last.json）に restore_verified_at を書く。
  * 失敗は受領票に数え、host-health の backup_archive が知らせる（2 回続けば CRIT。ここからは Discord へ送らない）。
- * 保存済みの検証：VERIFY_EVERY_MS ごとに定期の回の中で最古の世代も読み直す（復号・全ファイルの hash・改ざんと鍵の誤りが拒まれること・除外の方針）。失敗は受領票の history_failure で host-health が知らせる。
+ * 保存済みの検証：VERIFY_EVERY_MS ごとに定期の回の中で全世代を読み直す（復号・全ファイルの hash・改ざんと鍵の誤りが拒まれること・除外の方針）。失敗は受領票の history_failure で host-health が知らせる。
  * token の期限：応答の header を受領票の token_expires_at に残す（host-health が事前に知らせる）。
  * 世代：lib/backup-plan.mjs の retentionPlan。消したものも Git の履歴に残る。repo が size_limit_kib を超えたら止めて知らせる（消すのは Human）。
  * 記録に出すのは件数・大きさ・コードだけ。パス・中身・鍵は出さない。
@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAX_BYTES, manifestOf, pack, restore, unpack } from './lib/backup-archive.mjs';
-import { backupSources, planBackup, policyViolations, retentionPlan } from './lib/backup-plan.mjs';
+import { ScanTimeout, backupSources, planBackup, policyViolations, retentionPlan } from './lib/backup-plan.mjs';
 import { readCredential } from './lib/env-file.mjs';
 import { GITHUB_API, GITHUB_OWNER, GITHUB_TOKEN_PREFIX, isRateLimited } from './lib/github-guard.mjs';
 import { BACKUP_RECEIPT_SCHEMA, defaultGuard } from './lib/runtime-guard.mjs';
@@ -247,7 +247,9 @@ async function verifyStored({ api, owner, repo, entry, passphrase, scan }) {
   }
 }
 
-/** 最新と最古を検証する（同じなら 1 つ）。受領票の history_verified_at を進める。失敗は history_failure に残す（毎日の回の成否は変えない） */
+/** 1 回に読み直す世代の上限（保持は最大 26＝新しい 14＋月ごと 12）。超えた時は新しい方から上限-1 個と最古 */
+export const VERIFY_MAX_GENERATIONS = 30;
+/** 保存済みの全世代を検証する（前は最新と最古だけで、間の世代を見ていなかった）。受領票の history_verified_at を進める。失敗は history_failure に残す（毎日の回の成否は変えない） */
 export async function verifyBackups({ owner, repo, home, otherRepos, scan, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date() }) {
   const receipt = path.join(backupDir(home), 'last.json');
   const at = now().toISOString();
@@ -255,7 +257,8 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
     const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl, writeProbe: false });
     const stored = await storedArchives({ api, owner, repo });
     if (!stored.length) throw new Stop('nothing_stored');
-    const picks = [...new Set([stored.at(-1), stored[0]])];
+    const newest = [...stored].reverse();
+    const picks = newest.length <= VERIFY_MAX_GENERATIONS ? newest : [...newest.slice(0, VERIFY_MAX_GENERATIONS - 1), stored[0]];
     const rows = [];
     for (const entry of picks) rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
     writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() });
@@ -314,7 +317,7 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
     await upload({ api, owner, repo, name, archive, passphrase });
     const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
-    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, sources_missing: (plan.excluded?.source_missing ?? 0) + (plan.excluded?.unreadable ?? 0), consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, sources_missing: ['source_missing', 'unreadable', 'source_symlink', 'outside_source'].reduce((n, k) => n + (plan.excluded?.[k] ?? 0), 0), consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
     // 古い世代も戻せることの定期の確かめ。失敗しても今回の回は成功のまま（受領票の history_failure で host-health が知らせる）
     const last = Date.parse(prev?.history_verified_at);
     const sinceVerified = Date.parse(at) - last;
@@ -322,7 +325,7 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
     const history = due ? await verifyBackups({ owner, repo, home, otherRepos, scan: (rows) => scan(tmpRoot, rows), read, fetchImpl, now }) : null;
     return { code: 0, status: 'ok', archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, pruned, ...(history ? { history: history.status } : {}) };
   } catch (err) {
-    const code = err instanceof Stop ? err.code : 'backup_failed'; // message にはパスが入る。記録へ出さない
+    const code = err instanceof Stop ? err.code : err instanceof ScanTimeout ? err.code : 'backup_failed'; // message にはパスが入る。記録へ出さない
     writeReceipt(receipt, { ...keptFields(prev), finished_at: prev?.finished_at ?? null, restore_verified_at: prev?.restore_verified_at ?? null, consecutive_failures: (prev?.consecutive_failures ?? 0) + 1, last_failure_code: code, failed_at: at });
     return { code: err instanceof Stop ? err.exit : 1, status: 'failed', failure: code };
   }

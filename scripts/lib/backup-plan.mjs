@@ -9,10 +9,21 @@
  * 検査した本文（body）をそのままアーカイブへ入れる（検査の後の差し替えを写さない）。記録には中身を出さない。除外の理由はコードだけ。
  */
 import { spawnSync } from 'node:child_process';
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000 });
+export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000, scan_budget_ms: 90_000 });
+/** 選別・検証の全体の時間切れ（1 行の長さの上限だけでは、ファイルの数で数分かかりうる）。超えたら止める＝送らない・違反なしと言わない */
+export class ScanTimeout extends Error {
+  constructor() {
+    super('scan time budget exceeded');
+    this.code = 'scan_timeout';
+  }
+}
+const deadlineOf = (budgetMs, clock) => {
+  const end = clock() + budgetMs;
+  return () => { if (clock() > end) throw new ScanTimeout(); };
+};
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
 const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)(?:\/|$)/i; // フォルダの名前も見る
 const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
@@ -26,17 +37,38 @@ const hasLongLine = (text) => {
   }
   return text.length - from > MAX_LINE_CHARS;
 };
-/** 判定できない本文（巨大な 1 行）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
-const hasSecret = (text) => {
-  if (hasLongLine(text)) return true;
+/** 見えない文字（ゼロ幅・BOM・方向の制御・字形の選択・ハングルの埋め字）。挟んで検出をすり抜けさせない */
+const INVISIBLE = /[\p{Cf}\u034F\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F]/gu;
+const visible = (text) => text.replace(INVISIBLE, '');
+/** 元の形と見えない文字を除いた形の両方で見る（除くと語の境界の \b が消える形もある） */
+const forms = (text) => {
+  const v = visible(text);
+  return v === text ? [text] : [text, v];
+};
+const anySecret = (text) => {
   try {
-    return SECRET_PATTERNS.some((p) => p.test(text));
+    return forms(text).some((t) => SECRET_PATTERNS.some((p) => p.test(t)));
   } catch {
     return true;
   }
 };
-/** 全角と濁点の分かれた形も同じ語として見る */
-const mentionsTradingLab = (text) => TRADING_LAB.test(text.normalize('NFKC'));
+/** 判定できない本文（巨大な 1 行）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
+const hasSecret = (text) => hasLongLine(text) || anySecret(text);
+/** 長い行も窓に分けて全部を見る（保存済みの世代の検証用。窓の重なりは最も長い形より長く取る） */
+const SCAN_OVERLAP = 1024;
+const hasSecretChunked = (text, tick = () => {}) => {
+  if (!hasLongLine(text)) return anySecret(text);
+  for (let from = 0; from < text.length; from += MAX_LINE_CHARS - SCAN_OVERLAP) {
+    tick();
+    if (anySecret(text.slice(from, from + MAX_LINE_CHARS))) return true;
+  }
+  return false;
+};
+/** 全角と濁点の分かれた形も同じ語として見る。見えない文字を挟んだ形も */
+const mentionsTradingLab = (text) => {
+  const n = text.normalize('NFKC');
+  return TRADING_LAB.test(n) || TRADING_LAB.test(visible(n));
+};
 /** Secret の形。ファイルに 1 つでもあれば丸ごと除外する（暗号の中でも鍵を持ち出さない） */
 export const SECRET_PATTERNS = Object.freeze([
   /-----BEGIN [A-Z ]*PRIVATE KEY/,
@@ -94,27 +126,45 @@ export function deniedIndexes(rows, denyText, tmpRoot) {
     const stage = path.join(work, 'stage');
     mkdirSync(stage, { mode: 0o700 });
     writeFileSync(deny, `${lines.join('\n')}\n`, { mode: 0o600 });
-    rows.forEach((f, i) => writeFileSync(path.join(stage, String(i)), f.body, { mode: 0o600 }));
-    const hit = new Set(grep(['-rlai', '-E', '-f', deny, stage]).map((p) => Number(path.basename(p))));
-    if (rows.length) for (const l of grep(['-ain', '-E', '-f', deny], `${rows.map((f) => f.rel).join('\n')}\n`)) hit.add(Number(l.split(':')[0]) - 1); // 名前は改行を含まない（planBackup が落とす）
+    // 見えない文字を除いた写しも同じ添字で並べる（<i>.v）。元の bytes に見えない文字が無ければ写さない
+    rows.forEach((f, i) => {
+      writeFileSync(path.join(stage, String(i)), f.body, { mode: 0o600 });
+      const text = Buffer.isBuffer(f.body) ? f.body.toString('utf8') : String(f.body);
+      const v = visible(text);
+      if (v !== text) writeFileSync(path.join(stage, `${i}.v`), v, { mode: 0o600 });
+    });
+    const hit = new Set(grep(['-rlai', '-E', '-f', deny, stage]).map((p) => Number.parseInt(path.basename(p), 10)));
+    const names = rows.flatMap((f, i) => forms(f.rel).map((n) => [i, n]));
+    if (names.length) for (const l of grep(['-ain', '-E', '-f', deny], `${names.map(([, n]) => n).join('\n')}\n`)) hit.add(names[Number(l.split(':')[0]) - 1][0]); // 名前は改行を含まない（planBackup が落とす）
     return hit;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-function walk(dir, topLevelOnly, out, rel = '') {
+function walk(dir, topLevelOnly, out, rel = '', links = []) {
   for (const e of readdirSync(path.join(dir, rel), { withFileTypes: true })) {
     const r = rel ? `${rel}/${e.name}` : e.name;
-    if (e.isDirectory()) { if (!topLevelOnly) walk(dir, false, out, r); } else if (e.isFile()) out.push(r); // symlink はたどらない
+    if (e.isDirectory()) { if (!topLevelOnly) walk(dir, false, out, r, links); } else if (e.isFile()) out.push(r);
+    else if (e.isSymbolicLink()) links.push(r); // symlink はたどらない（数だけ残す）
   }
+  return links;
 }
 
-/** symlink へ差し替えられていても開かない。大きすぎれば null */
-function readPlain(file) {
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+/**
+ * 対象の中の通常ファイルだけ開く。realpath が対象の外（途中のフォルダを symlink へ差し替えた）なら開かない。
+ * 開いた後に realpath の時点と同じファイルか（dev・ino）を確かめる（確かめと開く間の差し替えも拒む）。大きすぎれば null。
+ */
+export function readPlain(file, rootReal) {
+  if (lstatSync(file).isSymbolicLink()) throw Object.assign(new Error('symlink'), { code: 'outside_source' }); // 一覧の後に symlink へ差し替えられた
+  const real = realpathSync(file);
+  if (rootReal && !real.startsWith(`${rootReal}${path.sep}`)) throw Object.assign(new Error('outside source'), { code: 'outside_source' });
+  const seen = statSync(real);
+  const fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    if (fstatSync(fd).size > BACKUP_LIMITS.file_bytes) return null;
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.dev !== seen.dev || st.ino !== seen.ino) throw Object.assign(new Error('replaced'), { code: 'outside_source' });
+    if (st.size > BACKUP_LIMITS.file_bytes) return null;
     return readFileSync(fd);
   } finally {
     closeSync(fd);
@@ -122,16 +172,23 @@ function readPlain(file) {
 }
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-/** 選別。files は { id, rel, body, bytes }。excluded は理由ごとの件数。読めない対象は unreadable に数える */
-export function planBackup({ sources, denyText, tmpRoot }) {
+/**
+ * 選別。files は { id, rel, body, bytes }。excluded は理由ごとの件数。読めない対象は unreadable に数える。
+ * 対象のフォルダそのものが symlink なら丸ごと入れない（source_symlink。sources_missing に数える＝知らせる）。全体が budgetMs を超えたら ScanTimeout。
+ */
+export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = Date.now }) {
+  const tick = deadlineOf(budgetMs, clock);
   const rows = [];
   const excluded = {};
   const count = (reason) => { excluded[reason] = (excluded[reason] ?? 0) + 1; };
   for (const s of sources) {
     if (!existsSync(s.dir)) { count('source_missing'); continue; }
     const names = [];
+    let rootReal;
     try {
-      walk(s.dir, s.topLevelOnly, names);
+      if (lstatSync(s.dir).isSymbolicLink()) { count('source_symlink'); continue; }
+      rootReal = realpathSync(s.dir);
+      for (const _ of walk(s.dir, s.topLevelOnly, names)) count('symlink');
     } catch {
       count('unreadable');
       continue;
@@ -139,15 +196,16 @@ export function planBackup({ sources, denyText, tmpRoot }) {
     const months = names.filter((n) => /^\d{4}-\d{2}\.jsonl$/.test(n)).sort().reverse();
     const oldMonths = new Set(s.recentMonths ? months.slice(s.recentMonths) : []);
     for (const rel of names.sort()) {
+      tick();
       if (s.exclude?.test(rel)) { count('regenerable'); continue; }
       if (oldMonths.has(rel)) { count('old_records'); continue; }
-      if (!TEXT.test(rel) || SKIP_NAME.test(rel) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
+      if (!TEXT.test(rel) || forms(rel).some((n) => SKIP_NAME.test(n)) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
       if (mentionsTradingLab(rel)) { count('trading_lab'); continue; }
       let body;
       try {
-        body = readPlain(path.join(s.dir, rel));
-      } catch {
-        count('unreadable');
+        body = readPlain(path.join(s.dir, rel), rootReal);
+      } catch (err) {
+        count(err?.code === 'outside_source' ? 'outside_source' : 'unreadable');
         continue;
       }
       if (body == null) { count('too_large'); continue; }
@@ -159,25 +217,38 @@ export function planBackup({ sources, denyText, tmpRoot }) {
         continue;
       }
       if (text.includes('\0')) { count('binary'); continue; }
+      if (hasLongLine(text)) { count('long_line'); continue; } // 判定できない＝入れない（Secret とは数え分ける）
       if (hasSecret(text)) { count('secret'); continue; }
       if (mentionsTradingLab(text)) { count('trading_lab'); continue; } // 言及だけのファイルも入れない（識別子の判定は deny に任せきりにしない）
       rows.push({ id: s.id, rel, body, bytes: body.length });
     }
   }
   if (rows.reduce((n, f) => n + f.bytes, 0) > BACKUP_LIMITS.total_bytes) throw new Error('backup is larger than the limit');
+  tick();
   const denied = deniedIndexes(rows, denyText, tmpRoot);
+  tick();
   if (denied.size) excluded.denied = denied.size;
   const files = rows.filter((_, i) => !denied.has(i));
   const bytes = files.reduce((n, f) => n + f.bytes, 0);
   return { files, excluded, bytes };
 }
 
-/** 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない） */
-export function policyViolations(rows, denyText, tmpRoot) {
-  // 保存物はファイルの名前だけ見る（フォルダの規則は後から足したので、前の世代を違反にしない）。長い行は判定できないだけで違反ではない
-  const secretIn = (text) => !hasLongLine(text) && hasSecret(text);
-  const clean = (r) => !SKIP_NAME.test(path.basename(r.rel)) && !mentionsTradingLab(r.rel) && !secretIn(r.body.toString('utf8')) && !mentionsTradingLab(r.body.toString('utf8'));
-  return rows.filter((r) => !clean(r)).length + deniedIndexes(rows, denyText, tmpRoot).size;
+/**
+ * 保存済みのファイルが除外の方針に反していないか（backup-run の verify）。rows は { rel, body }。反した件数だけ返す（どのファイルかは出さない）。
+ * 保存物はファイルの名前だけ見る（フォルダの規則は後から足したので、前の世代を違反にしない）。長い行は窓に分けて全部を見る（前の世代の長い行も Secret を見逃さない）。
+ * 全体が budgetMs を超えたら ScanTimeout（違反なしと言わない）。
+ */
+export function policyViolations(rows, denyText, tmpRoot, { budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = Date.now } = {}) {
+  const tick = deadlineOf(budgetMs, clock);
+  const clean = (r) => {
+    tick();
+    const text = r.body.toString('utf8');
+    return !forms(path.basename(r.rel)).some((n) => SKIP_NAME.test(n)) && !mentionsTradingLab(r.rel) && !hasSecretChunked(text, tick) && !mentionsTradingLab(text);
+  };
+  const bad = rows.filter((r) => !clean(r)).length;
+  const denied = deniedIndexes(rows, denyText, tmpRoot).size;
+  tick();
+  return bad + denied;
 }
 
 /** 世代：新しい 14 個と、月ごとの最新を 12 か月分。戻り値は消す名前。名前は YYYY-MM-DDTHHMMZ.edlbk（並びが時刻の順）。keep は必ず残す（今送ったもの） */

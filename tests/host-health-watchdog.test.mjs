@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { monitorWebhookItem, monitorState, runWatchdog } from '../scripts/host-health-watchdog.mjs';
@@ -83,6 +83,7 @@ test('解除された job を知らせる・PAUSE の間は知らせない・web
     assert.equal(posted.length, 0);
     rmSync(path.join(dir, 'watchdog.json'));
     writeFileSync(path.join(dir, 'PAUSE'), '');
+    utimesSync(path.join(dir, 'PAUSE'), new Date(iso(1)), new Date(iso(1))); // test の時刻に置く（実時刻の mtime だと T0 から 72 時間で期限切れになり test が日付で落ちる）
     const r = await runWatchdog({ ...base, webhook: 'credential:E-NEXUS/edl/h' });
     assert.deepEqual([r.paused, r.notify.length, posted.length], [true, 0, 0]);
     rmSync(path.join(dir, 'PAUSE'));

@@ -77,6 +77,8 @@ export { RECOVER_RUNS };
 export const GAP_MS = 90 * 60_000;
 /** 保守窓の上限。これより古い PAUSE は消し忘れとして効かせない */
 export const PAUSE_MAX_MS = 72 * 3_600_000;
+/** 未来の mtime を許す幅（時計の小さな戻りだけ）。これより先の印は期限の 2 倍まで黙らせないよう、置いた時点で効かせない */
+export const PAUSE_FUTURE_MS = 10 * 60_000;
 export const COMMAND_TIMEOUT_MS = 5000;
 export const RUN_DEADLINE_MS = 60_000;
 /** 全体の予算の内訳：GitHub 20 秒＋コマンド＋通知 25 秒＋生存信号 8 秒＋Webhook の確かめ 5 秒。これらの遅れで 1 回分を失敗にしない */
@@ -501,7 +503,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^credential_backup_token$/, /^(?:ok|expiring|expired)$/],
   [/^backup_history$/, /^(?:history_ok|history_stale|history_failed)$/],
   [/^backup_sources$/, /^(?:ok|missing)$/],
-  [/^backup_/, /^(?:not_configured|latest_unreadable|failed [a-z_]{1,40}|-?\d+d(?: restore (?:never|\d+d))?)$/],
+  [/^backup_/, /^(?:not_configured|receipt_missing|latest_unreadable|failed [a-z_]{1,40}|-?\d+d(?: restore (?:never|\d+d))?)$/],
   [/^hermes_service$/, /^(?:running|not_loaded|stopped exit (?:-?\d+|-))$/],
   [/^hermes_isolation$/, codes('ok', 'admin_group', 'hermes_home_open', 'operator_home_open', 'hermes_home_missing', 'operator_home_missing', '(?:config|plist|wrapper)_(?:not_root_only|missing)', 'share_open', 'share_missing')],
   [/^hermes_files_changed$/, codes('vault_copy', 'config', 'plist', 'wrapper')],
@@ -651,11 +653,12 @@ function setFlag(dir, name, on, text) {
   else if (existsSync(f)) rmSync(f);
 }
 
-/** 保守窓か。古い PAUSE は効かせない。未来の mtime も期限の幅を超えたら効かせない（時計の小さな戻りでは保守窓のまま・未来の印で永久に黙らない） */
+/** 保守窓か。古い PAUSE は効かせない。未来の mtime は PAUSE_FUTURE_MS まで（時計の小さな戻りでは保守窓のまま・未来の印で期限より長く黙らない） */
 export function pauseState(stateDir, at) {
   const f = path.join(stateDir, 'PAUSE');
   if (!existsSync(f)) return { paused: false, expired: false };
-  const expired = Math.abs(Date.parse(at) - statSync(f).mtimeMs) > PAUSE_MAX_MS;
+  const age = Date.parse(at) - statSync(f).mtimeMs;
+  const expired = !(age <= PAUSE_MAX_MS && age >= -PAUSE_FUTURE_MS); // 読めない時刻（NaN）も効かせない
   return { paused: !expired, expired };
 }
 
