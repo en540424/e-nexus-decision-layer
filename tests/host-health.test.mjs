@@ -518,6 +518,18 @@ test('反復の上限の後も持ち越す：WARN は上限の間に回復でき
   assert.ok(rest.out.flat().length >= 1, '48 時間続けば知らせる');
 });
 
+test('反復の上限の間も、新しいコードは待たない（user 範囲・監視の引数）', () => {
+  for (const [id, a, b] of [['agent_scope', 'user_claude_md', 'user_rules'], ['monitor_args', 'monitor_no_github', 'monitor_no_webhook']]) {
+    const warn = (value) => [{ id, level: 'warn', value, kind: 'state' }];
+    const ok = [{ id, level: 'ok', value: 'ok', kind: 'state' }];
+    const list = [];
+    for (let i = 0; i < 9; i += 1) list.push([i * 60, i % 3 === 0 ? warn(a) : ok]);
+    const { out, state } = steps(list);
+    assert.equal(out.flat().length, 3, id);
+    assert.equal(decide(warn(b), state, { now: atMin(9 * 60) }).notify.length, 1, id);
+  }
+});
+
 test('監視の引数の見張り：no_webhook から no_guard へ変われば知らせ直す', () => {
   const item = (value) => [{ id: 'monitor_webhook', level: 'warn', value, kind: 'state' }];
   const { out } = steps([[0, item('no_webhook')], [30, item('no_webhook')], [60, item('no_guard')]]);

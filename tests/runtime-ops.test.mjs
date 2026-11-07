@@ -35,7 +35,7 @@ test('検収：記録で揃えば pass。観察は 7 日たつまで pending', (
 });
 
 test('観察：窓が 7 日ちょうどでも届くように別に読む。--days が短くても観察の幅は変わらない', () => {
-  const week = Array.from({ length: 7 * 48 + 2 }, (_, i) => row((7 * 48 + 1 - i) / 2, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }]));
+  const week = Array.from({ length: 7 * 48 + 2 }, (_, i) => row((7 * 48 + 1 - i) / 2, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }, { id: 'memory_pressure', level: 'ok', value: 1 }, { id: 'swap_used_gib', level: 'ok', value: 0 }]));
   const h8 = (b) => acceptanceOf(b).find((r) => r.id === 'H8');
   assert.ok(OBSERVE_WINDOW_DAYS > 7);
   assert.equal(h8({ ...base(), observation: week }).verdict, 'pass');
@@ -46,6 +46,7 @@ test('観察：窓が 7 日ちょうどでも届くように別に読む。--day
 test('観察：合格の目安を全部見る（常駐・再起動・固定ファイル・RSS・メモリ・空白。Mac の再起動の空白は除く）', () => {
   const ok = (h, extra = []) => row(h, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }, { id: 'memory_pressure', level: 'ok', value: 1 }, ...extra]);
   const svc = (id = 'hermes_service', level = 'ok') => ({ id, level, value: null });
+  const full = (level = 'ok') => [svc('hermes_service', level), svc('hermes_rss_gib'), svc('memory_pressure'), svc('swap_used_gib')];
   const obs = (extra) => [ok(3), ok(2.5, extra), ok(2)];
   const h8 = (observation) => acceptanceOf({ ...base(), observation }).find((r) => r.id === 'H8');
   assert.equal(h8(obs()).verdict, 'pending');
@@ -62,18 +63,20 @@ test('観察：合格の目安を全部見る（常駐・再起動・固定フ�
   assert.equal(h8([ok(5), ok(2, [{ id: 'rebooted', level: 'warn' }])]).facts.gaps, 0, 'Mac の再起動の分は除く');
   // 幅は Hermes を ok と見た最初の回から。記録だけ古くても、見えていない間は合格にしない
   const days = (n, items) => Array.from({ length: n * 48 + 1 }, (_, i) => row((n * 48 - i) / 2, items));
-  const older = [...days(8, [{ id: 'disk_free_gib', level: 'ok', value: 1 }]).slice(0, 5 * 48), ...days(3, [svc()])];
+  const older = [...days(8, [{ id: 'disk_free_gib', level: 'ok', value: 1 }]).slice(0, 5 * 48), ...days(3, full())];
   assert.deepEqual([h8(older).verdict, h8(older).facts.days_observed], ['pending', 3]);
   assert.equal(h8(days(8, [{ id: 'disk_free_gib', level: 'ok', value: 1 }])).verdict, 'pending', '項目が無い');
   assert.equal(h8(days(8, [svc('hermes_service', 'unknown')])).verdict, 'pending', 'ずっと見えていない');
-  const blind = days(8, [svc()]);
-  blind[50] = row((8 * 48 - 50) / 2, [svc('hermes_service', 'unknown')]);
+  const blind = days(8, full());
+  blind[50] = row((8 * 48 - 50) / 2, full('unknown'));
   assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pass', 1], '1 回の読み損ねで何日も止めない');
-  for (let i = 50; i < 70; i += 1) blind[i] = row((8 * 48 - i) / 2, [svc('hermes_service', 'unknown')]);
+  for (let i = 50; i < 70; i += 1) blind[i] = row((8 * 48 - i) / 2, full('unknown'));
   assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pending', 20], '見えない回が多ければ異常なしに数えない');
   const down = h8(days(8, [svc('hermes_service', 'warn')]));
   assert.deepEqual([down.verdict, down.facts.hermes_service_not_ok, down.facts.days_observed], ['fail', 385, 0], '窓の全部で止まっている時も fail');
-  assert.equal(h8(days(8, [svc()])).verdict, 'pass');
+  assert.equal(h8(days(8, full())).verdict, 'pass');
+  assert.equal(h8(days(8, [svc()])).verdict, 'pending', 'メモリの項目が見えていない窓を合格にしない');
+  assert.equal(h8(days(8, full()).slice(0, -10)).verdict, 'pending', '記録が止まった後の幅で合格にしない');
 });
 
 test('時系列：変わり目と出来事と通知だけ。最初の ok は出さない・連続する同じ出来事は 1 行に・値は関所を通す', () => {

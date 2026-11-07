@@ -422,7 +422,7 @@ export function decide(items, prev, { now, paused = false }) {
     const level = it.level === 'crit' || (rule.promote && held) ? 'crit' : 'warn';
     // 上限のある項目は 24 時間に知らせたコードも見る（回復で notified が消えても新しいコードは待たせない・2 つのコードの交互で重ねない）
     const seenCodes = rule.flap && spent.length ? (p.flap_codes ?? []) : [];
-    const grew = rule.codes && (p.notified || (rule.flap && level === 'crit')) && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c) && !seenCodes.includes(c));
+    const grew = rule.codes && (p.notified || (rule.flap && (level === 'crit' || rule.hold === 0))) && codesOf(it.value).some((c) => !codesOf(p.notified_value).includes(c) && !seenCodes.includes(c));
     let change = null;
     if (grew) change = 'new';
     else if (level === 'crit' && p.notified === 'crit') {

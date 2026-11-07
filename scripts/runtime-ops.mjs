@@ -33,6 +33,7 @@ const OBSERVE_DAYS = 7;
 const OBSERVE_RSS_LIMIT_GIB = 3;
 /** launchctl の一時的な読み損ねで何日も pending にしない。これを超えて見えなかった回があれば合格にしない */
 const OBSERVE_UNSEEN_RATIO = 0.02;
+const OBSERVE_FRESH_HOURS = 2;
 /** 観察の窓。--days と別に読む（窓が 7 日ちょうどだと記録の幅は 7 日に届かず、いつまでも pending になる） */
 export const OBSERVE_WINDOW_DAYS = OBSERVE_DAYS + 1;
 /** 記録の間隔がこれを超えたら空白（host-health の report と同じ。30 分の 1.5 倍） */
@@ -106,10 +107,11 @@ export function acceptanceOf({ state, watchdog, receipt, records, observation = 
   const seen = (id) => watched.filter((r) => itemOf(r, id)).length;
   const peak = Math.max(0, ...watched.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
   const gaps = watched.filter((r, i) => i && Date.parse(r.at) - Date.parse(watched[i - 1].at) > GAP_MS && !itemOf(r, 'rebooted')).length;
-  const unseen = watched.filter((r) => !['ok', 'warn', 'crit'].includes(itemOf(r, 'hermes_service')?.level)).length; // 見えなかった回は「異常なし」に数えない
+  const unseen = watched.filter((r) => ['hermes_service', 'hermes_rss_gib', 'memory_pressure', 'swap_used_gib'].some((id) => !['ok', 'warn', 'crit'].includes(itemOf(r, id)?.level))).length; // 見えなかった回は「異常なし」に数えない
+  const fresh = watched.length > 0 && hoursAgo(watched.at(-1).at, now) <= OBSERVE_FRESH_HOURS; // 記録が止まった後の幅で合格にしない
   const facts = { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: bad('hermes_service'), hermes_service_unseen: unseen, hermes_restarted: seen('hermes_restarted'), hermes_files_changed: seen('hermes_files_changed'), rss_peak_gib: peak, memory_not_ok: bad('memory_pressure') + bad('swap_used_gib'), gaps };
   const observeBad = facts.hermes_service_not_ok || facts.hermes_restarted || facts.hermes_files_changed || peak >= OBSERVE_RSS_LIMIT_GIB || facts.memory_not_ok || gaps;
-  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS && unseen <= watched.length * OBSERVE_UNSEEN_RATIO ? 'pass' : 'pending', facts));
+  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS && fresh && unseen <= watched.length * OBSERVE_UNSEEN_RATIO ? 'pass' : 'pending', facts));
   return out;
 }
 
