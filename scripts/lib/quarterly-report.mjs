@@ -40,7 +40,8 @@ export function duePeriod(state, at) {
   return started ? target : null;
 }
 export function canAttempt(state, at) {
-  return !state?.last_attempt_at || Date.parse(at) - Date.parse(state.last_attempt_at) >= QUARTERLY_RETRY.interval_ms;
+  const since = Date.parse(at) - Date.parse(state?.last_attempt_at);
+  return !state?.last_attempt_at || since < 0 || since >= QUARTERLY_RETRY.interval_ms; // 未来の印では黙らない
 }
 
 /** host-health の YYYY-MM.jsonl の行から期間の集計。数だけ返す。now は期間の途中で見る時（要約の下見）だけ */

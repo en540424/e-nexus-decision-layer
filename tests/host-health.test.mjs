@@ -60,6 +60,13 @@ function tmp() {
 const T0 = new Date('2026-10-21T03:20:00Z');
 const later = (ms) => () => new Date(T0.getTime() + ms);
 
+/** 保守窓の印を test の時刻に置く（fixture の時刻は実際の時計より前なので、そのままだと未来の PAUSE になる） */
+const pauseAt = (dir, at) => {
+  const f = path.join(dir, 'PAUSE');
+  writeFileSync(f, '');
+  utimesSync(f, at, at);
+};
+
 test('読み取り：Mac mini の実出力から空き・逼迫・swap・load・起動時刻・発熱・電源・経路・launchctl を読む', () => {
   assert.equal(parseDfAvailableBytes(OUT.df), 337437064 * 1024);
   assert.equal(parseSwapUsedBytes(OUT.swap), 0);
@@ -232,7 +239,7 @@ test('通知：webhook を付けた時だけ・送れなかった変化は次の
     const r3 = await runHostHealth({ ...opts, now: later(60 * 60_000) });
     assert.equal(r3.notify.length, 0, '送れた後は再通知まで黙る');
     assert.equal(posted[0].o.spec, 'credential:E-NEXUS/edl/host-health-webhook');
-    writeFileSync(path.join(dir, 'PAUSE'), '');
+    pauseAt(dir, later(90 * 60_000)());
     const ok = fixtureRunner();
     const r4 = await runHostHealth({ ...opts, run: ok.run, now: later(90 * 60_000) });
     assert.deepEqual([r4.paused, r4.notify.length, posted.length], [true, 0, 2], '保守窓は記録だけ');
@@ -369,7 +376,7 @@ test('監視の停止：DISABLED になったら CRIT で知らせ、止まっ�
     assert.equal((await runHostHealth({ ...opts, now: later(DISABLED_REMIND_MS + 60_000) })).code, 3);
     assert.deepEqual([posted.length, posted[1].change], [2, 'reminder']);
     assert.equal(calls.length, 0, 'DISABLED の間はコマンドを起動しない');
-    writeFileSync(path.join(dir, 'PAUSE'), '');
+    pauseAt(dir, later(3 * DISABLED_REMIND_MS)());
     await runHostHealth({ ...opts, now: later(3 * DISABLED_REMIND_MS) });
     assert.equal(posted.length, 2, '保守窓は知らせない');
   } finally {
@@ -391,7 +398,7 @@ test('PAUSE：明けた後に出来事を知らせる（再起動・回線・空
     const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
     const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
     await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(0) });
-    writeFileSync(path.join(dir, 'PAUSE'), '');
+    pauseAt(dir, later(300 * 60_000)());
     const rebooted = fixtureRunner({ '/usr/sbin/sysctl -n kern.boottime': { code: 0, stdout: OUT.boottime.replace('1790751889', '1790760000') }, '/sbin/route -n get default': { code: 0, stdout: OUT.route.replace('en1', 'en7') } });
     const r1 = await runHostHealth({ ...opts, run: rebooted.run, now: later(300 * 60_000) });
     assert.deepEqual([r1.paused, posted.length], [true, 0]);
@@ -403,6 +410,71 @@ test('PAUSE：明けた後に出来事を知らせる（再起動・回線・空
     assert.equal(r3.notify.length, 0, '送れた後はもう出さない');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PAUSE：未来の mtime は期限の幅を超えたら効かせない（時計の小さな戻りでは保守窓のまま）', () => {
+  const dir = tmp();
+  try {
+    pauseAt(dir, new Date(T0.getTime() + 60_000));
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: true, expired: false });
+    pauseAt(dir, new Date(T0.getTime() + PAUSE_MAX_MS + 60_000));
+    assert.deepEqual(pauseState(dir, T0.toISOString()), { paused: false, expired: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('監視の記録：jsonl を書けない回は成功に数えず積み上がる。state が消えたら 1 回知らせる', async () => {
+  const dir = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(...n); return { sent: true, code: 'SENT' }; };
+    const opts = { stateDir: dir, dataDirs: [], uid: 501, webhook: 'credential:E-NEXUS/edl/h', post };
+    const r0 = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(0) });
+    assert.equal(r0.code, 0);
+    assert.equal(posted.some((n) => n.id === 'monitor_state_reset'), false, '最初の回は知らせない');
+    rmSync(path.join(dir, 'state.json'));
+    const r1 = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(30 * 60_000) });
+    assert.deepEqual(r1.notify.filter((n) => n.id === 'monitor_state_reset').map((n) => n.change), ['event']);
+    const r2 = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(60 * 60_000) });
+    assert.equal(r2.notify.some((n) => n.id === 'monitor_state_reset'), false, '1 回だけ');
+    const month = readdirSync(dir).find((f) => f.endsWith('.jsonl'));
+    rmSync(path.join(dir, month));
+    mkdirSync(path.join(dir, month));
+    for (const [i, want] of [[3, 1], [4, 2]]) {
+      const r = await runHostHealth({ ...opts, run: fixtureRunner().run, now: later(i * 30 * 60_000) });
+      assert.deepEqual([r.code, r.failures], [1, want], '毎回 0 へ戻らない');
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('出来事：同じ出来事は 24 時間に 3 通まで。超えた分は bursts の数が増えない。窓が明ければ戻る', () => {
+  const ev = [{ id: 'monitor_config_changed', level: 'warn', value: 'monitor_plist', kind: 'event' }];
+  let prev = null;
+  let sent = 0;
+  for (let i = 0; i < 48; i += 1) {
+    const d = decide(ev, prev, { now: new Date(T0.getTime() + i * 30 * 60_000).toISOString() });
+    sent += d.notify.length;
+    prev = { items: d.items, bursts: d.bursts };
+  }
+  assert.equal(sent, 3);
+  assert.equal(decide(ev, prev, { now: new Date(T0.getTime() + 25 * 3_600_000).toISOString() }).notify.length, 1);
+});
+
+test('反復の上限：監視の引数のコードの交互・user 範囲の行き来も 24 時間に 3 通まで', () => {
+  for (const [id, values] of [['monitor_args', ['monitor_no_webhook', 'monitor_no_heartbeat']], ['agent_scope', ['user_rules', 'ok']]]) {
+    let prev = null;
+    let sent = 0;
+    for (let i = 0; i < 48; i += 1) {
+      const v = values[i % 2];
+      const d = decide([{ id, level: v === 'ok' ? 'ok' : 'warn', value: v, kind: 'state' }], prev, { now: new Date(T0.getTime() + i * 30 * 60_000).toISOString() });
+      sent += d.notify.length;
+      prev = { items: d.items, bursts: d.bursts };
+    }
+    assert.ok(sent <= 3, `${id}: ${sent}`);
   }
 });
 

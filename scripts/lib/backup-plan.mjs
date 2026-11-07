@@ -14,10 +14,21 @@ import path from 'node:path';
 
 export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000 });
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
-const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)$/i;
+const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)(?:\/|$)/i; // フォルダの名前も見る
 const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
-/** 判定できない本文（巨大な 1 行で正規表現のスタックが溢れる）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
+/** 正規表現の時間は 1 行の長さの 2 乗で増える。これより長い行のファイルは判定せず外す（1 回分を止めない） */
+export const MAX_LINE_CHARS = 16 * 1024;
+const hasLongLine = (text) => {
+  let from = 0;
+  for (let to = text.indexOf('\n'); to >= 0; to = text.indexOf('\n', from)) {
+    if (to - from > MAX_LINE_CHARS) return true;
+    from = to + 1;
+  }
+  return text.length - from > MAX_LINE_CHARS;
+};
+/** 判定できない本文（巨大な 1 行）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
 const hasSecret = (text) => {
+  if (hasLongLine(text)) return true;
   try {
     return SECRET_PATTERNS.some((p) => p.test(text));
   } catch {

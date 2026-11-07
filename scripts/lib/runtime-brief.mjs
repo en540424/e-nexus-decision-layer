@@ -142,10 +142,10 @@ export function briefInconsistencies(doc) {
   const open = Array.isArray(doc.open_items) ? doc.open_items : [];
   const c = doc.counts ?? {};
   if (c.open !== open.length) bad.push('counts_open');
-  if (OPS_CLASSES.some((k) => c[k] !== open.filter((o) => o.class === k).length)) bad.push('counts_class');
+  if (OPS_CLASSES.some((k) => c[k] !== open.filter((o) => o?.class === k).length)) bad.push('counts_class');
   if (doc.monitor === 'running') {
-    if (open.some((o) => o.level === 'crit') && doc.overall !== 'crit') bad.push('overall_below_crit');
-    if (open.some((o) => o.level === 'warn') && doc.overall === 'ok') bad.push('overall_below_warn');
+    if (open.some((o) => o?.level === 'crit') && doc.overall !== 'crit') bad.push('overall_below_crit');
+    if (open.some((o) => o?.level === 'warn') && doc.overall === 'ok') bad.push('overall_below_warn');
   }
   const life = Date.parse(doc.valid_until) - Date.parse(doc.generated_at);
   if (!(life > 0 && life <= STALE_MS)) bad.push('valid_until');

@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { grade, parse, prepare, validate } from '../scripts/hermes-read-check.mjs';
-import { MAX_API_CALLS, buildFixture, gradeReadCheck, inRewriteWindow, promptOf, readCheckState } from '../scripts/lib/hermes-read-check.mjs';
+import { DEFAULT_EVIDENCE, grade, parse, prepare, validate } from '../scripts/hermes-read-check.mjs';
+import { MAX_API_CALLS, READ_CHECK_DIR, buildFixture, gradeReadCheck, inRewriteWindow, promptOf, readCheckState } from '../scripts/lib/hermes-read-check.mjs';
 import { boundaryViolations } from '../scripts/lib/runtime-brief.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,8 +59,9 @@ test('採点：読み違い・分類の誤り・補った事実・Secret の形�
   assert.ok(gradeOf(JSON.stringify(answerOf()).replace('"running"', '"/Users/someone/x"')).failed.includes('no_secret_shape'), 'パスを答えに出さない');
 });
 
-test('採点：前後の文は strict_format だけを落とす。JSON でなければ全部落ちる', () => {
-  assert.deepEqual(gradeOf(`はい。\n\`\`\`json\n${JSON.stringify(answerOf())}\n\`\`\``).failed, ['strict_format']);
+test('採点：前後の文は notes に残すだけ。JSON でなければ全部落ちる', () => {
+  const fenced = gradeOf(`はい。\n\`\`\`json\n${JSON.stringify(answerOf())}\n\`\`\``);
+  assert.deepEqual([fenced.verdict, fenced.notes], ['pass', ['not_strict_json']], '読めているので 1 回きりを不合格にしない');
   const r = gradeOf('読めませんでした');
   assert.equal(r.verdict, 'fail');
   assert.ok(r.failed.includes('answer_json'));
@@ -78,6 +79,20 @@ test('採点：失敗の実行・別の model・別の provider・回数の超�
   const none = gradeOf(answerOf(), { usage: null });
   assert.deepEqual(none.failed, ['usage_completed', 'usage_model', 'usage_calls_bounded']);
   assert.equal(none.usage.api_calls, null);
+});
+
+test('採点：補助の呼び出しも回数と費用に足す', () => {
+  const r = gradeOf(answerOf(), { usage: usage({ total_including_auxiliary: { api_calls: MAX_API_CALLS + 1, estimated_cost_usd: 0.002 } }) });
+  assert.deepEqual([r.failed, r.usage.api_calls, r.usage.total_cost_usd], [['usage_calls_bounded'], MAX_API_CALLS + 1, 0.002]);
+});
+
+test('採点：読んでいる間に要約が書き換わり、実物の値だけが違う時は判定できないと言う。他の失敗は不合格のまま', () => {
+  const real = { real: { ...answerOf().real, relay_unacked: 8 } };
+  assert.equal(gradeOf(answerOf(real)).verdict, 'fail');
+  const r = gradeOf(answerOf(real), { briefChanged: true });
+  assert.deepEqual([r.verdict, r.notes], ['inconclusive', ['brief_changed']]);
+  assert.equal(gradeOf(answerOf({ ...real, absent: { backup_repo_name: 'x', hermes_pid: null, anthropic_key: null } }), { briefChanged: true }).verdict, 'fail');
+  assert.equal(gradeOf(answerOf(), { briefChanged: true }).verdict, 'pass');
 });
 
 test('書き換えの時間（:18〜:22・:48〜:52）は始めない', () => {
@@ -102,9 +117,11 @@ test('prepare：2 回目・書き換えの時間・信じられない要約で�
     assert.equal(statSync(a.evidence).mode & 0o777, 0o700);
     assert.equal(statSync(a.share).mode & 0o777, 0o750);
     assert.equal(statSync(path.join(a.share, 'fixture.json')).mode & 0o777, 0o640);
+    assert.deepEqual(prepare({ ...a, skipGuards: true }), { code: 3, reason: 'share_exists' }, '既にあるフォルダは使わない（終わる時に消すので）');
     assert.ok(readFileSync(path.join(a.evidence, 'prompt.txt'), 'utf8').includes(path.join(a.share, 'fixture.json')));
     writeFileSync(path.join(a.evidence, 'started'), '2026-11-07T07:30:00Z\n');
     assert.deepEqual(prepare({ ...a, skipGuards: true }), { code: 3, reason: 'already_ran' });
+    assert.equal(DEFAULT_EVIDENCE.endsWith(READ_CHECK_DIR), true, '証跡は overview が読む場所と同じ 1 か所');
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
@@ -113,18 +130,19 @@ test('prepare：2 回目・書き換えの時間・信じられない要約で�
 test('引数：相対パス・Trading Lab の領域・足りない引数は通さない', () => {
   assert.throws(() => parse(['prepare', '--nope']));
   assert.deepEqual(validate(parse(['grade', '--evidence', '/a/b', '--exit', '0'])), []);
+  assert.deepEqual(validate(parse(['grade', '--exit', '0'])), [], '証跡の既定は 1 か所');
   assert.ok(validate(parse(['grade', '--evidence', 'a', '--exit', '0'])).length);
   assert.ok(validate(parse(['grade', '--evidence', '/a/../b', '--exit', '0'])).length);
   assert.ok(validate(parse(['grade', '--evidence', '/a/Parallels/x', '--exit', '0'])).length);
   assert.ok(validate(parse(['grade', '--evidence', '/a'])).length);
-  assert.ok(validate(parse(['prepare', '--evidence', '/a'])).length);
+  assert.ok(validate(parse(['prepare', '--evidence', '/a'])).length, '--share が要る');
   assert.ok(validate(parse(['other', '--evidence', '/a'])).length);
 });
 
 test('grade：証跡が無ければ不合格で、result は書かない。表示は判定と件数だけ', () => {
   const d = tmp();
   try {
-    assert.equal(grade({ evidence: d, exitCode: 0 }).verdict, 'fail');
+    assert.equal(grade({ evidence: d, briefFile: path.join(d, 'none'), exitCode: 0 }).verdict, 'fail');
     assert.equal(existsSync(path.join(d, 'result.json')), false);
     assert.deepEqual(readCheckState(path.join(d, 'result.json')), { state: 'not_run' });
     writeFileSync(path.join(d, 'result.json'), JSON.stringify({ verdict: 'pass', failed: [], usage: { api_calls: 2, total_tokens: 9120 } }));
@@ -152,6 +170,7 @@ shift 3
 case "$1" in
   /bin/cat) cat "${d}/usage.json"; exit 0 ;;
   /bin/rm) exit 0 ;;
+  /bin/test) [ "$2 $3" = "-r ${d}/deny" ] && exit 1; [ "$2" = -r ] && [ "$3" != "/Users/Shared/e-nexus-hermes/status/README.txt" ] && { ls -l "$3" | cut -c1-10 >> "${d}/modes"; [ -r "$3" ]; exit $?; }; exit 0 ;;
 esac
 printf 'call\\n' >> "${d}/calls"
 printf '%s\\n' "$(pwd)" "$@" > "${d}/args"
@@ -159,7 +178,7 @@ cat "${d}/answer.json"
 exit "\${FAKE_EXIT:-0}"
 `);
   chmodSync(path.join(bin, 'sudo'), 0o755);
-  const run = (env = {}) => spawnSync('sh', [SCRIPT, path.join(d, 'ev'), '--share', path.join(d, 'share'), '--brief', briefFile, '--skip-guards'], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env } });
+  const run = (env = {}, brief2 = briefFile) => spawnSync('sh', [SCRIPT, '--evidence', path.join(d, 'ev'), '--share', path.join(d, 'share'), '--brief', brief2, '--skip-guards'], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env } });
   return { d, run };
 }
 
@@ -178,6 +197,7 @@ test('実行の道具：hermes を 1 回だけ、file の道具と時間の上�
     assert.match(result.started_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.match(result.finished_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(statSync(path.join(d, 'ev', 'answer.txt')).mode & 0o077, 0, '証跡は本人だけ');
+    assert.match(readFileSync(path.join(d, 'modes'), 'utf8'), /-rw-r-----/, 'umask 077 の中でも合成データは group が読める');
     const again = run();
     assert.equal(again.status, 3);
     assert.match(again.stdout, /already_ran/);
@@ -200,11 +220,27 @@ test('実行の道具：hermes が失敗しても 2 回目は拒み、合成デ�
   }
 });
 
+test('実行の道具：hermes が読めない時は課金の前に止め、1 回を使わない', () => {
+  const { d, run } = harness();
+  try {
+    writeFileSync(path.join(d, 'deny'), JSON.stringify(brief({ generated_at: new Date().toISOString(), source_updated_at: new Date().toISOString(), valid_until: new Date(Date.now() + 3_600_000).toISOString() })));
+    const r = run({}, path.join(d, 'deny'));
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stderr, /hermes が読めない/);
+    assert.equal(existsSync(path.join(d, 'calls')), false);
+    assert.equal(existsSync(path.join(d, 'ev', 'started')), false);
+    assert.equal(existsSync(path.join(d, 'share')), false);
+    assert.equal(run().status, 0, '止めた後はもう一度始められる');
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test('実行の道具：sudo -i を使わない・鍵の値を読まない・Hermes の設定を変えない', () => {
   const body = readFileSync(SCRIPT, 'utf8').split('\n').filter((l) => !l.startsWith('#')).join('\n');
   assert.equal(spawnSync('sh', ['-n', SCRIPT], { timeout: 10_000 }).status, 0);
   assert.doesNotMatch(body, /sudo(?: -u \S+)?(?: -H)? -i\b/);
   assert.doesNotMatch(body, /\.env\b/);
   assert.doesNotMatch(body, /hermes config|launchctl|config\.yaml|toolsets? /);
-  assert.equal(spawnSync('sh', [SCRIPT], { encoding: 'utf8', timeout: 10_000 }).status, 2);
+  assert.equal(spawnSync('sh', [SCRIPT, '--nope'], { encoding: 'utf8', timeout: 10_000 }).status, 2);
 });

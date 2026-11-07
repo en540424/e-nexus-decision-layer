@@ -2,22 +2,25 @@
 /**
  * Hermes の実読み取りの検証の手元の道具（2026-11-07・H4）。deploy/macos/hermes-read-check.sh から呼ばれる。API・Keychain・通信なし。
  *
- *   node scripts/hermes-read-check.mjs prepare --evidence <abs> --share <abs> [--brief <abs>] [--skip-guards]   写しと合成データと問いを作る
- *   node scripts/hermes-read-check.mjs grade --evidence <abs> --exit <n>                                       答えを採点して result.json を書く
+ *   node scripts/hermes-read-check.mjs prepare --share <abs> [--evidence <abs>] [--brief <abs>] [--skip-guards]   写しと合成データと問いを作る
+ *   node scripts/hermes-read-check.mjs grade --exit <n> [--evidence <abs>] [--brief <abs>]                       答えを採点して result.json を書く
  *
- * 証跡（--evidence・700）：brief.snapshot.json・fixture.json・prompt.txt・answer.txt・stderr.txt・usage.json・result.json。公開 repo に置かない。
- * exit：0＝合格（prepare は準備できた）／1＝不合格／2＝引数／3＝始められない（2 回目・書き換えの時間・要約を信じられない）
+ * 証跡は既定で <repo の親>/mac-runtime-state/hermes/checks/read-check の 1 か所だけ（別の名前で 2 回目が走らないように。--evidence は test 用）。
+ * 証跡（700）：brief.snapshot.json・fixture.json・prompt.txt・answer.txt・stderr.txt・usage.json・result.json。公開 repo に置かない。
+ * exit：0＝合格（prepare は準備できた）／1＝不合格／2＝引数／3＝始められない（2 回目・書き換えの時間・要約を信じられない・合成データの置き場が既にある）／4＝判定できない（読んでいる間に要約が書き換わった）
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TRADING_LAB_PATH } from './host-health.mjs';
 import { DEFAULT_MODEL } from './hermes-service.mjs';
-import { READ_CHECK_SCHEMA, buildFixture, gradeReadCheck, inRewriteWindow, promptOf } from './lib/hermes-read-check.mjs';
+import { READ_CHECK_DIR, READ_CHECK_SCHEMA, buildFixture, gradeReadCheck, inRewriteWindow, promptOf } from './lib/hermes-read-check.mjs';
 import { BRIEF_FILE, readBriefFile } from './lib/runtime-brief.mjs';
 import { STATUS_DIR } from './lib/runtime-status-summary.mjs';
 
 export const STARTED_MARK = 'started';
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const DEFAULT_EVIDENCE = path.join(REPO, '..', READ_CHECK_DIR);
 
 export function parse(argv) {
   const a = { command: argv[0], skipGuards: false };
@@ -40,15 +43,15 @@ export function validate(a) {
     if (!path.isAbsolute(v) || v.split('/').includes('..')) errors.push(`${k} must be an absolute path without ..`);
     else if (TRADING_LAB_PATH.test(v)) errors.push(`${k}: Trading Lab の領域は使わない`);
   }
-  if (!a.evidence) errors.push('--evidence is required');
   if (a.command === 'prepare' && !a.share) errors.push('--share is required');
   if (a.command === 'grade' && !/^\d{1,3}$/.test(a.exit ?? '')) errors.push('--exit must be a number');
   return errors;
 }
 
 /** 始めてよいかを確かめて、読む物を置く。問いの文は証跡に、合成データは Hermes が読める共有へ */
-export function prepare({ evidence, share, briefFile = path.join(STATUS_DIR, BRIEF_FILE), skipGuards = false, now = new Date() }) {
+export function prepare({ evidence = DEFAULT_EVIDENCE, share, briefFile = path.join(STATUS_DIR, BRIEF_FILE), skipGuards = false, now = new Date() }) {
   if (existsSync(path.join(evidence, STARTED_MARK))) return { code: 3, reason: 'already_ran' };
+  if (existsSync(share)) return { code: 3, reason: 'share_exists' }; // 終わる時に消すので、自分で作ったフォルダだけを使う
   if (!skipGuards && inRewriteWindow(now)) return { code: 3, reason: 'rewrite_window' };
   const r = readBriefFile(briefFile, { now });
   if (!r.ok) return { code: 3, reason: `brief_${r.reason}` };
@@ -60,6 +63,7 @@ export function prepare({ evidence, share, briefFile = path.join(STATUS_DIR, BRI
   const fixtureFile = path.join(share, 'fixture.json');
   const json = `${JSON.stringify(fixture, null, 2)}\n`;
   writeFileSync(fixtureFile, json, { mode: 0o640 });
+  chmodSync(fixtureFile, 0o640); // 呼び出し側の umask 077 で 600 になると hermes が読めない
   writeFileSync(path.join(evidence, 'fixture.json'), json, { mode: 0o600 });
   writeFileSync(path.join(evidence, 'brief.snapshot.json'), `${JSON.stringify(r.brief, null, 2)}\n`, { mode: 0o600 });
   writeFileSync(path.join(evidence, 'prompt.txt'), promptOf({ statusDir: path.dirname(briefFile), fixtureFile }), { mode: 0o600 });
@@ -81,11 +85,12 @@ const jsonOr = (file) => {
   }
 };
 
-export function grade({ evidence, exitCode, now = new Date() }) {
+export function grade({ evidence = DEFAULT_EVIDENCE, briefFile = path.join(STATUS_DIR, BRIEF_FILE), exitCode, now = new Date() }) {
   const brief = jsonOr(path.join(evidence, 'brief.snapshot.json'));
   const fixture = jsonOr(path.join(evidence, 'fixture.json'));
   if (!brief || !fixture) return { schema: READ_CHECK_SCHEMA, verdict: 'fail', failed: ['evidence_missing'], checks: [], usage: null };
-  const result = gradeReadCheck({ answer: readOr(path.join(evidence, 'answer.txt'), ''), stderr: readOr(path.join(evidence, 'stderr.txt'), ''), brief, fixture, usage: jsonOr(path.join(evidence, 'usage.json')), exitCode, expectedModel: DEFAULT_MODEL });
+  const briefChanged = jsonOr(briefFile)?.generated_at !== brief.generated_at;
+  const result = gradeReadCheck({ answer: readOr(path.join(evidence, 'answer.txt'), ''), stderr: readOr(path.join(evidence, 'stderr.txt'), ''), brief, fixture, usage: jsonOr(path.join(evidence, 'usage.json')), exitCode, expectedModel: DEFAULT_MODEL, briefChanged });
   const body = { ...result, graded_at: now.toISOString(), started_at: readOr(path.join(evidence, STARTED_MARK), '').trim() || null, finished_at: readOr(path.join(evidence, 'finished'), '').trim() || null };
   writeFileSync(path.join(evidence, 'result.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
   return body;
@@ -101,9 +106,9 @@ function main(argv) {
     console.log(JSON.stringify({ component: 'edl-hermes-read-check', ...r }));
     return r.code;
   }
-  const r = grade({ evidence: a.evidence, exitCode: Number(a.exit) });
-  console.log(JSON.stringify({ component: 'edl-hermes-read-check', verdict: r.verdict, failed: r.failed, usage: r.usage }, null, 2));
-  return r.verdict === 'pass' ? 0 : 1;
+  const r = grade({ evidence: a.evidence, briefFile: a.brief, exitCode: Number(a.exit) });
+  console.log(JSON.stringify({ component: 'edl-hermes-read-check', verdict: r.verdict, failed: r.failed, notes: r.notes, usage: r.usage }, null, 2));
+  return { pass: 0, inconclusive: 4 }[r.verdict] ?? 1;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

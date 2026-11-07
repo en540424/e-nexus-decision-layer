@@ -26,6 +26,7 @@ const TABLE = Object.freeze([
   [/^relay_outbox$/, { class: 'ai', cause: '作業ログの封筒が送られていない', next: 'Claude Code が check の後に send する', checks: ['node kit/devlog-relay-sender.mjs status --fetch'] }],
   [/^backup_time_machine$/, { class: 'human', cause: 'Time Machine の保存先か実行の問題', next: 'Human が保存先を確かめる', checks: ['tmutil destinationinfo'] }],
   [/^backup_archive$/, { class: 'ai', cause: 'バックアップの失敗か未実行。認証・容量・除外の条件のどれか', next: 'Claude Code が受領票のコードから調べる。token と passphrase の更新は Human', checks: ['node scripts/backup-run.mjs check --owner <owner> --repo <repo> --deny-file <path>'] }],
+  [/^backup_sources$/, { class: 'ai', cause: 'バックアップの対象のフォルダが欠けているか読めない', next: 'Claude Code が受領票の件数と対象を確かめる', checks: ['node scripts/backup-run.mjs plan --deny-file <path>'] }],
   [/^backup_history$/, { class: 'ai', cause: '保存済みの世代の読み直しの失敗', next: 'Claude Code が verify を実行して原因を調べる', checks: ['node scripts/backup-run.mjs verify --owner <owner> --repo <repo> --deny-file <path>'] }],
   [/^credential_backup_token$/, { class: 'human', cause: 'バックアップの token の期限', next: 'Human が token を更新する（docs/runtime-monitoring.md の更新手順）', checks: ['docs/runtime-monitoring.md §10'] }],
   [/^github_api$/, { class: 'human', cause: 'GitHub の見張りの token の失効か期限切れ、または GitHub の障害', next: 'token なら Human が更新する。障害なら待つ', checks: ['docs/runtime-monitoring.md §10'] }],

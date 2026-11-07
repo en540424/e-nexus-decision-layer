@@ -131,6 +131,7 @@ export async function checkGates({ owner, repo, home, otherRepos, read = readCre
   if (!token.startsWith(GITHUB_TOKEN_PREFIX)) throw notReady('token_not_fine_grained');
   const api = makeApi({ token, fetchImpl });
   const r = await api('GET', `/repos/${owner}/${repo}`);
+  if (r.limited) throw notReady('scope_unverified');
   if (r.status === 401 || r.status === 403) throw notReady('token_rejected');
   if (r.status !== 200) throw notReady('repo_not_found');
   if (r.json?.private !== true || r.json?.visibility !== 'private') throw notReady('repo_not_private');
@@ -152,9 +153,9 @@ export async function checkGates({ owner, repo, home, otherRepos, read = readCre
     if (other.status === 200) throw notReady('token_too_broad');
     if (other.status !== 404) throw notReady('scope_unverified'); // 確かめられなければ送らない
   }
-  const keys = (await api('GET', `/repos/${owner}/${repo}/keys`)).status; // Administration の権限
-  if (keys === 200) throw notReady('token_too_broad');
-  if (keys !== 403 && keys !== 404) throw notReady('scope_unverified');
+  const keys = await api('GET', `/repos/${owner}/${repo}/keys`); // Administration の権限。レート制限の 403 は権限の答えでない
+  if (keys.status === 200) throw notReady('token_too_broad');
+  if (keys.limited || (keys.status !== 403 && keys.status !== 404)) throw notReady('scope_unverified');
   if (r.json.size > SIZE_LIMIT_KIB) throw new Stop('repo_too_large');
   return { passphrase, api, branch: r.json.default_branch ?? 'main', empty: !r.json.pushed_at || r.json.size === 0 };
 }
@@ -313,10 +314,11 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
     await upload({ api, owner, repo, name, archive, passphrase });
     const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
-    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, sources_missing: (plan.excluded?.source_missing ?? 0) + (plan.excluded?.unreadable ?? 0), consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
     // 古い世代も戻せることの定期の確かめ。失敗しても今回の回は成功のまま（受領票の history_failure で host-health が知らせる）
     const last = Date.parse(prev?.history_verified_at);
-    const due = scan && !(Date.parse(at) - last < VERIFY_EVERY_MS);
+    const sinceVerified = Date.parse(at) - last;
+    const due = scan && !(sinceVerified >= 0 && sinceVerified < VERIFY_EVERY_MS); // 未来の印では止めない
     const history = due ? await verifyBackups({ owner, repo, home, otherRepos, scan: (rows) => scan(tmpRoot, rows), read, fetchImpl, now }) : null;
     return { code: 0, status: 'ok', archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, pruned, ...(history ? { history: history.status } : {}) };
   } catch (err) {

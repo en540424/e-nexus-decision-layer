@@ -12,7 +12,7 @@ import { gzipSync } from 'node:zlib';
 import { MAGIC, manifestOf, pack, restore, unpack } from '../scripts/lib/backup-archive.mjs';
 import { runDrill } from '../scripts/backup-drill.mjs';
 import { catalog, inventory } from '../scripts/backup-inventory.mjs';
-import { backupSources, denyLines, planBackup, policyViolations, retentionPlan } from '../scripts/lib/backup-plan.mjs';
+import { MAX_LINE_CHARS, backupSources, denyLines, planBackup, policyViolations, retentionPlan } from '../scripts/lib/backup-plan.mjs';
 import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
 import { BACKUP_RECEIPT_SCHEMA } from '../scripts/lib/runtime-guard.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
@@ -130,16 +130,16 @@ const reply = (status, json = null, bytes = null, extra = {}) => ({ status, json
 const blob = (b) => createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 
 /** 保存先の役。files に置いたものを読み直しで返す。tamper で読み直しの中身を変える */
-function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, otherJson = {}, refProbe = 403, probeHeaders = {}, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
+function fakeRepo({ repo = { private: true, visibility: 'private', size: 10, default_branch: 'main', pushed_at: 'x' }, other = 404, list = [{ name: 'backup' }], keys = 403, otherJson = {}, refProbe = 403, probeHeaders = {}, keysHeaders = {}, repoLimited = false, tamper = false, putStatus = 201, calls = [], files = new Map() } = {}) {
   return async (url, opts) => {
     const u = new URL(url);
     calls.push([opts.method, u.pathname, opts.body ?? null, opts.headers.authorization]);
     if (u.hostname !== 'api.github.com') throw new Error('other host');
-    if (u.pathname === '/repos/o/backup') return reply(repo ? 200 : 404, repo);
+    if (u.pathname === '/repos/o/backup') return repoLimited ? reply(403, {}, null, { 'x-ratelimit-remaining': '0' }) : reply(repo ? 200 : 404, repo);
     if (u.pathname === '/user/repos') return reply(list === 'denied' ? 403 : 200, list === 'denied' ? {} : list);
     if (u.pathname === '/repos/o/private-other') return reply(other, otherJson);
     if (u.pathname === '/repos/o/private-other/git/refs') return reply(refProbe, {}, null, probeHeaders);
-    if (u.pathname === '/repos/o/backup/keys') return reply(keys, []);
+    if (u.pathname === '/repos/o/backup/keys') return reply(keys, [], null, keysHeaders);
     if (u.pathname === '/repos/o/backup/contents/archives') return reply(200, [...files.entries()].map(([n, b]) => ({ name: path.basename(n), sha: blob(b) })));
     if (opts.method === 'PUT') {
       if (putStatus === 201) files.set(u.pathname, Buffer.from(JSON.parse(opts.body).content, 'base64'));
@@ -642,6 +642,44 @@ test('送る条件：レート制限の 403・429 は「書けない」の証拠
       assert.deepEqual([r.code, r.failure], [3, 'scope_unverified']);
     }
     assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ other: 200, otherJson: pub, refProbe: 403, probeHeaders: { 'x-ratelimit-remaining': '4999' } }) })).code, 0, '権限の 403 は通す');
+    assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ keysHeaders: { 'x-ratelimit-remaining': '0' } }) })).failure, 'scope_unverified', 'Administration の確かめも同じ');
+    assert.equal((await runBackup({ ...base, fetchImpl: fakeRepo({ repoLimited: true }) })).failure, 'scope_unverified', 'token の拒否と言わない');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('除外：フォルダの名前も見る・長すぎる行は判定せず外す（2 乗の時間で 1 回分を止めない）', () => {
+  const dir = tmp();
+  try {
+    mkdirSync(path.join(dir, 'secrets'));
+    mkdirSync(path.join(dir, '.env.d'));
+    mkdirSync(path.join(dir, 'notes'));
+    writeFileSync(path.join(dir, 'secrets', 'recovery.md'), 'x\n');
+    writeFileSync(path.join(dir, '.env.d', 'prod.json'), '{}\n');
+    writeFileSync(path.join(dir, 'notes', 'ok.md'), 'x\n');
+    writeFileSync(path.join(dir, 'notes', 'long.md'), `${'-M'.repeat(MAX_LINE_CHARS)}\n`);
+    const started = Date.now();
+    const p = planBackup({ sources: [{ id: 'n', dir }], denyText: DENY, tmpRoot: dir });
+    assert.deepEqual(p.files.map((f) => f.rel), ['notes/ok.md']);
+    assert.ok(Date.now() - started < 5000, '長い行に時間をかけない');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('受領票：対象の欠けと読めないものを件数で残す。未来の検証の印では定期の検証を止めない', async () => {
+  const { home, src, base } = setup();
+  try {
+    const planFiles = () => ({ ...base.planFiles(), excluded: { source_missing: 1, unreadable: 1 } });
+    assert.equal((await runBackup({ ...base, planFiles, fetchImpl: fakeRepo({}) })).code, 0);
+    assert.equal(receiptOf(home).sources_missing, 2);
+    const file = path.join(home, '.enexus', 'backup', 'last.json');
+    writeFileSync(file, JSON.stringify({ ...receiptOf(home), history_verified_at: '2030-01-01T00:00:00.000Z' }));
+    const files = new Map();
+    const calls = [];
+    await runBackup({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files, calls }) });
+    assert.notEqual(receiptOf(home).history_verified_at, '2030-01-01T00:00:00.000Z');
   } finally {
     clean(home, src);
   }

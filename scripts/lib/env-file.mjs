@@ -77,7 +77,7 @@ export function readCredential(target, { platform = process.platform, execFileIm
       execFileImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
         { env: minimalEnv, windowsHide: true, timeout: timeoutMs, encoding: 'utf8', maxBuffer: 64 * 1024 }, done((b64) => Buffer.from(b64, 'base64').toString('utf8')));
     } else if (platform === 'darwin') {
-      execFileImpl('security', ['find-generic-password', '-s', target, '-a', 'e-nexus', '-w'],
+      execFileImpl('/usr/bin/security', ['find-generic-password', '-s', target, '-a', 'e-nexus', '-w'],
         { env: minimalEnv, timeout: timeoutMs, encoding: 'utf8', maxBuffer: 64 * 1024 }, done((v) => v));
     } else {
       reject(new Error(`no credential backend for platform "${platform}" (use a root-only env file on this host)`));

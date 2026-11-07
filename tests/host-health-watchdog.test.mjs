@@ -8,13 +8,25 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { monitorState, runWatchdog } from '../scripts/host-health-watchdog.mjs';
+import { monitorWebhookItem, monitorState, runWatchdog } from '../scripts/host-health-watchdog.mjs';
 import { BROKEN_TEXT, REMIND_MS, launch, reportBroken } from '../scripts/host-health-watchdog-launcher.mjs';
 
 const T0 = Date.parse('2026-11-04T09:00:00.000Z');
 const iso = (m) => new Date(T0 + m * 60_000).toISOString();
 const LOADED = { code: 0, stdout: '\tstate = not running\n\tlast exit code = 0\n', timedOut: false };
 const NOT_LOADED = { code: 113, stdout: '', timedOut: false };
+
+test('引数の見張り：--no-guard と --webhook の欠けをファイルと launchd の今の引数の両方で見る', () => {
+  const plist = (...a) => `<plist><dict><key>ProgramArguments</key><array>${a.map((x) => `<string>${x}</string>`).join('')}</array></dict></plist>`;
+  const v = (...x) => monitorWebhookItem(...x).value;
+  assert.equal(v(plist('--webhook')), 'ok');
+  assert.equal(v(plist('--webhook', '--no-guard')), 'no_guard');
+  assert.equal(v(plist('--webhook'), ['--webhook', '--no-guard']), 'no_guard', '別の plist で読み直した時');
+  assert.equal(v(plist('--webhook'), ['node']), 'no_webhook');
+  assert.equal(v(null, ['--webhook']), 'ok', 'ファイルが読めなくても launchd の分で判定する');
+  assert.equal(monitorWebhookItem(null, null).level, 'unknown');
+  assert.equal(monitorWebhookItem(plist('--no-guard', '--webhook')).level, 'warn');
+});
 
 test('判定：解除・記録の途絶は CRIT。launchctl が読めない・DISABLED（本体が知らせる）は unknown', () => {
   const job = { loaded: true };

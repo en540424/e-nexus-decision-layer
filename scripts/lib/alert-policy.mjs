@@ -4,7 +4,7 @@
  *   重大（crit）：すぐ 1 回。続けば 24 時間後・48・96・…（上限 7 日）に控えめに再通知。回復は 1 回だけ。送れない間に解消したものも後で 1 回
  *   軽微（warn）：記録だけ。hold の間続いた時に 1 回だけ。再通知も回復の通知もない。crit へ悪化すればすぐ
  *   promote：hold の間続いたら重大として扱う（再通知・回復の通知あり）
- *   出来事：1 回。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
+ *   出来事：1 回。同じ出来事は 24 時間に FLAP.max_sends 通まで（超えた分は記録だけ）。burst は記録だけで、24 時間に 3 回繰り返した時に 1 回
  *   codes：値がコードの一覧の項目は、知らせた後に新しいコードが増えれば知らせ直す
  *   noCooldown：回復の直後の戻りも待たない（セキュリティ・電源・回線・監視の停止）
  *   flap：行き来を数える（重大になりうる項目と再起動・監視の空白）。1 回目はふつうに知らせ、FLAP.window_ms の間に FLAP.count 回に達したら「反復」を 1 通だけ送り、
@@ -51,21 +51,24 @@ const RULES = Object.freeze([
   [/^hermes_files_changed$/, { target: 'Hermes の固定ファイル', what: '変更された', action: IF_UNKNOWN }],
   [/^monitor_config_changed$/, { target: '監視の定義か安全 policy', what: '変更された', action: IF_UNKNOWN }],
   [/^residents_changed$/, { target: 'E-NEXUS の常駐', what: '増減した', action: IF_UNKNOWN }],
-  [/^agent_scope$/, { target: 'Claude Code の user 範囲', what: 'E-NEXUS の指示が置かれた', action: ACT, hold: 0, codes: true }],
+  [/^agent_scope$/, { target: 'Claude Code の user 範囲', what: 'E-NEXUS の指示が置かれた', action: ACT, hold: 0, codes: true, flap: '置かれては消えるを繰り返している' }],
   [/^rebooted$/, { target: 'Mac', what: '再起動した', action: '心当たりがなければ確認', flap: '再起動を繰り返している' }],
   [/^network_interface_changed$/, { target: 'ネットワーク', what: '回線の切替を繰り返している', action: CHECK, burst: true }],
   [/^repo:/, { target: (id) => `repo ${name(id)}`, what: '未 commit か未 push が続いている', action: CHECK }],
   [/^relay_outbox$/, { target: 'devlog relay', what: '未送信が残っている', action: CHECK }],
   [/^credential_backup_token$/, { target: 'バックアップの token', what: (value) => (value === 'expired' ? '期限が切れている' : '期限が近い'), action: ACT }],
   [/^backup_history$/, { target: 'バックアップの古い世代', what: '読み直しの検証が失敗したか、古い', action: CHECK }],
+  [/^backup_sources$/, { target: 'バックアップの対象', what: 'フォルダが欠けているか読めない', action: CHECK }],
   [/^backup_/, { target: 'バックアップ', what: '失敗したか、古いか、復元を確かめていない', action: CHECK }],
   [/^github_api$/, { target: 'GitHub の見張り', what: '読めない状態か token の期限切れが近い', action: CHECK, codes: true, flap: '読めない状態を繰り返している' }],
   [/^github_visibility_changed$/, { target: 'GitHub の公開範囲', what: '変わった', action: IF_UNKNOWN }],
   [/^github_default_branch_changed$/, { target: 'GitHub の既定 branch', what: '変わった', action: IF_UNKNOWN }],
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
   [/^monitor_blind$/, { target: '監視の項目', what: '読めない状態が 24 時間以上続いている', action: CHECK, hold: 0 }],
-  [/^monitor_args$/, { target: '監視の job の定義', what: '通知か見張りの引数が欠けている', action: ACT, hold: 0, codes: true }],
-  [/^monitor_webhook$/, { target: '監視の job の定義', what: '通知の引数が無く、異常を知らせられない', action: ACT, hold: 0 }],
+  [/^monitor_args$/, { target: '監視の job の定義', what: '通知か見張りの引数が欠けている', action: ACT, hold: 0, codes: true, flap: '欠けては戻るを繰り返している' }],
+  [/^monitor_webhook$/, { target: '監視の job の定義', what: (value) => (value === 'no_guard' ? '見張りを止める引数が入っている' : '通知の引数が無く、異常を知らせられない'), action: ACT, hold: 0 }],
+  [/^monitor_fingerprint$/, { target: '監視の固定ファイルの見張り', what: '読めないファイルがある', action: CHECK }],
+  [/^monitor_state_reset$/, { target: '監視の記録', what: '基準が初期化された（state が消えたか壊れた）', action: IF_UNKNOWN }],
   [/^notify_channel$/, { target: '通知の Webhook', what: '使えない', action: ACT }],
   [/^monitor_gap$/, { target: '監視', what: '間があいた', action: CHECK, flap: '止まっては戻るを繰り返している' }],
   [/^monitor_pause$/, { target: '監視の PAUSE', what: '期限を過ぎて残っている', action: CHECK }],

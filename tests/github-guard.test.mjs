@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { GITHUB_LIMITS, ciOf, collectGithub, evaluateGithub, evaluateGithubEvents, nextGithubState, verifyMonitorToken } from '../scripts/lib/github-guard.mjs';
@@ -209,6 +209,23 @@ test('host-health の 1 回分：token が無い間は項目も通信も無い�
   }
 });
 
+test('動いていた見張りの token が消えたら黙って止まらない。知らせ済みの項目を回復なしに消さない', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-gh-'));
+  try {
+    const base = { stateDir: dir, dataDirs: [], run: hostRun, uid: 501 };
+    const at = (ms) => () => new Date(Date.parse(NOW) + ms);
+    await runHostHealth({ ...base, github: github(fakeGithub()), now: at(0) });
+    const file = path.join(dir, 'state.json');
+    const before = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...before, items: { ...before.items, 'github:a': { level: 'crit', since: NOW, notified: 'crit' } } }));
+    const gone = await runHostHealth({ ...base, github: github(fakeGithub(), async () => null), now: at(60_000) });
+    assert.deepEqual(gone.items.filter((x) => x.id.startsWith('github')).map((x) => [x.id, x.level, x.value]), [['github_api', 'warn', 'token_missing']]);
+    assert.ok(JSON.parse(readFileSync(file, 'utf8')).items['github:a'], '回復の通知なしに消さない');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('読めない回は基準を消さない・公開範囲の変化は戻った回に知らせる', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'edl-gh-'));
   try {
@@ -256,10 +273,10 @@ test('引数：owner と credential は両方必要（gh のログインへ落�
 
 test('token の検収：範囲が 6 repo の中で、読める・書けない token だけ合格。広い token・書ける token・足りない token・classic は落とす', async () => {
   const verify = (fetchImpl, token = TOKEN) => verifyMonitorToken({ token, owner: 'o', repos: ['a'], now: NOW, fetchImpl });
-  const scoped = (status, { list = [{ name: 'a' }], listStatus = 200, keys = 403, ...over } = {}) => fakeGithub({ ...over, fail: (url, opts) => {
+  const scoped = (status, { list = [{ name: 'a' }], listStatus = 200, keys = 403, keysHeaders = {}, ...over } = {}) => fakeGithub({ ...over, fail: (url, opts) => {
     if (opts.method === 'POST') return response(status);
     if (url.includes('/user/repos')) return response(listStatus, list);
-    if (url.endsWith('/keys')) return response(keys, []);
+    if (url.endsWith('/keys')) return response(keys, [], keysHeaders);
     return null;
   } });
   const calls = [];
@@ -276,6 +293,7 @@ test('token の検収：範囲が 6 repo の中で、読める・書けない to
   assert.equal((await verify(scoped(403, { list: [] }))).code, 'SCOPE_UNVERIFIED');
   assert.equal((await verify(scoped(403, { keys: 500 }))).code, 'SCOPE_UNVERIFIED');
   assert.equal((await verify(scoped(403, { keys: 429 }))).code, 'SCOPE_UNVERIFIED');
+  assert.equal((await verify(scoped(403, { keysHeaders: { 'x-ratelimit-remaining': '0' } }))).code, 'SCOPE_UNVERIFIED', 'レート制限の 403 は権限の答えでない');
   assert.equal((await verify(scoped(403), 'gho_x')).code, 'NOT_FINE_GRAINED');
   assert.equal((await verify(scoped(403), null)).code, 'NOT_FINE_GRAINED');
   assert.deepEqual((await verify(scoped(403, { repos: { a: null } }))).repos, ['a']);

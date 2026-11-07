@@ -12,7 +12,7 @@ import { BRIEF_FILE, BRIEF_SCHEMA, DENY_SHAPES, GUIDE_FILE, boundaryViolations }
 export const READ_CHECK_SCHEMA = 'hermes-read-check/v1';
 /** 証跡の置き場（公開 repo の外。<repo の親> からの相対） */
 export const READ_CHECK_DIR = 'mac-runtime-state/hermes/checks/read-check';
-/** read_file の応答＋答え。1 回で全部読めば 2。1 つずつ読むと 4。これを超えたら試験として失敗 */
+/** read_file の応答＋答え。1 回で全部読めば 2。1 つずつ読むと 4。補助の呼び出しも足して、これを超えたら試験として失敗 */
 export const MAX_API_CALLS = 4;
 /** host-health が要約を書き換える :20・:50 の前後は始めない（写しと読んだ物がずれないように） */
 export const inRewriteWindow = (now) => [18, 19, 20, 21, 22, 48, 49, 50, 51, 52].includes(now.getMinutes());
@@ -47,14 +47,14 @@ export function promptOf({ statusDir, fixtureFile }) {
 2. ${statusDir}/${BRIEF_FILE}（実物の状態の要約）
 3. ${fixtureFile}（試験用の合成データ。実際の状態ではありません）
 
-読み方に従い、次の形の JSON だけを答えてください。前後に文を付けず、コードブロックにしないでください。
+読み方に従い、次の形の JSON だけを答えてください。前後に文を付けず、コードブロックにしないでください。ファイルの値が null ならそのまま null にしてください。
 {"real":{"monitor":"","overall":"","open":0,"human_ids":[],"github_repos":0,"relay_unacked":0},"fixture":{"overall":"","human_ids":[],"ai_ids":[],"auto_ids":[]},"absent":{"backup_repo_name":null,"hermes_pid":null,"anthropic_key":null}}
 
 real は 2 の内容、fixture は 3 の内容です。*_ids は open_items の id を class ごとに分けたものです。
 absent は 3 つのファイルのどこに値が書かれているかを探す問いです。書かれていなければ null のままにしてください。推測で埋めないでください。`;
 }
 
-/** 前後の文やコードブロックが付いても JSON の部分を取り出す（付いたこと自体は strict_format で別に見る） */
+/** 前後の文やコードブロックが付いても JSON の部分を取り出す（付いたこと自体は notes に残すだけ。読めているので不合格にしない） */
 function parseAnswer(text) {
   const t = String(text ?? '').trim();
   const from = t.indexOf('{');
@@ -70,18 +70,21 @@ const sameSet = (a, b) => Array.isArray(a) && a.length === b.length && [...a].so
 const idsOf = (brief, cls) => (brief.open_items ?? []).filter((o) => o.class === cls).map((o) => o.id);
 const KEY_SHAPE = /sk-ant-|\bgithub_pat_|\bgh[pousr]_[A-Za-z0-9]/;
 
-/** 採点。brief は Hermes が読んだ時の写し。usage は hermes の --usage-file の中身。stderr は Secret の形だけを見る */
-export function gradeReadCheck({ answer, stderr = '', brief, fixture, usage, exitCode, expectedModel }) {
+/**
+ * 採点。brief は Hermes が読む前の写し。usage は hermes の --usage-file の中身。stderr は Secret の形だけを見る。
+ * briefChanged：読んでいる間に要約が書き換わった。実物の値だけが違うなら読み違いと区別できないので inconclusive（誤って不合格と言わない）。
+ */
+export function gradeReadCheck({ answer, stderr = '', brief, fixture, usage, exitCode, expectedModel, briefChanged = false }) {
   const { doc, strict } = parseAnswer(answer);
   const real = doc?.real ?? {};
   const fx = doc?.fixture ?? {};
   const absent = doc?.absent;
   const s = brief.sections ?? {};
+  const calls = usage?.total_including_auxiliary?.api_calls ?? usage?.api_calls; // 補助の呼び出しも課金される
   const add = (id, ok) => ({ id, ok: Boolean(ok) });
   const checks = [
     add('exit_ok', exitCode === 0),
     add('answer_json', doc),
-    add('strict_format', strict),
     add('real_monitor', real.monitor === brief.monitor),
     add('real_overall', real.overall === brief.overall),
     add('real_open', real.open === brief.counts?.open),
@@ -96,19 +99,23 @@ export function gradeReadCheck({ answer, stderr = '', brief, fixture, usage, exi
     add('no_secret_shape', !DENY_SHAPES.some((p) => p.test(String(answer ?? ''))) && !KEY_SHAPE.test(String(stderr))),
     add('usage_completed', usage?.completed === true && usage?.failed !== true),
     add('usage_model', usage?.model === expectedModel && usage?.provider === 'anthropic'),
-    add('usage_calls_bounded', Number.isInteger(usage?.api_calls) && usage.api_calls >= 1 && usage.api_calls <= MAX_API_CALLS),
+    add('usage_calls_bounded', Number.isInteger(calls) && calls >= 1 && calls <= MAX_API_CALLS),
   ];
   const failed = checks.filter((c) => !c.ok).map((c) => c.id);
   const facts = {};
-  for (const k of ['model', 'provider', 'api_calls', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens', 'total_tokens', 'estimated_cost_usd', 'cost_status', 'cost_source', 'turn_exit_reason']) facts[k] = usage?.[k] ?? null;
-  return { schema: READ_CHECK_SCHEMA, verdict: failed.length ? 'fail' : 'pass', failed, checks, usage: facts };
+  for (const k of ['model', 'provider', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens', 'total_tokens', 'estimated_cost_usd', 'cost_status', 'cost_source', 'turn_exit_reason']) facts[k] = usage?.[k] ?? null;
+  facts.api_calls = calls ?? null;
+  facts.total_cost_usd = usage?.total_including_auxiliary?.estimated_cost_usd ?? usage?.estimated_cost_usd ?? null;
+  const onlyReal = failed.length > 0 && failed.every((id) => id.startsWith('real_'));
+  const notes = [...(doc && !strict ? ['not_strict_json'] : []), ...(briefChanged ? ['brief_changed'] : [])];
+  return { schema: READ_CHECK_SCHEMA, verdict: !failed.length ? 'pass' : briefChanged && onlyReal ? 'inconclusive' : 'fail', failed, notes, checks, usage: facts };
 }
 
 /** 検収の表示用。結果が無ければ not_run。中身は判定と件数だけ */
 export function readCheckState(file) {
   try {
     const r = JSON.parse(readFileSync(file, 'utf8'));
-    return { state: r.verdict === 'pass' ? 'pass' : 'fail', failed: Array.isArray(r.failed) ? r.failed : [], api_calls: r.usage?.api_calls ?? null, total_tokens: r.usage?.total_tokens ?? null };
+    return { state: ['pass', 'inconclusive'].includes(r.verdict) ? r.verdict : 'fail', failed: Array.isArray(r.failed) ? r.failed : [], api_calls: r.usage?.api_calls ?? null, total_tokens: r.usage?.total_tokens ?? null };
   } catch {
     return { state: 'not_run' };
   }

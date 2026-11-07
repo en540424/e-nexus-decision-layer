@@ -84,7 +84,9 @@ const HEARTBEAT_BUDGET_MS = 8000;
 const WEBHOOK_CHECK_BUDGET_MS = 5000;
 const MAX_FAILURES = 3;
 /** Trading Lab の領域（見ない・引数に取らない） */
-export const TRADING_LAB_PATH = /parallels|trading-?lab|mac-mini-migration-kit/i;
+const TRADING_LAB_NAME = /parallels|trading[\s._-]*lab|mac[\s._-]*mini[\s._-]*migration[\s._-]*kit/i;
+/** 全角も同じ語として見る（.test だけを持つ） */
+export const TRADING_LAB_PATH = Object.freeze({ test: (v) => TRADING_LAB_NAME.test(String(v).normalize('NFKC')) });
 const WEBHOOK = /^credential:E-NEXUS\/edl\/[a-z0-9-]{1,64}$/;
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;
 const SCHEDULED_LABELS = JOBS.filter((j) => j !== 'host-health').map((j) => `com.e-nexus.${j}`);
@@ -158,6 +160,7 @@ export function parseLaunchctlPrint({ code, stdout, timedOut }) {
   };
   const pid = field('pid');
   const exit = field('last exit code')?.split(':')[0]; // 版によって "78: EX_CONFIG" の形で出る
+  const args = /^\s*arguments = \{\n([\s\S]*?)^\s*\}/m.exec(stdout)?.[1].split('\n').map((x) => x.trim()).filter(Boolean);
   return {
     loaded: true,
     state: field('state'),
@@ -165,6 +168,7 @@ export function parseLaunchctlPrint({ code, stdout, timedOut }) {
     last_exit_code: exit && /^-?\d+$/.test(exit) ? Number(exit) : null,
     spawn_type: field('spawn type')?.split(' ')[0] ?? null,
     runs: /^\d+$/.test(field('runs') ?? '') ? Number(field('runs')) : null,
+    ...(args ? { arguments: args } : {}),
     last_signal: /(\d+)\s*$/.exec(field('last terminating signal') ?? '')?.[1] ?? null, // "Killed: 9" の形
   };
 }
@@ -367,7 +371,14 @@ export function decide(items, prev, { now, paused = false }) {
         if (!hushed) notify.push({ id: it.id, level: it.level, value: it.value, change: 'event', ...(repeat ? { repeat } : {}) });
         continue;
       }
-      if (!rule.burst) { notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' }); continue; }
+      if (!rule.burst) {
+        // 毎回の変化で通知を重ねない。上限を超えた分は記録に残るだけ（基準が動かない回は bursts を戻すので数えない）
+        const sentHits = recent(bursts[it.id]?.hits);
+        if (sentHits.length >= FLAP.max_sends) continue;
+        bursts[it.id] = { hits: [...sentHits, now] };
+        notify.push({ id: it.id, level: it.level, value: it.value, change: 'event' });
+        continue;
+      }
       const b = bursts[it.id];
       const hits = [...(b?.hits ?? []).filter((h) => elapsed(h) < BURST.window_ms), now];
       const fire = hits.length >= BURST.count && (!b?.last_notified_at || elapsed(b.last_notified_at) >= BURST.window_ms || elapsed(b.last_notified_at) < 0); // 時計が戻っても未来の記録で黙らない
@@ -473,17 +484,19 @@ const VALUE_SHAPES = Object.freeze([
   [/^repo:/, /^(?:clean|(?:dirty \d+)?(?: ?ahead \d+)?(?: ?no_upstream)?)$/],
   [/^credential_backup_token$/, /^(?:ok|expiring|expired)$/],
   [/^backup_history$/, /^(?:history_ok|history_stale|history_failed)$/],
+  [/^backup_sources$/, /^(?:ok|missing)$/],
   [/^backup_/, /^(?:not_configured|latest_unreadable|failed [a-z_]{1,40}|-?\d+d(?: restore (?:never|\d+d))?)$/],
   [/^hermes_service$/, /^(?:running|not_loaded|stopped exit (?:-?\d+|-))$/],
   [/^hermes_isolation$/, codes('ok', 'admin_group', 'hermes_home_open', 'operator_home_open', 'hermes_home_missing', 'operator_home_missing', '(?:config|plist|wrapper)_(?:not_root_only|missing)', 'share_open', 'share_missing')],
   [/^hermes_files_changed$/, codes('vault_copy', 'config', 'plist', 'wrapper')],
   [/^monitor_config_changed$/, codes('monitor_plist', 'watchdog_plist', 'backup_plist', 'backup_deny', 'repos_conf', 'human_only_policy', 'failure_policy')],
   [/^monitor_args$/, codes('ok', 'monitor_no_webhook', 'monitor_no_heartbeat', 'monitor_no_github', 'watchdog_no_webhook')],
-  [/^monitor_webhook$/, /^(?:ok|no_webhook)$/],
+  [/^monitor_webhook$/, /^(?:ok|no_webhook|no_guard)$/],
+  [/^monitor_fingerprint$/, /^(?:ok|[a-z_,]{1,200})$/],
   [/^notify_channel$/, /^(?:ok|gone|unreachable|config_invalid|unsupported)$/],
   [/^agent_scope$/, codes('ok', 'user_claude_md', 'user_rules')],
   [/^residents_changed$/, /^[+-][a-z0-9.-]{1,60}(?:,[+-][a-z0-9.-]{1,60})*$/],
-  [/^github_api$/, /^(?:ok|unreachable|auth_failed|token_expiring)$/],
+  [/^github_api$/, /^(?:ok|unreachable|auth_failed|token_expiring|token_missing)$/],
   [/^github:/, /^(?:ok|ci_failure|ci_stuck|archived|disabled|not_found|differs_from_mac)$/],
   [/^github_visibility_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${VISIBILITY}->${VISIBILITY}$`)],
   [/^github_default_branch_changed$/, new RegExp(`^[A-Za-z0-9._-]{1,100}:${BRANCH}->${BRANCH}$`)],
@@ -609,17 +622,18 @@ function writeState(dir, s) {
   writeFileSync(tmp, `${JSON.stringify(s, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, f);
 }
+const hasRecords = (dir) => readdirSync(dir).some((f) => /^\d{4}-\d{2}\.jsonl$/.test(f));
 function setFlag(dir, name, on, text) {
   const f = path.join(dir, name);
   if (on) writeFileSync(f, `${text}\n`, { mode: 0o600 });
   else if (existsSync(f)) rmSync(f);
 }
 
-/** 保守窓か。古い PAUSE は効かせない（時計より新しい mtime は保守窓のまま） */
+/** 保守窓か。古い PAUSE は効かせない。未来の mtime も期限の幅を超えたら効かせない（時計の小さな戻りでは保守窓のまま・未来の印で永久に黙らない） */
 export function pauseState(stateDir, at) {
   const f = path.join(stateDir, 'PAUSE');
   if (!existsSync(f)) return { paused: false, expired: false };
-  const expired = Date.parse(at) - statSync(f).mtimeMs > PAUSE_MAX_MS;
+  const expired = Math.abs(Date.parse(at) - statSync(f).mtimeMs) > PAUSE_MAX_MS;
   return { paused: !expired, expired };
 }
 
@@ -627,7 +641,8 @@ export function pauseState(stateDir, at) {
 async function noticeDisabled({ stateDir, state, webhook, webhookFormat, at, post, value = 'disabled' }) {
   const last = state?.disabled_notified_at;
   if (!webhook || pauseState(stateDir, at).paused) return null;
-  if (last && Date.parse(at) - Date.parse(last) < DISABLED_REMIND_MS) return null;
+  const sinceLast = Date.parse(at) - Date.parse(last);
+  if (last && sinceLast >= 0 && sinceLast < DISABLED_REMIND_MS) return null; // 未来の印では黙らない
   // 送った印を残せない時は回数で間引けないので、時刻の枠だけで送る（DISABLED の間に書けなくなった時も毎回の初回にしない）
   let writable = value !== 'state_unwritable';
   if (writable) {
@@ -771,13 +786,19 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (relayUnacked != null) items.push({ id: 'relay_unacked', level: 'ok', value: relayUnacked, kind: 'state' });
     const githubOn = Boolean(github) && o.github?.status !== 'off'; // token が入るまでは何も足さない
     const githubRepos = o.github?.status === 'ok' ? o.github.repos : null;
+    // 動いていた見張りの token が消えたら黙って止まらない。知らせ済みの github: の項目も回復の扱いにしない
+    const githubGone = Boolean(github) && o.github?.status === 'off' && Object.keys(prev?.github?.repos ?? {}).length > 0;
+    if (githubGone) items.push({ id: 'github_api', level: 'warn', value: 'token_missing', kind: 'state' });
+    // state が消えると出来事の基準が黙って初期化される。記録があるのに state が無い時は 1 回知らせる
+    const stateLost = prev?.state_reset_pending === true || (!prev && hasRecords(stateDir));
+    if (stateLost) items.push({ id: 'monitor_state_reset', level: 'warn', value: null, kind: 'event' });
     if (githubOn) items.push(...evaluateGithub(githubRepos, o.guard?.repos, prev?.github, at, { failure: o.github.status, expiresAt: o.github.expires_at ?? null }), ...evaluateGithubEvents(githubRepos, prev?.github));
     const blind = blindCheck(items, prev?.unknown_since, at);
     items.push({ id: 'monitor_blind', level: blind.stale ? 'warn' : 'ok', value: blind.stale, kind: 'state' });
     const d = decide(items, prev, { now: at, paused });
     // 今回見なかった項目は消す（外した repo・Hermes の水準が残り続けない）。GitHub が読めなかった回は残す
     const seen = new Set(items.map((x) => x.id));
-    const keep = (id) => seen.has(id) || paused || !guard || (id.startsWith('github:') && githubOn && githubRepos == null);
+    const keep = (id) => seen.has(id) || paused || !guard || (id.startsWith('github:') && (githubGone || (githubOn && githubRepos == null)));
     let nextItems = Object.fromEntries(Object.entries(d.items).filter(([id]) => keep(id)));
     let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
     if (d.notify.length && webhook) {
@@ -819,9 +840,14 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       ...(o.guard ? { guard: nextGuardState(o.guard, prev?.guard, at, { keepEvents: eventsUnsent }) } : prev?.guard ? { guard: prev.guard } : {}),
       ...(githubOn ? { github: nextGithubState(githubRepos, prev?.github, at, { keepEvents: eventsUnsent, localRepos: o.guard?.repos, failure: o.github.status }) } : prev?.github ? { github: prev.github } : {}),
       ...(eventsUnsent && gap.length ? { gap_pending: gap[0].value } : {}),
+      ...(eventsUnsent && stateLost ? { state_reset_pending: true } : {}),
       // 再開の後の watchdog の 1 回目を待つ（ログインが起動より遅い再開で、watchdog が回る前に古い記録を見ないように）
       ...(gap.length ? { resumed_at: at } : prev?.resumed_at ? { resumed_at: prev.resumed_at } : {}),
     };
+    // 記録を書けない回は成功に数えない（state の前に書く。後だと失敗の回数が毎回 0 へ戻り、積み上がらない）
+    const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
+    for (const x of items) levels[x.level] += 1;
+    appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), `${JSON.stringify({ at, paused, degraded, levels, items: items.map(({ id, level, value }) => ({ id, level, value })), notify: d.notify.map(({ id, level, change }) => ({ id, level, change })), notify_code: notifyCode, ...(quarterly.code ? { quarterly: { period: quarterly.period, code: quarterly.code } } : {}) })}\n`, { mode: 0o600 });
     const statusCode = publishStatus({ statusDir, stateDir, state: nextState, at, uid, items, facts: { githubTokenExpiresAt: o.github?.expires_at ?? null, backupTokenExpiresAt: o.guard?.backup_receipt?.token_expires_at ?? null } });
     const saved = { ...nextState, ...(statusCode ? { status_summary: statusCode } : {}) };
     writeState(stateDir, saved);
@@ -831,9 +857,6 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       saved.heartbeat = nextHeartbeat(code, prev?.heartbeat, at);
       writeState(stateDir, saved);
     }
-    const levels = { ok: 0, warn: 0, crit: 0, unknown: 0 };
-    for (const x of items) levels[x.level] += 1;
-    appendFileSync(path.join(stateDir, `${at.slice(0, 7)}.jsonl`), `${JSON.stringify({ at, paused, degraded, levels, items: items.map(({ id, level, value }) => ({ id, level, value })), notify: d.notify.map(({ id, level, change }) => ({ id, level, change })), notify_code: notifyCode, ...(quarterly.code ? { quarterly: { period: quarterly.period, code: quarterly.code } } : {}) })}\n`, { mode: 0o600 });
     return { code: 0, status: 'ok', items, notify: d.notify, notifyCode, paused, degraded, levels };
   } catch (err) {
     const failures = await recordFailure({ stateDir, at, webhook, webhookFormat, post });

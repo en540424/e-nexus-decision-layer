@@ -44,7 +44,7 @@ export async function reportBroken({ argv, stateDir, read = readKeychain, fetchI
   if (since >= 0 && since < REMIND_MS) return 'held'; // 未来の時刻の印では黙らない
   let paused = false;
   try {
-    paused = now() - statSync(path.join(stateDir, 'PAUSE')).mtimeMs <= PAUSE_MAX_MS;
+    paused = Math.abs(now() - statSync(path.join(stateDir, 'PAUSE')).mtimeMs) <= PAUSE_MAX_MS; // 未来の mtime で永久に黙らない
   } catch { /* PAUSE なし */ }
   if (paused) return 'held';
   const target = SPEC.exec(argOf(argv, '--webhook') ?? '')?.[1];

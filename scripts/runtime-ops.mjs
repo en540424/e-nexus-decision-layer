@@ -95,15 +95,19 @@ export function acceptanceOf({ state, watchdog, receipt, records, observation = 
   const code = state?.heartbeat?.code ?? null;
   const beats = records.filter((r) => itemOf(r, 'heartbeat')?.value === 'sent').length;
   out.push(check('H6', '外部の死活監視への生存信号', ['failed', 'rejected', 'config_invalid'].includes(code) ? (state?.heartbeat?.fail_since && hoursAgo(state.heartbeat.fail_since, now) >= 1 ? 'fail' : 'pending') : code === 'sent' && beats >= 2 ? 'pass' : 'pending', { code, beats, note: code === 'off' ? 'Keychain を読めていないか、まだ定期の回が来ていない' : null }));
-  // Hermes の観察。合格の目安：常駐の異常なし・再起動なし（Human の操作の分は Human が見る）・固定ファイルの変化なし・RSS のピークが上限の未満・メモリと swap の警告なし・記録の空白なし（Mac の再起動の分は除く）
-  const span = observation.length ? (Date.parse(observation.at(-1).at) - Date.parse(observation[0].at)) / DAY : 0;
-  const bad = (id) => observation.filter((r) => ['warn', 'crit'].includes(itemOf(r, id)?.level)).length;
-  const seen = (id) => observation.filter((r) => itemOf(r, id)).length;
-  const peak = Math.max(0, ...observation.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
-  const gaps = observation.filter((r, i) => i && Date.parse(r.at) - Date.parse(observation[i - 1].at) > GAP_MS && !itemOf(r, 'rebooted')).length;
-  const facts = { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: bad('hermes_service'), hermes_restarted: seen('hermes_restarted'), hermes_files_changed: seen('hermes_files_changed'), rss_peak_gib: peak, memory_not_ok: bad('memory_pressure') + bad('swap_used_gib'), gaps };
+  // Hermes の観察。幅は Hermes の常駐を ok と見た最初の回から測る（記録だけ古くても合格にしない）。
+  // 合格の目安：常駐の異常なし・再起動なし（Human の操作の分は Human が見る）・固定ファイルの変化なし・RSS のピークが上限の未満・メモリと swap の警告なし・記録の空白なし（Mac の再起動の分は除く）
+  const startAt = observation.findIndex((r) => itemOf(r, 'hermes_service')?.level === 'ok');
+  const watched = startAt < 0 ? [] : observation.slice(startAt);
+  const span = watched.length ? (Date.parse(watched.at(-1).at) - Date.parse(watched[0].at)) / DAY : 0;
+  const bad = (id) => watched.filter((r) => ['warn', 'crit'].includes(itemOf(r, id)?.level)).length;
+  const seen = (id) => watched.filter((r) => itemOf(r, id)).length;
+  const peak = Math.max(0, ...watched.map((r) => (typeof itemOf(r, 'hermes_rss_gib')?.value === 'number' ? itemOf(r, 'hermes_rss_gib').value : 0)));
+  const gaps = watched.filter((r, i) => i && Date.parse(r.at) - Date.parse(watched[i - 1].at) > GAP_MS && !itemOf(r, 'rebooted')).length;
+  const unseen = watched.filter((r) => !['ok', 'warn', 'crit'].includes(itemOf(r, 'hermes_service')?.level)).length; // 見えなかった回は「異常なし」に数えない
+  const facts = { days_observed: Math.round(span * 10) / 10, hermes_service_not_ok: bad('hermes_service'), hermes_service_unseen: unseen, hermes_restarted: seen('hermes_restarted'), hermes_files_changed: seen('hermes_files_changed'), rss_peak_gib: peak, memory_not_ok: bad('memory_pressure') + bad('swap_used_gib'), gaps };
   const observeBad = facts.hermes_service_not_ok || facts.hermes_restarted || facts.hermes_files_changed || peak >= OBSERVE_RSS_LIMIT_GIB || facts.memory_not_ok || gaps;
-  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS ? 'pass' : 'pending', facts));
+  out.push(check('H8', 'Hermes の稼働の観察', observeBad ? 'fail' : span >= OBSERVE_DAYS && !unseen ? 'pass' : 'pending', facts));
   return out;
 }
 
@@ -123,13 +127,14 @@ export function whyOf(id, records) {
   return { id, class: rule.class, cause: rule.cause, next: rule.next, checks: rule.checks, seen: records.filter((r) => itemOf(r, id)).length, timeline: rows.slice(-40) };
 }
 
-/** 全項目の変わり目と出来事と通知を時刻の順に。最初に見えた ok は行にしない。同じ出来事の連続は 1 行にして回数を付ける。値は通知と同じ関所を通す */
+/** 全項目の変わり目と出来事と通知を時刻の順に。最初に見えた ok は行にしない（最初から異常なら from は null＝窓の前から続いている）。同じ出来事の連続は 1 行にして回数を付ける。値は通知と同じ関所を通す */
 export function timelineOf(records) {
   const prev = new Map();
   const rows = [];
   for (const r of records) {
-    for (const it of r.items ?? []) {
-      const notified = (r.notify ?? []).find((n) => n.id === it.id);
+    for (const it of Array.isArray(r.items) ? r.items : []) {
+      if (!it?.id) continue;
+      const notified = (Array.isArray(r.notify) ? r.notify : []).find((n) => n?.id === it.id);
       const sent = notified && r.notify_code === 'SENT' ? notified.change : null;
       const value = safeValue(it.id, it.value);
       if (EVENT_IDS.includes(it.id)) {
@@ -140,9 +145,10 @@ export function timelineOf(records) {
         } else rows.push({ at: r.at, kind: 'event', id: it.id, level: it.level, value, count: 1, ...(sent ? { sent } : {}) });
         continue;
       }
-      const before = prev.get(it.id) ?? 'ok';
+      const known = prev.has(it.id);
+      const before = known ? prev.get(it.id) : null;
       prev.set(it.id, it.level);
-      if (before !== it.level || sent) rows.push({ at: r.at, kind: 'level', id: it.id, from: before, level: it.level, value, ...(sent ? { sent } : {}) });
+      if ((known ? before !== it.level : it.level !== 'ok') || sent) rows.push({ at: r.at, kind: 'level', id: it.id, from: before, level: it.level, value, ...(sent ? { sent } : {}) });
     }
   }
   return rows;
@@ -155,7 +161,7 @@ const atLocal = (iso) => {
 export function renderTimeline(rows) {
   if (!rows.length) return '変わり目はありません';
   return rows.map((x) => {
-    const what = x.kind === 'event' ? `${x.id}${x.count > 1 ? ` ×${x.count}（〜${atLocal(x.until)}）` : ''}` : `${x.id} ${x.from}→${x.level}`;
+    const what = x.kind === 'event' ? `${x.id}${x.count > 1 ? ` ×${x.count}（〜${atLocal(x.until)}）` : ''}` : `${x.id} ${x.from ?? '（窓の前から）'}→${x.level}`;
     return `${atLocal(x.at)} ${what}${x.value == null ? '' : ` ${x.value}`}${x.sent ? ` ［通知：${x.sent}］` : ''}`;
   }).join('\n');
 }
@@ -170,8 +176,11 @@ export function renderOverview({ rows, reply, human, readCheck }) {
 
 const PRIORITY = { 1: '高', 2: '中', 3: '低' };
 /** Human が要ることの一覧。台帳（手で足した判断待ち）＋今の異常のうち human のもの＋期限の近い token。優先度と期限の順 */
-export function humanRequired({ ledger = [], last = null, state = null, receipt = null, now }) {
+export function humanRequired({ ledger = [], last = null, state = null, receipt = null, monitor = {}, now }) {
   const rows = (Array.isArray(ledger) ? ledger : []).filter((x) => !x.done).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
+  // 監視が動いていなければ「対応なし」と言えない
+  if (monitor.disabled) rows.push({ id: 'monitor:disabled', priority: 1, title: '監視が止まっている（DISABLED）→ docs/runtime-monitoring.md §3 の手順で原因を確かめて再開する', due: null, source: 'monitor' });
+  else if (monitor.stale) rows.push({ id: 'monitor:stale', priority: 1, title: '監視の記録が 24 時間以上ない → node scripts/runtime-ops.mjs acceptance', due: null, source: 'monitor' });
   for (const it of last?.items ?? []) {
     if (it.level !== 'warn' && it.level !== 'crit') continue;
     const rule = classify(it.id);
@@ -240,7 +249,10 @@ async function main(argv) {
     } catch { /* まだ書いていない */ }
     return acceptanceOf({ state, watchdog: readJson(path.join(stateDir, 'watchdog.json')), receipt, records, observation, jobs, briefAge, now });
   };
-  const humanRows = () => humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last: readRecords(stateDir, { since: since(1) }).at(-1), state, receipt, now });
+  const humanRows = () => {
+    const last = readRecords(stateDir, { since: since(1) }).at(-1);
+    return humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last, state, receipt, monitor: { disabled: existsSync(path.join(stateDir, 'DISABLED')), stale: !last }, now });
+  };
   if (a.command === 'acceptance') {
     const rows = await accept();
     if (a.json) console.log(JSON.stringify(rows, null, 2));

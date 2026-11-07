@@ -108,6 +108,20 @@ watchdog は監視専用：Hermes・Mac・Trading Lab を含めて何も再起�
 
 監視の定義の変化（`monitor_config_changed`）は host-health・watchdog・バックアップの plist、バックアップの除外の条件（deny）、`repos.conf`、Human Gate の policy 2 つを見る。
 
+### 見張りが黙って外れないように（2026-11-07 追加）
+
+| 見えなくなる場面 | 何が知らせるか |
+|---|---|
+| `--no-guard` で見張りの項目ごと消える | watchdog の `monitor_webhook=no_guard`。ファイルの定義と launchd の今の引数の両方を見る |
+| 固定ファイルが読めず変化を検知できない | `monitor_fingerprint` が unknown になり、24 時間で `monitor_blind` |
+| `state.json` の消失・破損で基準が初期化される | 記録があるのに state が無い回に `monitor_state_reset` を 1 回（送れなければ次の回へ持ち越す） |
+| GitHub の token が Keychain から消える | 動いていた見張りなら `github_api=token_missing`（知らせ済みの `github:` の項目も残す） |
+| バックアップの対象のフォルダの欠け | 受領票の `sources_missing` から `backup_sources`（WARN は 24 時間続いたら 1 回） |
+| `jsonl` だけ書けない | state の前に書くので 1 回分の失敗に数え、3 回で `DISABLED` |
+| `PAUSE`・通知の印の時刻が未来 | 期限の幅を超えた未来は効かせない。印の未来の時刻では黙らない |
+
+出来事の通知の上限：同じ出来事は 24 時間に 3 通まで（超えた分は記録だけ）。`monitor_args`・`agent_scope` も反復の上限を持つ。
+
 ### 3-1. 外部の死活監視（H6）
 
 `--heartbeat` の時、host-health の 1 回分が記録を残した後に、VPS の受け側へ時刻と署名だけを送る（`scripts/lib/heartbeat.mjs`）。受け側は最後の信号から 70 分途絶えたら Discord へ 1 回（信号は 30 分ごとなので、1 回の抜けでは鳴らない）、戻ったら 1 回知らせる（原因は断定しない。24 時間に 2 回途絶えたら「反復」を 1 通）。受け側と導入は `deploy/vps-heartbeat/README.md`（導入は Human）。
@@ -175,7 +189,7 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 公開の repo へ書けないことの確かめ（`check`・`run`）：管理対象の公開 repo へ、必ず失敗する要求（不正な ref とゼロの sha）を 1 回出す。書ける token でも 422 で、何も作られない。token の範囲の外なら 403／404。
 - 残している理由：読み取りでは代わりにならない。`GET /repos/...` の `permissions` は token でなく人の権限を返す（2026-11-07 に実測）。fine-grained の権限は値を変えずに編集できるので、最初の 1 回だけの確認でも足りない
 - 出さない回：`verify` は送らないので出さない（定期の 30 日ごとの検証も含む）。送る経路は `run` だけ
-- レート制限の 403・429 は答えとして数えない（`scope_unverified` で送らない）。要求の形は test で固定している
+- レート制限の 403・429 は答えとして数えない（`scope_unverified` で送らない。Administration の確かめも同じ）。要求の形は test で固定している
 
 ### 世代と容量
 
@@ -240,14 +254,15 @@ GitHub の専用 Private repo へ暗号化して毎日 1 回置く（2026-11-05 
 実際の API を使う検証は `deploy/macos/hermes-read-check.sh`。**Human が 1 回だけ実行する**（`sudo` のパスワードが要る。Claude Code は `hermes` として動けず、`.env` も読まない）。
 
 ```
-sh deploy/macos/hermes-read-check.sh <証跡のフォルダの絶対パス>
+sh deploy/macos/hermes-read-check.sh
 ```
 
-- `hermes -z`（one-shot）を 1 回。道具は `file` だけ、90 秒で強制終了、環境は LaunchDaemon の plist と同じ。Hermes の設定・権限は変えない
+- `hermes -z`（one-shot）を 1 回。道具は `file` だけ、90 秒で強制終了、環境は LaunchDaemon の plist と同じ。Hermes の設定・権限は変えない。`file` には書き込みの道具も入るので、書ける場所は `HERMES_WRITE_SAFE_ROOT` の中だけ（読むだけは問いの文の指示）
+- 始めない時：メモリ逼迫・常駐が見えない・hermes の RSS の合計が 2 GiB 以上（常駐の wrapper は 3 GiB で hermes の process を全部止めるので、2 つ目の process の分の余裕を見る）・要約の書き換えの前後（:18〜:22・:48〜:52）。3 ファイルが読めること・usage を置けることは課金の前に hermes の権限で確かめる
 - 読む物：`README.txt`・実物の `runtime-brief.json`・合成の `fixture.json`（human・ai・auto が 1 件ずつ。実物は平常なら異常 0 件なので、見分ける力はこれで試す。`status` の外に置き、終わったら消す）
 - **API の回数**：Hermes がファイルを読むには、読む指示の応答と答えで Messages API の要求が 2 回以上になる。`-z` に回数の上限は無い（`--max-turns` は `chat` だけで、`chat` に `--usage-file` は無い）ので、時間の上限で止める。一時的な障害なら Hermes が再試行する（`agent.api_max_retries`・`auto_recovery_cycles` は既定のまま）。回数は結果の `api_calls`
-- 採点は決定的（`scripts/lib/hermes-read-check.mjs`）：実物の値・合成の分類・書かれていないことを補っていないか・Secret の形・model と provider・回数。結果は証跡の `result.json`、一覧は `runtime-ops overview`
-- 同じ証跡のフォルダでは 2 回目を拒む。もう 1 回は Human の判断
+- 採点は決定的（`scripts/lib/hermes-read-check.mjs`）：実物の値・合成の分類・書かれていないことを補っていないか・Secret の形・model と provider・回数（補助の呼び出しを含む）。読んでいる間に要約が書き換わって実物の値だけが違う時は `inconclusive`。結果は証跡の `result.json`、一覧は `runtime-ops overview`
+- 証跡は `mac-runtime-state/hermes/checks/read-check` の 1 か所で、2 回目を拒む。もう 1 回は Human の判断
 - **計上先はここでは決めない**。鍵の値を読まずに確かめるため、結果の時刻・model・トークン数を Console の Usage の鍵ごとの表示と Human が突き合わせる。Usage の反映には遅れがあり、直後の 0 は失敗の証拠ではない
 
 ## 7. 役割の分担
@@ -336,6 +351,6 @@ Human ──質問──▶ Hermes ──読むだけ──▶ runtime-brief.jso
 | `timeline [--days 7]` | 全項目の変わり目・出来事・通知を時刻の順に。同じ出来事の連続は 1 行。値は通知と同じ関所を通す |
 | `overview [--days 7]` | 検収・今の状態・Human が要ること・Hermes の読み取りの検証を 1 画面に。新しい判定は足さない |
 
-観察（H8）の窓は `--days` と別に 8 日分を読み、幅が 7 日に届けば判定する。合格の目安：`hermes_service` の異常なし・`hermes_restarted` なし（Human の操作の分は事実を見て Human が判断する）・`hermes_files_changed` なし・RSS のピーク 3 GiB 未満・`memory_pressure` と `swap_used_gib` の警告なし・記録の空白なし（Mac の再起動の分は除く）。1 つでも外れれば fail で、`facts` にどれかが出る。
+観察（H8）の窓は `--days` と別に 8 日分を読み、Hermes の常駐を ok と見た最初の回からの幅が 7 日に届けば判定する。見えなかった回（`hermes_service_unseen`）が窓に残る間は pending。合格の目安：`hermes_service` の異常なし・`hermes_restarted` なし（Human の操作の分は事実を見て Human が判断する）・`hermes_files_changed` なし・RSS のピーク 3 GiB 未満・`memory_pressure` と `swap_used_gib` の警告なし・記録の空白なし（Mac の再起動の分は除く）。1 つでも外れれば fail で、`facts` にどれかが出る。
 
 バックアップの検証は `backup-run.mjs verify`、監視の記録の要約は `host-health.mjs --report`。

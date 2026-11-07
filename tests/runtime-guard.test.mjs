@@ -77,7 +77,8 @@ test('Time Machine の読み取り：保存先なしは exit 0・バックアッ
 test('見る repo は repos.conf と relay だけで、Trading Lab は入らない', () => {
   const names = readRepoNames(readFileSync(new URL('../deploy/macos/repos.conf', import.meta.url), 'utf8'));
   assert.ok(names.includes('e-nexus-decision-layer') && names.includes(RELAY_REPO));
-  for (const n of names) assert.doesNotMatch(n, TRADING_LAB_PATH);
+  for (const n of names) assert.equal(TRADING_LAB_PATH.test(n), false, n);
+  for (const n of ['Trading Lab', 'trading_lab', 'trading.lab', 'ＴｒａｄｉｎｇＬａｂ', 'mac_mini_migration_kit', 'PARALLELS']) assert.equal(TRADING_LAB_PATH.test(`/x/${n}/y`), true, n);
   assert.ok(!GUARD_BINS.some((b) => /prl/.test(b)));
   for (const b of GUARD_BINS) assert.ok(ALLOWED_BINS.includes(b));
 });
@@ -108,7 +109,24 @@ test('読めない時は unknown にして、悪化も回復も作らない', as
   const g = await collectGuard({ run, hermesUser: 'hermes', ...guardArgs(fakeFs()) });
   g.service = null;
   const by = Object.fromEntries(evaluateGuard(g, null, NOW).map((x) => [x.id, x.level]));
-  assert.deepEqual(by, { 'repo:r1': 'unknown', relay_outbox: 'ok', backup_time_machine: 'unknown', backup_archive: 'ok', monitor_args: 'unknown', agent_scope: 'ok', hermes_service: 'unknown', hermes_isolation: 'unknown' });
+  assert.deepEqual(by, { 'repo:r1': 'unknown', relay_outbox: 'ok', backup_time_machine: 'unknown', backup_archive: 'ok', monitor_fingerprint: 'ok', monitor_args: 'unknown', agent_scope: 'ok', hermes_service: 'unknown', hermes_isolation: 'unknown' });
+});
+
+test('固定ファイルが読めない回は unknown の項目にする（黙って見張りから外れない）。git は repo の設定の外部プログラムを起動しない', async () => {
+  const of = (g) => evaluateGuard({ repos: {}, outbox: null, backup: null, ...g }, null, NOW).find((x) => x.id === 'monitor_fingerprint');
+  assert.deepEqual([of({ drift: { vault_copy: 'x' }, config: { a: 'y' } }).level, of({ drift: { vault_copy: 'x' }, config: { a: 'y' } }).value], ['ok', 'ok']);
+  assert.deepEqual([of({ drift: { vault_copy: null, plist: 'x' }, config: { a: null } }).level, of({ drift: { vault_copy: null, plist: 'x' }, config: { a: null } }).value], ['unknown', 'a,vault_copy']);
+  assert.equal(of({}), undefined);
+  const { run, calls } = runner({});
+  await collectGuard({ run, hermesUser: null, ...guardArgs(fakeFs()) });
+  assert.ok(calls.find((c) => c[0] === '/usr/bin/git').includes('core.fsmonitor=false'));
+});
+
+test('バックアップの対象の欠け：受領票の件数から項目にする。古い受領票は項目を出さない', () => {
+  const item = (b) => evaluateGuard({ repos: {}, outbox: null, backup: null, backup_receipt: { configured: true, finished_at: NOW, restore_verified_at: NOW, failures: 0, ...b } }, null, NOW).find((x) => x.id === 'backup_sources');
+  assert.deepEqual([item({ sources_missing: 1 }).level, item({ sources_missing: 1 }).value], ['warn', 'missing']);
+  assert.equal(item({ sources_missing: 0 }).level, 'ok');
+  assert.equal(item({ sources_missing: null }), undefined);
 });
 
 test('repo の差分は続いた時だけ warn（作業中は異常にしない）', () => {

@@ -17,7 +17,7 @@ export const GITHUB_TOKEN_PREFIX = 'github_pat_';
 export const GITHUB_LIMITS = Object.freeze({ api_fail_hours: 6, differs_days: 7, ci_stuck_hours: 6, token_expiry_days: 14 });
 export const GITHUB_OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
-const TRADING_LAB = /trading-?lab/i;
+const TRADING_LAB = /trading[\s._-]*lab/i;
 const FAILED_RUN = ['failure', 'timed_out', 'startup_failure'];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -205,9 +205,9 @@ export async function verifyMonitorToken({ token, owner, repos, now, fetchImpl =
     if (!Array.isArray(seen)) return { ok: false, code: 'SCOPE_UNVERIFIED' };
     if (seen.length === 0) return { ok: false, code: 'SCOPE_UNVERIFIED' }; // 6 repo に private があるので、空は確かめられていない
     if (seen.some((x) => !repos.includes(x?.name))) return { ok: false, code: 'TOKEN_TOO_BROAD' };
-    const keys = (await call(`/repos/${owner}/${repos[0]}/keys`)).status; // Administration の権限
-    if (keys === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' };
-    if (keys !== 403 && keys !== 404) return { ok: false, code: 'SCOPE_UNVERIFIED' };
+    const keys = await call(`/repos/${owner}/${repos[0]}/keys`); // Administration の権限。レート制限の 403 は権限の答えでない
+    if (keys.status === 200) return { ok: false, code: 'TOKEN_TOO_BROAD' };
+    if (isRateLimited(keys) || (keys.status !== 403 && keys.status !== 404)) return { ok: false, code: 'SCOPE_UNVERIFIED' };
     const probe = await call(`/repos/${owner}/${repos[0]}/git/refs`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ ref: 'invalid', sha: '0'.repeat(40) }) });
     if (probe.status >= 500 || isRateLimited(probe)) return { ok: false, code: 'GITHUB_UNREACHABLE' };
     if (![403, 404].includes(probe.status)) return { ok: false, code: 'TOKEN_CAN_WRITE' };

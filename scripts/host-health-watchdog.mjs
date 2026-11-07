@@ -39,12 +39,15 @@ export function monitorState({ state, disabled, job, now, resumed = false }) {
   return { level: 'ok', value: 'ok' };
 }
 
-/** host-health の job に --webhook が無いと本体は何も知らせられないので、ここから知らせる。定義が無い・読めない時は判定しない */
-export function monitorWebhookItem(plistText) {
-  const args = plistArgs(plistText);
-  if (args == null) return { id: 'monitor_webhook', level: 'unknown', value: null, kind: 'state' };
-  const ok = args.includes('--webhook');
-  return { id: 'monitor_webhook', level: ok ? 'ok' : 'warn', value: ok ? 'ok' : 'no_webhook', kind: 'state' };
+/**
+ * host-health の job に --webhook が無いと本体は何も知らせられないので、ここから知らせる。--no-guard は見張りの項目ごと消える（本体からは見えない）ので、これもここで見る。
+ * ファイルの定義と、launchd が今持っている引数の両方を見る（別の plist で読み直した時はファイルだけでは分からない）。どちらも読めない時は判定しない
+ */
+export function monitorWebhookItem(plistText, loadedArgs = null) {
+  const lists = [plistArgs(plistText), loadedArgs].filter(Boolean);
+  if (!lists.length) return { id: 'monitor_webhook', level: 'unknown', value: null, kind: 'state' };
+  const value = lists.some((a) => !a.includes('--webhook')) ? 'no_webhook' : lists.some((a) => a.includes('--no-guard')) ? 'no_guard' : 'ok';
+  return { id: 'monitor_webhook', level: value === 'ok' ? 'ok' : 'warn', value, kind: 'state' };
 }
 
 function readJson(file) {
@@ -73,7 +76,7 @@ export async function runWatchdog({ stateDir = DEFAULT_STATE_DIR, webhook = null
   try {
     plist = readFileSync(monitorPlist, 'utf8');
   } catch { /* 無ければ判定しない */ }
-  const d = decide([{ id: ID, ...seen, kind: 'state' }, monitorWebhookItem(plist)], prev?.schema === WATCHDOG_SCHEMA ? prev : null, { now: at, paused });
+  const d = decide([{ id: ID, ...seen, kind: 'state' }, monitorWebhookItem(plist, job?.arguments ?? null)], prev?.schema === WATCHDOG_SCHEMA ? prev : null, { now: at, paused });
   let notifyCode = d.notify.length === 0 ? 'NOTHING_TO_SEND' : webhook ? null : 'NO_WEBHOOK';
   const save = (items) => {
     const tmp = `${file}.tmp`;

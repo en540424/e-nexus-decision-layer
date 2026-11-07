@@ -169,6 +169,7 @@ test('矛盾の検知：数の合わない要約・異常があるのに ok の�
   assert.deepEqual(briefInconsistencies({ ...ok, valid_until: new Date(NOW.getTime() + 24 * 3_600_000).toISOString() }), ['valid_until'], '有効期限を延ばした要約');
   assert.deepEqual(briefInconsistencies({ ...ok, valid_until: ok.generated_at }), ['valid_until']);
   assert.equal(readBrief(JSON.stringify({ ...ok, overall: 'ok', counts, open_items: [row] }), { now: NOW }).reason, 'inconsistent');
+  assert.equal(readBrief(JSON.stringify({ ...ok, open_items: [null] }), { now: NOW }).reason, 'inconsistent', '壊れた行で例外にしない');
   // 書き手が作る異常の要約・止まっている時の要約は通る
   const bad = [...OK_ITEMS.filter((x) => x.id !== 'disk_free_gib'), { id: 'disk_free_gib', level: 'crit', value: 1, kind: 'state' }];
   assert.deepEqual(briefInconsistencies(buildBrief(stateOf(bad), { items: bad, now: NOW })), []);

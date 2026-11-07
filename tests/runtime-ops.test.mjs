@@ -45,6 +45,7 @@ test('観察：窓が 7 日ちょうどでも届くように別に読む。--day
 
 test('観察：合格の目安を全部見る（常駐・再起動・固定ファイル・RSS・メモリ・空白。Mac の再起動の空白は除く）', () => {
   const ok = (h, extra = []) => row(h, [{ id: 'hermes_service', level: 'ok', value: 'running' }, { id: 'hermes_rss_gib', level: 'ok', value: 0.3 }, { id: 'memory_pressure', level: 'ok', value: 1 }, ...extra]);
+  const svc = (id = 'hermes_service', level = 'ok') => ({ id, level, value: null });
   const obs = (extra) => [ok(3), ok(2.5, extra), ok(2)];
   const h8 = (observation) => acceptanceOf({ ...base(), observation }).find((r) => r.id === 'H8');
   assert.equal(h8(obs()).verdict, 'pending');
@@ -53,12 +54,22 @@ test('観察：合格の目安を全部見る（常駐・再起動・固定フ�
     assert.deepEqual([r.verdict, r.facts[key]], ['fail', 1]);
   }
   assert.equal(h8([ok(3), row(2.5, [{ id: 'hermes_service', level: 'warn', value: 'stopped' }])]).verdict, 'fail');
-  assert.equal(h8([ok(3), row(2.5, [{ id: 'hermes_rss_gib', level: 'ok', value: 3.1 }])]).verdict, 'fail');
-  assert.equal(h8([ok(3), row(2.5, [{ id: 'memory_pressure', level: 'warn', value: 2 }])]).verdict, 'fail');
-  assert.equal(h8([ok(3), row(2.5, [{ id: 'swap_used_gib', level: 'crit', value: 9 }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [svc(), { id: 'hermes_rss_gib', level: 'ok', value: 3.1 }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [svc(), { id: 'memory_pressure', level: 'warn', value: 2 }])]).verdict, 'fail');
+  assert.equal(h8([ok(3), row(2.5, [svc(), { id: 'swap_used_gib', level: 'crit', value: 9 }])]).verdict, 'fail');
   const gap = h8([ok(5), ok(2)]);
   assert.deepEqual([gap.verdict, gap.facts.gaps], ['fail', 1]);
   assert.equal(h8([ok(5), ok(2, [{ id: 'rebooted', level: 'warn' }])]).facts.gaps, 0, 'Mac の再起動の分は除く');
+  // 幅は Hermes を ok と見た最初の回から。記録だけ古くても、見えていない間は合格にしない
+  const days = (n, items) => Array.from({ length: n * 48 + 1 }, (_, i) => row((n * 48 - i) / 2, items));
+  const older = [...days(8, [{ id: 'disk_free_gib', level: 'ok', value: 1 }]).slice(0, 5 * 48), ...days(3, [svc()])];
+  assert.deepEqual([h8(older).verdict, h8(older).facts.days_observed], ['pending', 3]);
+  assert.equal(h8(days(8, [{ id: 'disk_free_gib', level: 'ok', value: 1 }])).verdict, 'pending', '項目が無い');
+  assert.equal(h8(days(8, [svc('hermes_service', 'unknown')])).verdict, 'pending', 'ずっと見えていない');
+  const blind = days(8, [svc()]);
+  blind[50] = row((8 * 48 - 50) / 2, [svc('hermes_service', 'unknown')]);
+  assert.deepEqual([h8(blind).verdict, h8(blind).facts.hermes_service_unseen], ['pending', 1], '見えなかった回を異常なしに数えない');
+  assert.equal(h8(days(8, [svc()])).verdict, 'pass');
 });
 
 test('時系列：変わり目と出来事と通知だけ。最初の ok は出さない・連続する同じ出来事は 1 行に・値は関所を通す', () => {
@@ -80,6 +91,9 @@ test('時系列：変わり目と出来事と通知だけ。最初の ok は出�
   assert.match(text, /disk_free_gib ok→warn .*［通知：warn］/);
   assert.doesNotMatch(text, /someone/, '値は関所を通す');
   assert.equal(renderTimeline([]), '変わり目はありません');
+  const first = timelineOf([row(2, [{ id: 'disk_free_gib', level: 'warn', value: 20 }]), { at: at(1), items: 'x', notify: 'y' }, { at: at(0.5), items: [null, {}] }]);
+  assert.deepEqual(first.map((x) => [x.id, x.from]), [['disk_free_gib', null]], '窓の前から続く異常を変わり目と言わない・壊れた行で落ちない');
+  assert.match(renderTimeline(first), /（窓の前から）→warn/);
 });
 
 test('1 画面：検収・状態・Human・読み取りの検証を並べる。判定を足さない', () => {
@@ -144,6 +158,18 @@ test('Human Required：台帳＋今の異常（human だけ）＋期限の近い
   assert.deepEqual(humanRequired({ ledger: { not: 'array' }, now: NOW }), [], '壊れた台帳で止まらない');
   const overdue = humanRequired({ ledger: [{ id: 'c', title: 'x', due: '2026-11-01' }], now: NOW });
   assert.equal(overdue[0].overdue, true);
+});
+
+test('plist の引数：ProgramArguments の中だけ数える（注釈と他の鍵の値は数えない）', () => {
+  const plist = '<plist><dict><key>Label</key><string>--webhook</string><!-- <string>--no-guard</string> --><key>ProgramArguments</key><array><string>node</string></array></dict></plist>';
+  assert.deepEqual(plistArgs(plist), ['node']);
+  assert.equal(plistArgs('<plist><dict></dict></plist>'), null);
+});
+
+test('Human Required：監視が止まっている・記録が無い時は「対応なし」と言わない', () => {
+  assert.deepEqual(humanRequired({ now: NOW }), []);
+  assert.deepEqual(humanRequired({ monitor: { disabled: true, stale: true }, now: NOW }).map((r) => [r.id, r.priority]), [['monitor:disabled', 1]]);
+  assert.deepEqual(humanRequired({ monitor: { stale: true }, now: NOW }).map((r) => r.id), ['monitor:stale']);
 });
 
 test('記録の読み取り：壊れた行を飛ばす・引数は絶対パスだけ・Trading Lab の領域は見ない', () => {

@@ -162,10 +162,11 @@ function residentsOf(operatorHome, fsi) {
   }
   return [...new Set(names)].sort();
 }
-/** plist の ProgramArguments の文字列（XML の plist だけ。読めなければ null） */
+/** plist の ProgramArguments の文字列（XML の plist だけ。注釈と他の鍵の値は数えない。読めなければ null） */
 export function plistArgs(text) {
   if (typeof text !== 'string' || !text.includes('<plist')) return null;
-  return [...text.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
+  const block = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text.replace(/<!--[\s\S]*?-->/g, ''));
+  return block ? [...block[1].matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]) : null;
 }
 function readText(file, fsi) {
   try {
@@ -198,7 +199,7 @@ function backupReceiptOf(file, fsi) {
     const r = JSON.parse(fsi.readFileSync(file, 'utf8'));
     const failures = Number.isInteger(r?.consecutive_failures) ? r.consecutive_failures : 0;
     if (r?.schema !== BACKUP_RECEIPT_SCHEMA || (Number.isNaN(Date.parse(r.finished_at)) && !failures)) return null;
-    return { configured: true, finished_at: r.finished_at ?? null, restore_verified_at: r.restore_verified_at ?? null, failures, failure_code: r.last_failure_code ?? null, history_verified_at: r.history_verified_at ?? null, history_failure: r.history_failure ?? null, token_expires_at: r.token_expires_at ?? null };
+    return { configured: true, sources_missing: Number.isInteger(r.sources_missing) ? r.sources_missing : null, finished_at: r.finished_at ?? null, restore_verified_at: r.restore_verified_at ?? null, failures, failure_code: r.last_failure_code ?? null, history_verified_at: r.history_verified_at ?? null, history_failure: r.history_failure ?? null, token_expires_at: r.token_expires_at ?? null };
   } catch {
     return null;
   }
@@ -210,7 +211,7 @@ export async function collectGuard({ run, hermesUser = null, base, repos, outbox
   for (const name of repos) {
     const dir = path.join(base, name);
     if (!fsi.existsSync(path.join(dir, '.git'))) continue; // 置いていない repo は見ない
-    g.repos[name] = parseGitStatus(await run('/usr/bin/git', ['--no-optional-locks', '-C', dir, 'status', '--porcelain=v2', '--branch']));
+    g.repos[name] = parseGitStatus(await run('/usr/bin/git', ['--no-optional-locks', '-C', dir, '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2', '--branch']));
   }
   try {
     const files = fsi.readdirSync(outbox).filter((f) => f.endsWith('.md'));
@@ -304,9 +305,15 @@ export function evaluateGuard(g, prevGuard, now) {
       const historyDays = ageDays(b.history_verified_at);
       if (b.history_failure) add('backup_history', 'warn', 'history_failed');
       else if (b.history_verified_at) add('backup_history', historyDays == null || historyDays >= GUARD_LIMITS.history_days ? 'warn' : 'ok', historyDays == null || historyDays >= GUARD_LIMITS.history_days ? 'history_stale' : 'history_ok');
+      if (b.sources_missing != null) add('backup_sources', b.sources_missing ? 'warn' : 'ok', b.sources_missing ? 'missing' : 'ok');
       const left = Date.parse(b.token_expires_at) - t;
       if (Number.isFinite(left)) add('credential_backup_token', left <= 0 ? 'crit' : left < GUARD_LIMITS.token_expiry_days * DAY ? 'warn' : 'ok', left <= 0 ? 'expired' : left < GUARD_LIMITS.token_expiry_days * DAY ? 'expiring' : 'ok');
     }
+  }
+  // 読めない回は変化も検知できない。項目にして monitor_blind へ流す（黙って見張りから外れない）
+  if (g.drift !== undefined || g.config !== undefined) {
+    const unread = [...Object.entries(g.drift ?? {}), ...Object.entries(g.config ?? {})].filter(([, v]) => v == null).map(([k]) => k).sort();
+    add('monitor_fingerprint', unread.length ? 'unknown' : 'ok', unread.length ? unread.join(',') : 'ok');
   }
   if (g.monitor_args !== undefined) {
     if (g.monitor_args == null) add('monitor_args', 'unknown', null);
@@ -368,7 +375,7 @@ export function nextGuardState(g, prevGuard, now, { keepEvents = false } = {}) {
 
 // ─── 観察の集計（H8）───
 
-export const EVENT_IDS = ['rebooted', 'network_interface_changed', 'hermes_restarted', 'hermes_files_changed', 'monitor_config_changed', 'residents_changed', 'monitor_gap', 'github_visibility_changed', 'github_default_branch_changed'];
+export const EVENT_IDS = ['monitor_state_reset', 'rebooted', 'network_interface_changed', 'hermes_restarted', 'hermes_files_changed', 'monitor_config_changed', 'residents_changed', 'monitor_gap', 'github_visibility_changed', 'github_default_branch_changed'];
 
 /** host-health の YYYY-MM.jsonl の行から、期間の要約。値は記録にあるものだけ */
 export function summarizeRecords(lines, { since = null, intervalMinutes = 30 } = {}) {
