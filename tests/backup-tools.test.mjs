@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createCipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -861,6 +861,101 @@ test('保存済みの検証：全世代を読み直す（間の世代も）。�
     const t = await verifyBackups({ ...base, scan: () => 0, fetchImpl: fakeRepo({ files }) });
     assert.deepEqual([t.status, t.failure], ['failed', 'archive_unreadable']);
     assert.equal(VERIFY_MAX_GENERATIONS >= 26, true, '保持の最大（14＋12）を全部見られる');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('監査の再現（見えない文字）：字形の選択子の補助面・モンゴルとクメールの見えない文字・見えない文字で濁点が合成されない形も落とす', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('ok.md', 'plain\n');
+    w('vs.md', `ghp_${'A'.repeat(18)}\u{E0100}${'A'.repeat(18)}\n`);
+    w('vs-tl.md', 'Trading\u{E0100}Lab\n');
+    w('mn.md', 'Trading\u180BLab\n');
+    w('km.md', 'Trading\u17B4Lab\n');
+    w('dakuten.md', 'トレーテ\u200B\u3099ィングラボ\n'.normalize('NFC'));
+    w('half.md', 'ﾄﾚｰﾃ\u200Bﾞｨﾝｸﾞﾗﾎﾞ\n');
+    const p = planOf(dir);
+    assert.deepEqual(p.files.map((f) => f.rel), ['ok.md']);
+    assert.deepEqual(p.excluded, { secret: 1, trading_lab: 5 });
+  } finally {
+    clean(dir);
+  }
+});
+
+test('監査の再現（長い行の窓）：長い JWT が窓の境目にあっても見つける・窓の切り口が作る偽の語の境界で違反にしない', () => {
+  const dir = tmp();
+  try {
+    const row = (text) => ({ rel: 'b.md', body: Buffer.from(text) });
+    const jwt = `eyJ${'h'.repeat(30)}.eyJ${'p'.repeat(1500)}.${'s'.repeat(43)}`;
+    for (const at of [100, MAX_LINE_CHARS - 900, MAX_LINE_CHARS - 100, 2 * MAX_LINE_CHARS - 100]) {
+      assert.equal(policyViolations([row(`${'-'.repeat(at)}${jwt}${'-'.repeat(MAX_LINE_CHARS * 3)}`)], VDENY, dir), 1, `JWT ${at}`);
+    }
+    const step = MAX_LINE_CHARS - 8 * 1024;
+    assert.equal(policyViolations([row(`${'a'.repeat(step)}sk-${'Z'.repeat(25)}${'-'.repeat(MAX_LINE_CHARS * 2)}`)], VDENY, dir), 0, '窓の先頭の偽の \\b');
+    const end = MAX_LINE_CHARS;
+    assert.equal(policyViolations([row(`${'-'.repeat(end - 20)}AKIA${'B'.repeat(16)}${'Q'.repeat(50)}${'-'.repeat(MAX_LINE_CHARS * 2)}`)], VDENY, dir), 0, '窓の末尾の偽の \\b');
+    assert.equal(policyViolations([row(`${'-'.repeat(end - 20)}AKIA${'B'.repeat(16)}-${'-'.repeat(MAX_LINE_CHARS * 2)}`)], VDENY, dir), 1, '本物は数える');
+    assert.equal(policyViolations([row(`${'-'.repeat(end - 10)}sk-${'Z'.repeat(9000)}${'-'.repeat(MAX_LINE_CHARS * 2)}`)], VDENY, dir), 1, '終わりの開いた形が窓をはみ出しても数える');
+  } finally {
+    clean(dir);
+  }
+});
+
+test('監査の再現（開き方）：FIFO で止まらない・ハードリンクは入れない（受領票の sources_missing に数える）', () => {
+  const dir = tmp();
+  const outside = tmp();
+  try {
+    const w = put(dir);
+    w('ok.md', 'plain\n');
+    assert.equal(spawnSync('/usr/bin/mkfifo', [path.join(dir, 'pipe.md')]).status, 0);
+    writeFileSync(path.join(outside, 'x.md'), 'outside\n');
+    linkSync(path.join(outside, 'x.md'), path.join(dir, 'hard.md'));
+    const started = Date.now();
+    const p = planOf(dir);
+    assert.ok(Date.now() - started < 5000, 'FIFO を開いて待たない');
+    assert.deepEqual(p.files.map((f) => f.rel), ['ok.md']);
+    assert.equal(p.excluded.hard_link, 1);
+    assert.throws(() => readPlain(path.join(dir, 'pipe.md'), realpathSync(dir)), (e) => e.code === 'outside_source');
+  } finally {
+    clean(dir, outside);
+  }
+});
+
+test('監査の再現（時間切れ）：1 つのファイルの中でも予算を守る（64 KiB ごとに確かめる）', () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('big.md', `${'x'.repeat(1000)}\n`.repeat(400));
+    let t = 0;
+    const clock = () => (t += 1000);
+    assert.throws(() => planOf(dir, { budgetMs: 4000, clock }), ScanTimeout, '1 ファイルの中で止まる');
+  } finally {
+    clean(dir);
+  }
+});
+
+test('監査の再現（保存済みの検証）：1 つの世代の異常で止めず全世代を見て重い方を残す・通信の失敗は保存物の異常にしない', async () => {
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    for (const day of ['05', '06', '07']) await runBackup({ ...base, now: () => new Date(`2026-11-${day}T04:40:00.000Z`), fetchImpl: fakeRepo({ files }) });
+    const key = (d) => [...files.keys()].find((k) => k.endsWith(`2026-11-${d}T0440Z.edlbk`));
+    const broken = Buffer.from(files.get(key('05')));
+    broken[broken.length >> 1] ^= 1;
+    files.set(key('05'), broken);
+    let n = 0;
+    const scan = () => (n++ === 0 ? 1 : 0); // 最新の世代だけ方針に反する
+    const v = await verifyBackups({ ...base, scan, fetchImpl: fakeRepo({ files }) });
+    assert.deepEqual([v.status, v.failure, v.failures], ['failed', 'archive_unreadable', { archive_unreadable: 1, policy_violation: 1 }]);
+    assert.equal(receiptOf(home).history_failure, 'archive_unreadable', '方針の違反が最古の壊れを隠さない');
+    const before = receiptOf(home);
+    const down = async (url, opts) => (opts.headers.accept?.includes('raw') ? { status: 502, headers: new Map(), arrayBuffer: async () => new ArrayBuffer(0) } : fakeRepo({ files })(url, opts));
+    const d = await verifyBackups({ ...base, scan: () => 0, fetchImpl: down });
+    assert.equal(d.failure, 'github_unreachable');
+    assert.deepEqual(receiptOf(home), before, '通信の失敗で受領票を変えない');
   } finally {
     clean(home, src);
   }

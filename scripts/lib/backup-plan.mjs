@@ -24,6 +24,8 @@ const deadlineOf = (budgetMs, clock) => {
   const end = clock() + budgetMs;
   return () => { if (clock() > end) throw new ScanTimeout(); };
 };
+/** 単調な時計（NTP の時刻の飛びで偽の時間切れにしない） */
+const monotonic = () => performance.now();
 const TEXT = /\.(?:md|txt|json|jsonl|plist|ya?ml|sh)$/i;
 const SKIP_NAME = /(?:^|\/)(?:\.env[^/]*|[^/]*\.tmp|[^/]*(?:id_rsa|id_ed25519|id_ecdsa|\.pem|\.key|\.p12|credential|secret|passw|passphrase|token)[^/]*)(?:\/|$)/i; // フォルダの名前も見る
 const TRADING_LAB = /trading[\s._-]*lab|トレーディング\s*ラボ|parallels|mac-mini-migration-kit/i;
@@ -37,37 +39,72 @@ const hasLongLine = (text) => {
   }
   return text.length - from > MAX_LINE_CHARS;
 };
-/** 見えない文字（ゼロ幅・BOM・方向の制御・字形の選択・ハングルの埋め字）。挟んで検出をすり抜けさせない */
-const INVISIBLE = /[\p{Cf}\u034F\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F]/gu;
+/** 見えない文字（書式の制御＝ゼロ幅・BOM・方向の制御、既定で無視される文字＝字形の選択子とその補助面・ハングルの埋め字など）。挟んで検出をすり抜けさせない */
+const INVISIBLE = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 const visible = (text) => text.replace(INVISIBLE, '');
 /** 元の形と見えない文字を除いた形の両方で見る（除くと語の境界の \b が消える形もある） */
 const forms = (text) => {
   const v = visible(text);
   return v === text ? [text] : [text, v];
 };
-const anySecret = (text) => {
+const GLOBAL_PATTERNS = () => SECRET_PATTERNS.map((p) => new RegExp(p.source, `${p.flags}g`));
+/**
+ * Secret の形が text にあるか。head・tail は窓の切り口：\b で始まる形の窓の先頭の一致・\b で終わる形の窓の末尾の一致は、切り口が作った偽の語の境界なので数えない
+ * （窓は十分に重なるので、本物の一致は隣の窓の中に丸ごと入る）。
+ */
+const anySecret = (text, { head = false, tail = false } = {}) => {
   try {
-    return forms(text).some((t) => SECRET_PATTERNS.some((p) => p.test(t)));
+    if (!head && !tail) return forms(text).some((t) => SECRET_PATTERNS.some((p) => p.test(t)));
+    for (const t of forms(text)) {
+      for (const re of GLOBAL_PATTERNS()) {
+        for (let m = re.exec(t); m; m = re.exec(t)) {
+          if (m[0].length === 0) re.lastIndex += 1;
+          const fakeHead = head && m.index === 0 && re.source.startsWith('\\b');
+          const fakeTail = tail && m.index + m[0].length === t.length && re.source.endsWith('\\b'); // 終わりの開いた形の途中切れは本物の一致（数える）
+          if (fakeHead || fakeTail) { re.lastIndex = m.index + 1; continue; }
+          return true;
+        }
+      }
+    }
+    return false;
   } catch {
     return true;
   }
 };
-/** 判定できない本文（巨大な 1 行）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
-const hasSecret = (text) => hasLongLine(text) || anySecret(text);
-/** 長い行も窓に分けて全部を見る（保存済みの世代の検証用。窓の重なりは最も長い形より長く取る） */
-const SCAN_OVERLAP = 1024;
-const hasSecretChunked = (text, tick = () => {}) => {
-  if (!hasLongLine(text)) return anySecret(text);
-  for (let from = 0; from < text.length; from += MAX_LINE_CHARS - SCAN_OVERLAP) {
+/** 1 回の正規表現に渡す長さの上限。行の境目で区切り、区切りごとに時間切れを確かめる（1 ファイルの中でも予算を守る）。前の区切りの末尾を前置きに付ける（名前＝値の形が改行をまたぐ時） */
+const BATCH_CHARS = 64 * 1024;
+const BATCH_CONTEXT = 256;
+const secretInBatches = (text, tick) => {
+  if (text.length <= BATCH_CHARS) return anySecret(text);
+  for (let from = 0; from < text.length;) {
     tick();
-    if (anySecret(text.slice(from, from + MAX_LINE_CHARS))) return true;
+    let to = Math.min(text.length, from + BATCH_CHARS);
+    if (to < text.length) {
+      const nl = text.lastIndexOf('\n', to);
+      if (nl > from) to = nl + 1;
+    }
+    if (anySecret(text.slice(Math.max(0, from - BATCH_CONTEXT), to))) return true;
+    from = to;
   }
   return false;
 };
-/** 全角と濁点の分かれた形も同じ語として見る。見えない文字を挟んだ形も */
+/** 判定できない本文（巨大な 1 行）は Secret と同じに扱う（丸ごと外す。1 回分を止めない） */
+const hasSecret = (text, tick = () => {}) => hasLongLine(text) || secretInBatches(text, tick);
+/** 長い行も窓に分けて全部を見る（保存済みの世代の検証用）。窓の重なりは JWT など終わりの開いた形の実際の長さより長く取る */
+const SCAN_OVERLAP = 8 * 1024;
+const hasSecretChunked = (text, tick = () => {}) => {
+  if (!hasLongLine(text)) return secretInBatches(text, tick);
+  for (let from = 0; from < text.length; from += MAX_LINE_CHARS - SCAN_OVERLAP) {
+    tick();
+    const to = from + MAX_LINE_CHARS;
+    if (anySecret(text.slice(from, to), { head: from > 0, tail: to < text.length })) return true;
+  }
+  return false;
+};
+/** 全角と濁点の分かれた形も同じ語として見る。見えない文字を挟んだ形も（除いてから正規化する形も：挟むと濁点が合成されない） */
 const mentionsTradingLab = (text) => {
   const n = text.normalize('NFKC');
-  return TRADING_LAB.test(n) || TRADING_LAB.test(visible(n));
+  return [n, visible(n), visible(text).normalize('NFKC')].some((t) => TRADING_LAB.test(t));
 };
 /** Secret の形。ファイルに 1 つでもあれば丸ごと除外する（暗号の中でも鍵を持ち出さない） */
 export const SECRET_PATTERNS = Object.freeze([
@@ -80,6 +117,7 @@ export const SECRET_PATTERNS = Object.freeze([
   /\bxox[abprs]-[A-Za-z0-9-]{20,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, // JWT
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{10,}/, // JWT の頭（中身が長くて窓に収まらない時も見つける）
   /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/, // Discord の bot token
   /discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/\d+\/[\w-]{20,}/i,
   /hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/i,
@@ -151,19 +189,31 @@ function walk(dir, topLevelOnly, out, rel = '', links = []) {
   return links;
 }
 
+/** macOS の O_NOFOLLOW_ANY（途中のどの要素も symlink なら ELOOP。最後の要素も含む）。Node は定数を出さないので数で持つ。O_NOFOLLOW と重ねると EINVAL なので代わりに使う。他の OS は O_NOFOLLOW と dev・ino の確かめ */
+const NOFOLLOW = process.platform === 'darwin' ? 0x20000000 : constants.O_NOFOLLOW;
+const outside = (why) => Object.assign(new Error(why), { code: 'outside_source' });
 /**
  * 対象の中の通常ファイルだけ開く。realpath が対象の外（途中のフォルダを symlink へ差し替えた）なら開かない。
- * 開いた後に realpath の時点と同じファイルか（dev・ino）を確かめる（確かめと開く間の差し替えも拒む）。大きすぎれば null。
+ * realpath の形を O_NOFOLLOW_ANY で開く（確かめと開く間に途中のフォルダを差し替えても外を読まない）。開いた後に同じファイル（dev・ino）かも確かめる。
+ * 通常ファイルでない（FIFO で開くのが止まる）・ハードリンク（realpath では外のファイルと見分けられない）は開かない。大きすぎれば null。
  */
 export function readPlain(file, rootReal) {
-  if (lstatSync(file).isSymbolicLink()) throw Object.assign(new Error('symlink'), { code: 'outside_source' }); // 一覧の後に symlink へ差し替えられた
+  if (lstatSync(file).isSymbolicLink()) throw outside('symlink'); // 一覧の後に symlink へ差し替えられた
   const real = realpathSync(file);
-  if (rootReal && !real.startsWith(`${rootReal}${path.sep}`)) throw Object.assign(new Error('outside source'), { code: 'outside_source' });
+  if (rootReal && !real.startsWith(`${rootReal}${path.sep}`)) throw outside('outside source');
   const seen = statSync(real);
-  const fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW);
+  if (!seen.isFile()) throw outside('not a regular file');
+  if (seen.nlink > 1) throw Object.assign(new Error('hard link'), { code: 'hard_link' });
+  let fd;
+  try {
+    fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | NOFOLLOW);
+  } catch (err) {
+    throw err?.code === 'ELOOP' ? outside('symlink in path') : err;
+  }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.dev !== seen.dev || st.ino !== seen.ino) throw Object.assign(new Error('replaced'), { code: 'outside_source' });
+    if (!st.isFile() || st.dev !== seen.dev || st.ino !== seen.ino) throw outside('replaced');
+    if (st.nlink > 1) throw Object.assign(new Error('hard link'), { code: 'hard_link' });
     if (st.size > BACKUP_LIMITS.file_bytes) return null;
     return readFileSync(fd);
   } finally {
@@ -176,7 +226,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
  * 選別。files は { id, rel, body, bytes }。excluded は理由ごとの件数。読めない対象は unreadable に数える。
  * 対象のフォルダそのものが symlink なら丸ごと入れない（source_symlink。sources_missing に数える＝知らせる）。全体が budgetMs を超えたら ScanTimeout。
  */
-export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = Date.now }) {
+export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = monotonic }) {
   const tick = deadlineOf(budgetMs, clock);
   const rows = [];
   const excluded = {};
@@ -205,7 +255,7 @@ export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMIT
       try {
         body = readPlain(path.join(s.dir, rel), rootReal);
       } catch (err) {
-        count(err?.code === 'outside_source' ? 'outside_source' : 'unreadable');
+        count(['outside_source', 'hard_link'].includes(err?.code) ? err.code : 'unreadable');
         continue;
       }
       if (body == null) { count('too_large'); continue; }
@@ -218,7 +268,7 @@ export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMIT
       }
       if (text.includes('\0')) { count('binary'); continue; }
       if (hasLongLine(text)) { count('long_line'); continue; } // 判定できない＝入れない（Secret とは数え分ける）
-      if (hasSecret(text)) { count('secret'); continue; }
+      if (hasSecret(text, tick)) { count('secret'); continue; }
       if (mentionsTradingLab(text)) { count('trading_lab'); continue; } // 言及だけのファイルも入れない（識別子の判定は deny に任せきりにしない）
       rows.push({ id: s.id, rel, body, bytes: body.length });
     }
@@ -238,7 +288,7 @@ export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMIT
  * 保存物はファイルの名前だけ見る（フォルダの規則は後から足したので、前の世代を違反にしない）。長い行は窓に分けて全部を見る（前の世代の長い行も Secret を見逃さない）。
  * 全体が budgetMs を超えたら ScanTimeout（違反なしと言わない）。
  */
-export function policyViolations(rows, denyText, tmpRoot, { budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = Date.now } = {}) {
+export function policyViolations(rows, denyText, tmpRoot, { budgetMs = BACKUP_LIMITS.scan_budget_ms, clock = monotonic } = {}) {
   const tick = deadlineOf(budgetMs, clock);
   const clean = (r) => {
     tick();

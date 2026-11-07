@@ -170,6 +170,12 @@ test('入口：repo の他のファイルに依存しない・本体を読み込
     writeFileSync(path.join(dir, 'PAUSE'), '');
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'held', 'PAUSE の間は知らせない');
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl, now: () => Date.now() + 73 * 3_600_000 }), 'sent', '消し忘れの PAUSE で黙らない');
+    rmSync(path.join(dir, 'watchdog-broken.json'));
+    utimesSync(path.join(dir, 'PAUSE'), new Date(Date.now() + 70 * 3_600_000), new Date(Date.now() + 70 * 3_600_000));
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'sent', '未来の PAUSE で黙らない（10 分先まで）');
+    rmSync(path.join(dir, 'watchdog-broken.json'));
+    utimesSync(path.join(dir, 'PAUSE'), new Date(Date.now() + 5 * 60_000), new Date(Date.now() + 5 * 60_000));
+    assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'held', '時計の小さな戻りは保守窓のまま');
     rmSync(path.join(dir, 'PAUSE'));
     writeFileSync(path.join(dir, 'watchdog-broken.json'), JSON.stringify({ notified_at: Date.now() + 365 * 86_400_000 }));
     assert.equal(await reportBroken({ argv, stateDir: dir, read: async () => url, fetchImpl }), 'sent', '未来の印で黙らない');

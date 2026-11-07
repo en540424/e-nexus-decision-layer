@@ -194,6 +194,7 @@ async function upload({ api, owner, repo, name, archive, passphrase }) {
   unpack(back.bytes, passphrase); // 改ざん・鍵の違いはここで投げる
 }
 
+/** 保存物の異常。並びは重さの順（複数の世代が違う異常の時に重い方を受領票へ） */
 const STORED_FAILURES = Object.freeze(['read_back_mismatch', 'archive_unreadable', 'file_hash_mismatch', 'tamper_not_detected', 'wrong_key_not_refused', 'policy_violation', 'nothing_stored']);
 
 /** Git の blob の hash（一覧の sha と読み直した中身の照合） */
@@ -239,7 +240,8 @@ async function storedArchives({ api, owner, repo }) {
 
 async function verifyStored({ api, owner, repo, entry, passphrase, scan }) {
   const back = await api('GET', `/repos/${owner}/${repo}/contents/archives/${entry.name}`, { accept: 'application/vnd.github.raw+json', raw: true });
-  if (back.status !== 200 || blobSha(back.bytes) !== entry.sha) throw new Stop('read_back_mismatch');
+  if (back.status !== 200) throw new Stop('github_unreachable'); // 5xx・レート制限は保存物の異常でない（受領票を異常にしない）
+  if (blobSha(back.bytes) !== entry.sha) throw new Stop('read_back_mismatch');
   try {
     return verifyArchive({ bytes: back.bytes, passphrase, scan });
   } catch (err) {
@@ -259,8 +261,22 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
     if (!stored.length) throw new Stop('nothing_stored');
     const newest = [...stored].reverse();
     const picks = newest.length <= VERIFY_MAX_GENERATIONS ? newest : [...newest.slice(0, VERIFY_MAX_GENERATIONS - 1), stored[0]];
+    // 1 つの世代の異常で残りを見ずに止めない（方針の違反が、別の世代の壊れを隠さない）。手元の問題（通信・方針の検査が動かない）は止める
     const rows = [];
-    for (const entry of picks) rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
+    const failures = {};
+    for (const entry of picks) {
+      try {
+        rows.push({ archive: entry.name, ...(await verifyStored({ api, owner, repo, entry, passphrase, scan })) });
+      } catch (err) {
+        if (!(err instanceof Stop) || !STORED_FAILURES.includes(err.code)) throw err;
+        failures[err.code] = (failures[err.code] ?? 0) + 1;
+      }
+    }
+    const worst = STORED_FAILURES.find((c) => failures[c]); // 並びが重さの順（壊れ＞方針）
+    if (worst) {
+      writeReceipt(receipt, { ...readReceipt(receipt), history_failure: worst });
+      return { code: 1, status: 'failed', failure: worst, failures, stored: stored.length, verified: rows.length };
+    }
     writeReceipt(receipt, { ...readReceipt(receipt), history_verified_at: at, history_failure: null, token_expires_at: api.tokenExpiresAt() });
     return { code: 0, status: 'verified', stored: stored.length, rows, tamper_detected: true, wrong_key_refused: true, policy_violations: 0 };
   } catch (err) {
@@ -317,7 +333,7 @@ export async function runBackup({ owner, repo, home, otherRepos, planFiles, scan
     await upload({ api, owner, repo, name, archive, passphrase });
     const pruned = await prune({ api, owner, repo, current: name }).catch(() => 0);
     const done = now().toISOString();
-    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, sources_missing: ['source_missing', 'unreadable', 'source_symlink', 'outside_source'].reduce((n, k) => n + (plan.excluded?.[k] ?? 0), 0), consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
+    writeReceipt(receipt, { ...keptFields(prev), finished_at: done, restore_verified_at: done, archive: name, bytes: archive.length, files: plan.files.length, excluded: plan.excluded, sources_missing: ['source_missing', 'unreadable', 'source_symlink', 'outside_source', 'hard_link'].reduce((n, k) => n + (plan.excluded?.[k] ?? 0), 0), consecutive_failures: 0, last_failure_code: null, token_expires_at: api.tokenExpiresAt() }); // header のとおり（期限なしの token へ替えた時に古い期限を残さない）
     // 古い世代も戻せることの定期の確かめ。失敗しても今回の回は成功のまま（受領票の history_failure で host-health が知らせる）
     const last = Date.parse(prev?.history_verified_at);
     const sinceVerified = Date.parse(at) - last;
@@ -381,7 +397,13 @@ async function main(argv) {
   const g = defaultGuard(REPO);
   const planFiles = (tmpRoot) => planBackup({ sources: backupSources({ base: g.base, home, repoRoot: REPO }), denyText: readFileSync(a.denyFile, 'utf8'), tmpRoot });
   if (a.command === 'plan') {
-    const p = planFiles(workRoot(home));
+    let p;
+    try {
+      p = planFiles(workRoot(home));
+    } catch (err) {
+      log({ status: 'failed', failure: err instanceof ScanTimeout ? err.code : 'plan_failed' }); // message にはパスが入る
+      return 1;
+    }
     log({ status: 'planned', files: p.files.length, bytes: p.bytes, excluded: p.excluded, by_source: Object.fromEntries(Object.entries(Object.groupBy(p.files, (f) => f.id)).map(([k, v]) => [k, v.length])), ...(a.json ? { rels: p.files.map((f) => `${f.id}/${f.rel}`) } : {}) });
     return 0;
   }
@@ -393,7 +415,7 @@ async function main(argv) {
       log({ status: 'ready', files: p.files.length, bytes: p.bytes, excluded: p.excluded });
       return 0;
     } catch (err) {
-      log({ status: 'not_ready', failure: err instanceof Stop ? err.code : 'check_failed' });
+      log({ status: 'not_ready', failure: err instanceof Stop || err instanceof ScanTimeout ? err.code : 'check_failed' });
       return err instanceof Stop ? err.exit : 1;
     }
   }

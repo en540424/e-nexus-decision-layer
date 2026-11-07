@@ -14,8 +14,9 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const BROKEN_TEXT = '[E-NEXUS Mac Runtime host]\n【重大】監視：プログラムを読み込めず、監視と見張りが両方止まっている → 要対応';
 export const REMIND_MS = 24 * 3_600_000;
-/** host-health の PAUSE の上限と同じ */
+/** host-health の PAUSE の上限と同じ（未来の mtime は 10 分先まで。依存を持たないので値を写す） */
 const PAUSE_MAX_MS = 72 * 3_600_000;
+const PAUSE_FUTURE_MS = 10 * 60_000;
 /** 印を残せない時の間引き：6 時間ごとの最初の 1 時間（毎時の job がちょうど 1 回入る） */
 const SLOT_MS = 6 * 3_600_000;
 const SLOT_WINDOW_MS = 3_600_000;
@@ -44,7 +45,8 @@ export async function reportBroken({ argv, stateDir, read = readKeychain, fetchI
   if (since >= 0 && since < REMIND_MS) return 'held'; // 未来の時刻の印では黙らない
   let paused = false;
   try {
-    paused = Math.abs(now() - statSync(path.join(stateDir, 'PAUSE')).mtimeMs) <= PAUSE_MAX_MS; // 未来の mtime で永久に黙らない
+    const age = now() - statSync(path.join(stateDir, 'PAUSE')).mtimeMs;
+    paused = age <= PAUSE_MAX_MS && age >= -PAUSE_FUTURE_MS; // 未来の mtime で期限より長く黙らない
   } catch { /* PAUSE なし */ }
   if (paused) return 'held';
   const target = SPEC.exec(argOf(argv, '--webhook') ?? '')?.[1];

@@ -71,7 +71,7 @@ const RULES = Object.freeze([
   [/^monitor_state_reset$/, { target: '監視の記録', what: '基準が初期化された（state が消えたか壊れた）', action: IF_UNKNOWN }],
   [/^notify_channel$/, { target: '通知の Webhook', what: '使えない', action: ACT }],
   [/^monitor_gap$/, { target: '監視', what: '間があいた', action: CHECK, flap: '止まっては戻るを繰り返している' }],
-  [/^monitor_pause$/, { target: '監視の PAUSE', what: '期限を過ぎて残っている', action: CHECK }],
+  [/^monitor_pause$/, { target: '監視の PAUSE', what: '期限を過ぎて残っているか、時刻が未来', action: CHECK }],
   [/^monitor_alive$/, { target: '監視', what: '止まっている', action: ACT, noCooldown: true, flap: '止まっては戻るを繰り返している' }],
   [/^monitor_watchdog$/, { target: '監視の見張り', what: '止まっている', action: ACT, noCooldown: true, flap: '止まっては戻るを繰り返している' }],
   [/^host_health$/, { target: '監視', what: (value) => (value === 'state_unwritable' ? '記録を書けない' : '停止した'), action: ACT, hideValue: true }],
