@@ -13,7 +13,7 @@ import { MAGIC, manifestOf, pack, restore, unpack } from '../scripts/lib/backup-
 import { runDrill } from '../scripts/backup-drill.mjs';
 import { catalog, inventory } from '../scripts/backup-inventory.mjs';
 import { MAX_LINE_CHARS, ScanTimeout, backupSources, denyLines, planBackup, policyViolations, readPlain, retentionPlan } from '../scripts/lib/backup-plan.mjs';
-import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, VERIFY_MAX_GENERATIONS, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
+import { SIZE_LIMIT_KIB, VERIFY_EVERY_MS, VERIFY_MAX_GENERATIONS, generationsToVerify, attestKey, buildArchive, keyAttested, runBackup, validate, verifyArchive, verifyBackups, workRoot } from '../scripts/backup-run.mjs';
 import { BACKUP_RECEIPT_SCHEMA } from '../scripts/lib/runtime-guard.mjs';
 import { renderJob, validateJobArgs } from '../scripts/scheduled-job-service.mjs';
 
@@ -956,6 +956,39 @@ test('監査の再現（保存済みの検証）：1 つの世代の異常で止
     const d = await verifyBackups({ ...base, scan: () => 0, fetchImpl: down });
     assert.equal(d.failure, 'github_unreachable');
     assert.deepEqual(receiptOf(home), before, '通信の失敗で受領票を変えない');
+  } finally {
+    clean(home, src);
+  }
+});
+
+test('再検証の指摘：点字の空白・全角の名前・見えない文字を挟んだ名前の deny・検証の時間切れのコード・世代の上限の選び方', async () => {
+  const dir = tmp();
+  try {
+    const w = put(dir);
+    w('ok.md', 'plain\n');
+    w('braille.md', 'Trading\u2800Lab\n');
+    w('ｔｏｋｅｎ.md', 'x\n');
+    w('acc\u200Bt-notes.md', 'x\n'); // deny の \<acct\> に名前で（見えない文字を除いた形で）あたる
+    const p = planOf(dir);
+    assert.deepEqual(p.files.map((f) => f.rel), ['ok.md']);
+    assert.deepEqual(p.excluded, { trading_lab: 1, file_type: 1, denied: 1 });
+    assert.equal(policyViolations([{ rel: 'ｐａｓｓｗｏｒｄ.txt', body: Buffer.from('x') }], VDENY, dir), 1, '保存物の全角の名前');
+  } finally {
+    clean(dir);
+  }
+  const names = Array.from({ length: 40 }, (_, i) => ({ name: `g${String(i).padStart(2, '0')}` }));
+  const picks = generationsToVerify(names);
+  assert.equal(picks.length, VERIFY_MAX_GENERATIONS);
+  assert.deepEqual([picks[0].name, picks.at(-2).name, picks.at(-1).name], ['g39', 'g11', 'g00'], '新しい方から上限-1 個と最古');
+  assert.deepEqual(generationsToVerify(names.slice(0, 3)).map((x) => x.name), ['g02', 'g01', 'g00']);
+  const { home, src, base } = setup();
+  try {
+    const files = new Map();
+    await runBackup({ ...base, fetchImpl: fakeRepo({ files }) });
+    const before = receiptOf(home);
+    const v = await verifyBackups({ ...base, scan: () => { throw new ScanTimeout(); }, fetchImpl: fakeRepo({ files }) });
+    assert.equal(v.failure, 'scan_timeout');
+    assert.deepEqual(receiptOf(home), before, '時間切れで受領票を変えない');
   } finally {
     clean(home, src);
   }

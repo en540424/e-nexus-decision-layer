@@ -225,8 +225,8 @@ export function verifyArchive({ bytes, passphrase, scan }) {
   try {
     // 名前は plan の時と同じ形（先頭の対象の id を除く）で見る
     violations = scan(files.map((f) => ({ rel: f.path.slice(f.path.indexOf('/') + 1), body: Buffer.from(f.data, 'base64') })));
-  } catch {
-    throw new Stop('policy_scan_failed'); // deny を読めないなど手元の問題。保存物の異常ではない
+  } catch (err) {
+    throw new Stop(err instanceof ScanTimeout ? 'scan_timeout' : 'policy_scan_failed'); // deny を読めない・時間切れなど手元の問題。保存物の異常ではない（受領票を変えない）
   }
   if (violations) throw new Stop('policy_violation');
   return { files: files.length, bytes: bytes.length };
@@ -251,6 +251,11 @@ async function verifyStored({ api, owner, repo, entry, passphrase, scan }) {
 
 /** 1 回に読み直す世代の上限（保持は最大 26＝新しい 14＋月ごと 12）。超えた時は新しい方から上限-1 個と最古 */
 export const VERIFY_MAX_GENERATIONS = 30;
+/** 読み直す世代（新しい順）。上限を超えたら新しい方から上限-1 個と最古。stored は名前の昇順 */
+export function generationsToVerify(stored, max = VERIFY_MAX_GENERATIONS) {
+  const newest = [...stored].reverse();
+  return newest.length <= max ? newest : [...newest.slice(0, max - 1), stored[0]];
+}
 /** 保存済みの全世代を検証する（前は最新と最古だけで、間の世代を見ていなかった）。受領票の history_verified_at を進める。失敗は history_failure に残す（毎日の回の成否は変えない） */
 export async function verifyBackups({ owner, repo, home, otherRepos, scan, read = readCredential, fetchImpl = globalThis.fetch, now = () => new Date() }) {
   const receipt = path.join(backupDir(home), 'last.json');
@@ -259,8 +264,7 @@ export async function verifyBackups({ owner, repo, home, otherRepos, scan, read 
     const { passphrase, api } = await checkGates({ owner, repo, home, otherRepos, read, fetchImpl, writeProbe: false });
     const stored = await storedArchives({ api, owner, repo });
     if (!stored.length) throw new Stop('nothing_stored');
-    const newest = [...stored].reverse();
-    const picks = newest.length <= VERIFY_MAX_GENERATIONS ? newest : [...newest.slice(0, VERIFY_MAX_GENERATIONS - 1), stored[0]];
+    const picks = generationsToVerify(stored);
     // 1 つの世代の異常で残りを見ずに止めない（方針の違反が、別の世代の壊れを隠さない）。手元の問題（通信・方針の検査が動かない）は止める
     const rows = [];
     const failures = {};

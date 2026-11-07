@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 120_000, scan_budget_ms: 90_000 });
+export const BACKUP_LIMITS = Object.freeze({ file_bytes: 8 * 1024 ** 2, total_bytes: 16 * 1024 ** 2, min_deny_lines: 5, grep_timeout_ms: 60_000, scan_budget_ms: 90_000 });
 /** 選別・検証の全体の時間切れ（1 行の長さの上限だけでは、ファイルの数で数分かかりうる）。超えたら止める＝送らない・違反なしと言わない */
 export class ScanTimeout extends Error {
   constructor() {
@@ -40,13 +40,15 @@ const hasLongLine = (text) => {
   return text.length - from > MAX_LINE_CHARS;
 };
 /** 見えない文字（書式の制御＝ゼロ幅・BOM・方向の制御、既定で無視される文字＝字形の選択子とその補助面・ハングルの埋め字など）。挟んで検出をすり抜けさせない */
-const INVISIBLE = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+const INVISIBLE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu; // U+2800 は点字の空白（見えない記号）
 const visible = (text) => text.replace(INVISIBLE, '');
 /** 元の形と見えない文字を除いた形の両方で見る（除くと語の境界の \b が消える形もある） */
 const forms = (text) => {
   const v = visible(text);
   return v === text ? [text] : [text, v];
 };
+/** 名前の形：元・見えない文字を除いた形・それを NFKC にした形（全角の ｔｏｋｅｎ.md も名前の規則にあてる） */
+const nameForms = (rel) => [...new Set([...forms(rel), visible(rel).normalize('NFKC')])];
 const GLOBAL_PATTERNS = () => SECRET_PATTERNS.map((p) => new RegExp(p.source, `${p.flags}g`));
 /**
  * Secret の形が text にあるか。head・tail は窓の切り口：\b で始まる形の窓の先頭の一致・\b で終わる形の窓の末尾の一致は、切り口が作った偽の語の境界なので数えない
@@ -172,7 +174,7 @@ export function deniedIndexes(rows, denyText, tmpRoot) {
       if (v !== text) writeFileSync(path.join(stage, `${i}.v`), v, { mode: 0o600 });
     });
     const hit = new Set(grep(['-rlai', '-E', '-f', deny, stage]).map((p) => Number.parseInt(path.basename(p), 10)));
-    const names = rows.flatMap((f, i) => forms(f.rel).map((n) => [i, n]));
+    const names = rows.flatMap((f, i) => nameForms(f.rel).map((n) => [i, n]));
     if (names.length) for (const l of grep(['-ain', '-E', '-f', deny], `${names.map(([, n]) => n).join('\n')}\n`)) hit.add(names[Number(l.split(':')[0]) - 1][0]); // 名前は改行を含まない（planBackup が落とす）
     return hit;
   } finally {
@@ -249,7 +251,7 @@ export function planBackup({ sources, denyText, tmpRoot, budgetMs = BACKUP_LIMIT
       tick();
       if (s.exclude?.test(rel)) { count('regenerable'); continue; }
       if (oldMonths.has(rel)) { count('old_records'); continue; }
-      if (!TEXT.test(rel) || forms(rel).some((n) => SKIP_NAME.test(n)) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
+      if (!TEXT.test(rel) || nameForms(rel).some((n) => SKIP_NAME.test(n)) || /[\r\n]/.test(rel)) { count('file_type'); continue; }
       if (mentionsTradingLab(rel)) { count('trading_lab'); continue; }
       let body;
       try {
@@ -293,7 +295,7 @@ export function policyViolations(rows, denyText, tmpRoot, { budgetMs = BACKUP_LI
   const clean = (r) => {
     tick();
     const text = r.body.toString('utf8');
-    return !forms(path.basename(r.rel)).some((n) => SKIP_NAME.test(n)) && !mentionsTradingLab(r.rel) && !hasSecretChunked(text, tick) && !mentionsTradingLab(text);
+    return !nameForms(path.basename(r.rel)).some((n) => SKIP_NAME.test(n)) && !mentionsTradingLab(r.rel) && !hasSecretChunked(text, tick) && !mentionsTradingLab(text);
   };
   const bad = rows.filter((r) => !clean(r)).length;
   const denied = deniedIndexes(rows, denyText, tmpRoot).size;
