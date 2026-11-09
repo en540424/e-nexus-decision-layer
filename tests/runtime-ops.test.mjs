@@ -3,7 +3,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BLIND_MS, JOB_PERIOD_HOURS, THRESHOLDS, WATCHDOG_LABEL, blindCheck, checkWebhook, evaluate, evaluateEvents, jobRunsCheck, notifyChannelItem, safeValue } from '../scripts/host-health.mjs';
@@ -11,7 +12,7 @@ import { monitorWebhookItem } from '../scripts/host-health-watchdog.mjs';
 import { collectGithub } from '../scripts/lib/github-guard.mjs';
 import { ruleOf } from '../scripts/lib/alert-policy.mjs';
 import { collectGuard, evaluateGuard, evaluateGuardEvents, plistArgs } from '../scripts/lib/runtime-guard.mjs';
-import { DONE_WHEN, OBSERVE_WINDOW_DAYS, acceptanceOf, humanRequired, parse, readRecords, renderOverview, renderTimeline, timelineOf, validate, whyOf } from '../scripts/runtime-ops.mjs';
+import { DONE_WHEN, OBSERVE_WINDOW_DAYS, acceptanceOf, humanRequired, parse, readRecords, taskHubCounts, renderOverview, renderTimeline, timelineOf, validate, whyOf } from '../scripts/runtime-ops.mjs';
 
 const NOW = Date.parse('2026-11-08T10:20:00.000Z');
 const at = (h) => new Date(NOW - h * 3_600_000).toISOString();
@@ -367,4 +368,50 @@ test('Human の一覧：台帳の done_when が記録で満たされた行は出
   assert.deepEqual(ids(null), ['rc', 'console', 'odd'], '読めなければ残す');
   assert.deepEqual(humanRequired({ ledger: [null, { id: 'x', title: 'x', done_when: 'toString' }], readCheck: { state: 'pass' }, now: NOW }).map((r) => r.id), ['x'], 'prototype の名前で消さない・壊れた行で止まらない');
   assert.deepEqual(Object.keys(DONE_WHEN), ['read_check_pass']);
+});
+
+test('Human の一覧：Task Hub の承認待ち・止まった task・PAUSE を件数だけ足す。保存先が無ければ何も足さず、作らない', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-ops-th-'));
+  try {
+    const dir = path.join(root, 'task-hub');
+    assert.equal(taskHubCounts(dir), null);
+    assert.equal(existsSync(dir), false, '読むだけ');
+    mkdirSync(path.join(dir, 'tasks'), { recursive: true });
+    const put = (n, state) => writeFileSync(path.join(dir, 'tasks', `t-20261109090000-0000000${n}.json`), JSON.stringify({ state, params: { secret: 'x' } }));
+    put(1, 'awaiting_approval'); put(2, 'awaiting_approval'); put(3, 'stopped'); put(4, 'succeeded');
+    writeFileSync(path.join(dir, 'tasks', 'evil.json'), JSON.stringify({ state: 'awaiting_approval' }));
+    writeFileSync(path.join(dir, 'PAUSE'), 'handler_failures');
+    const counts = taskHubCounts(dir);
+    assert.deepEqual(counts, { awaiting: 2, stopped: 1, paused: true, outbox_rejected: 0 });
+    mkdirSync(path.join(dir, 'outbox-rejected'));
+    writeFileSync(path.join(dir, 'outbox-rejected', `${'a'.repeat(64)}.json`), '{}');
+    assert.equal(taskHubCounts(dir).outbox_rejected, 1);
+    assert.ok(humanRequired({ taskHub: taskHubCounts(dir), now: 0, last: { items: [] } }).some((r) => r.id === 'task-hub:outbox-rejected'));
+    const rows = humanRequired({ taskHub: counts, now: Date.parse('2026-11-09T09:00:00Z'), last: { items: [] } });
+    assert.deepEqual(rows.filter((r) => r.source === 'task-hub').map((r) => [r.id, r.priority]), [['task-hub:paused', 1], ['task-hub:awaiting', 2], ['task-hub:stopped', 2]]);
+    assert.ok(rows.every((r) => !/secret/.test(r.title)), '中身は出さない');
+    assert.equal(humanRequired({ taskHub: null, now: 0, last: { items: [] } }).filter((r) => r.source === 'task-hub').length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Task Hub の件数：tasks/ の FIFO で止まらず・symlink をたどらない・巨大な file は読まない（開く時に確かめる）', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-ops-th-fifo-'));
+  try {
+    const dir = path.join(root, 'task-hub');
+    mkdirSync(path.join(dir, 'tasks'), { recursive: true });
+    const name = (n) => path.join(dir, 'tasks', `t-20261109090000-0000000${n}.json`);
+    writeFileSync(name(1), JSON.stringify({ state: 'awaiting_approval' }));
+    const outside = path.join(root, 'outside.json');
+    writeFileSync(outside, JSON.stringify({ state: 'awaiting_approval' }));
+    symlinkSync(outside, name(2));
+    writeFileSync(name(3), JSON.stringify({ state: 'stopped', pad: 'x'.repeat(300 * 1024) }));
+    const haveFifo = spawnSync('/usr/bin/mkfifo', [name(4)], { timeout: 10_000 }).status === 0;
+    const t0 = Date.now();
+    assert.deepEqual(taskHubCounts(dir), { awaiting: 1, stopped: 0, paused: false, outbox_rejected: 0 }, 'symlink・FIFO・巨大な file は数えない');
+    assert.ok(Date.now() - t0 < 5000, haveFifo ? 'FIFO で止まらない' : 'mkfifo が使えない環境');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

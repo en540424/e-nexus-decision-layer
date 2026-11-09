@@ -23,6 +23,7 @@ import { classify } from './lib/ops-classify.mjs';
 import { BRIEF_FILE, externalView, readBriefFile, renderReply } from './lib/runtime-brief.mjs';
 import { EVENT_IDS, GUARD_LIMITS, MONITOR_LABEL } from './lib/runtime-guard.mjs';
 import { STATUS_DIR } from './lib/runtime-status-summary.mjs';
+import { readJsonSafe } from './lib/task-hub/safe-read.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BACKUP_LABEL = 'com.e-nexus.runtime-backup';
@@ -184,7 +185,7 @@ export const DONE_WHEN = Object.freeze({
   read_check_pass: ({ readCheck }) => readCheck?.state === 'pass', // Hermes の実読み取りの検証が pass（inconclusive・fail は残す）
 });
 /** Human が要ることの一覧。台帳（手で足した判断待ち）＋今の異常のうち human のもの＋期限の近い token。優先度と期限の順。台帳の done_when が記録で満たされた行は出さない */
-export function humanRequired({ ledger = [], last = null, state = null, receipt = null, monitor = {}, readCheck = null, now }) {
+export function humanRequired({ ledger = [], last = null, state = null, receipt = null, monitor = {}, readCheck = null, taskHub = null, now }) {
   const doneByRecord = (x) => typeof x.done_when === 'string' && Object.hasOwn(DONE_WHEN, x.done_when) && DONE_WHEN[x.done_when]({ readCheck });
   const rows = (Array.isArray(ledger) ? ledger : []).filter((x) => x && !x.done && !doneByRecord(x)).map((x) => ({ id: String(x.id), priority: x.priority ?? 2, title: String(x.title), due: x.due ?? null, source: 'ledger' }));
   // 監視が動いていなければ「対応なし」と言えない
@@ -195,12 +196,30 @@ export function humanRequired({ ledger = [], last = null, state = null, receipt 
     const rule = classify(it.id);
     if (rule.class === 'human') rows.push({ id: `item:${it.id}`, priority: it.level === 'crit' ? 1 : 2, title: `${rule.cause} → ${rule.next}`, due: null, source: 'monitor' });
   }
+  // Task Hub（docs/task-hub.md）：承認待ち・止まった task・PAUSE。件数だけ（中身は task-hub.mjs human／show で見る）
+  if (taskHub?.paused) rows.push({ id: 'task-hub:paused', priority: 1, title: 'Task Hub が止まっている（PAUSE）→ node scripts/task-hub.mjs list で原因を確かめ、直してから PAUSE を消す', due: null, source: 'task-hub' });
+  if (taskHub?.awaiting) rows.push({ id: 'task-hub:awaiting', priority: 2, title: `Task Hub の承認待ち ${taskHub.awaiting} 件 → 端末で node scripts/task-hub.mjs human`, due: null, source: 'task-hub' });
+  if (taskHub?.outbox_rejected) rows.push({ id: 'task-hub:outbox-rejected', priority: 2, title: `Task Hub の結果のうち VPS に受け付けられず隔離した ${taskHub.outbox_rejected} 件（依頼元へ届いていない）→ <保存先>/outbox-rejected を確かめる`, due: null, source: 'task-hub' });
+  if (taskHub?.stopped) rows.push({ id: 'task-hub:stopped', priority: 2, title: `Task Hub の途中で止まった task ${taskHub.stopped} 件（再実行はしていない）→ node scripts/task-hub.mjs list --state stopped で確かめ、済んだら dismiss`, due: null, source: 'task-hub' });
   for (const [name, at] of [['GitHub の見張りの token', state?.github_token_expires_at], ['バックアップの token', receipt?.token_expires_at]]) {
     if (!at) continue;
     const days = Math.floor((Date.parse(at) - now) / DAY);
     if (days < TOKEN_NOTICE_DAYS) rows.push({ id: `token:${name}`, priority: days < GUARD_LIMITS.token_expiry_days ? 1 : 2, title: `${name}の期限まで ${days} 日 → 更新の手順は docs/runtime-monitoring.md §10`, due: at.slice(0, 10), source: 'expiry' });
   }
   return rows.map((r) => ({ ...r, overdue: Boolean(r.due) && Date.parse(r.due) + DAY < now })).sort((a, b) => a.priority - b.priority || String(a.due ?? '9').localeCompare(String(b.due ?? '9')));
+}
+
+/** Task Hub の保存先を読むだけで数える（無ければ null＝未使用。作らない・直さない） */
+export function taskHubCounts(dir) {
+  if (!existsSync(path.join(dir, 'tasks'))) return null;
+  const n = { awaiting: 0, stopped: 0, paused: existsSync(path.join(dir, 'PAUSE')) };
+  for (const f of readdirSync(path.join(dir, 'tasks')).filter((x) => /^t-\d{14}-[0-9a-f]{8}\.json$/.test(x))) {
+    const t = readJsonSafe(path.join(dir, 'tasks', f), 256 * 1024); // symlink・FIFO・巨大な file は読まない（FIFO で止まらない）
+    if (t?.state === 'awaiting_approval') n.awaiting += 1;
+    else if (t?.state === 'stopped') n.stopped += 1;
+  }
+  try { n.outbox_rejected = readdirSync(path.join(dir, 'outbox-rejected')).filter((x) => x.endsWith('.json')).length; } catch { n.outbox_rejected = 0; }
+  return n;
 }
 
 export function parse(argv) {
@@ -261,7 +280,7 @@ async function main(argv) {
   const readCheck = readCheckState(path.join(REPO, '..', READ_CHECK_DIR, 'result.json'));
   const humanRows = () => {
     const last = readRecords(stateDir, { since: since(1) }).at(-1);
-    return humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last, state, receipt, monitor: { disabled: existsSync(path.join(stateDir, 'DISABLED')), stale: !last }, readCheck, now });
+    return humanRequired({ ledger: readJson(a.ledger ?? path.join(REPO, '..', 'mac-runtime-state', 'human-required.json')), last, state, receipt, monitor: { disabled: existsSync(path.join(stateDir, 'DISABLED')), stale: !last }, readCheck, taskHub: taskHubCounts(path.join(REPO, '..', 'mac-runtime-state', 'task-hub')), now });
   };
   if (a.command === 'acceptance') {
     const rows = await accept();

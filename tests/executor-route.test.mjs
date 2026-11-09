@@ -56,7 +56,7 @@ test('executor-route rules：全 input（4×3×3×2^9）に rules が答える�
   const outcomeSchema = DT.schema.properties.outcome;
   const executors = new Set(loadRegistry('agents').filter((e) => e.type === 'executor').map((e) => e.id));
   const planned = new Set(loadRegistry('agents').filter((e) => e.type === 'executor' && e.status === 'planned').map((e) => e.id));
-  assert.ok(planned.has('hermes'), 'Hermes は planned（未導入）');
+  assert.ok(planned.has('hermes'), 'Hermes は planned（作業の経路は未接続）');
   let n = 0;
   for (const input of allInputs()) {
     n += 1;

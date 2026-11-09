@@ -92,7 +92,7 @@ test('送信の間の受信を失わない：途絶を送っている間に戻�
   assert.equal(settle({ ...sending, pending: 'down' }, { attempted: 'down', ok: true, now }).pending, null);
 });
 
-test('送れない時：RETRY_MS ごとにもう一度・送れるまで消えない・途絶を送れないうちに戻れば復旧へ置き換える', async () => {
+test('送れない時：RETRY_MS ごとにもう一度・送れるまで消えない・途絶を送れないうちに戻れば「途絶と復旧」の 1 通にする', async () => {
   let s = onBeat(initialState(T0), { now: T0, ts: T0 });
   const now = T0 + LIMIT_MS + 1;
   s = onTick(s, { now });
@@ -105,7 +105,26 @@ test('送れない時：RETRY_MS ごとにもう一度・送れるまで消え�
   s = await flush(s, { now: now + RETRY_MS, send: async () => { throw new Error('down'); } });
   assert.equal(s.pending, 'down');
   const back = onBeat(s, { now: now + 2 * RETRY_MS, ts: now + 2 * RETRY_MS });
-  assert.equal(back.pending, 'up', '途絶を知らせようとした回の後は復旧を送る');
+  assert.equal(back.pending, 'down_up', '送れていない途絶を復旧で上書きしない');
+  assert.match(TEXT[back.pending], /途絶えていた/);
+  const sent = await flush(back, { now: now + 3 * RETRY_MS, send: async () => true });
+  assert.equal(sent.pending, null, '1 通で終わる（途絶と復旧を別々に送らない）');
+});
+
+test('送れていない反復に復旧が重なっても反復を消さない・途絶を送っている間に戻れば残りは復旧だけ', () => {
+  const now = T0 + 10 * LIMIT_MS;
+  const unsentRepeat = { ...initialState(T0), down: false, alerted: false, owed_up: true, pending: 'repeat', quiet_until: now - 1 };
+  assert.equal(onTick(unsentRepeat, { now }).pending, 'repeat_up');
+  const quiet = { ...initialState(T0), down: true, alerted: true, pending: 'repeat', quiet_until: now + LIMIT_MS };
+  const backQuiet = onBeat(quiet, { now, ts: now });
+  assert.equal(backQuiet.pending, 'repeat', '静かな間は反復を残し、復旧は持ち越す');
+  assert.equal(backQuiet.owed_up, true);
+  const racing = { ...initialState(T0), pending: 'down_up' };
+  assert.equal(settle(racing, { attempted: 'down', ok: true, now }).pending, 'up', '途絶は届いたので残りは復旧');
+  assert.equal(settle({ ...racing, pending: 'repeat_up' }, { attempted: 'repeat', ok: true, now }).pending, 'up');
+  assert.equal(settle(racing, { attempted: 'down', ok: false, now }).pending, 'down_up');
+  const saved = { ...initialState(T0), pending: 'down_up' };
+  assert.equal(onBeat(saved, { now, ts: now }).pending, 'down_up');
 });
 
 test('VPS の再起動：起動から 60 分は知らせない。一度も受信していない間も知らせない', async () => {

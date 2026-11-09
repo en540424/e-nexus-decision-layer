@@ -9,6 +9,7 @@
  * 通知：LIMIT_MS 途絶えたら 1 回・戻ったら 1 回・正常時はなし。LIMIT_MS は「60 分以上」を満たしたうえで、1 回の抜け（60 分）と実行時間の揺れでは鳴らない長さ。
  * 24 時間に 2 回途絶えたら「反復」を 1 通送り、24 時間は静かにする。静かな間に始まった途絶も、明けた時に続いていれば知らせる。反復の後に落ち着けば復旧を 1 回。
  * 原因は断定しない。送れなければ RETRY_MS ごとにもう一度。送れない時と保存できない時はコードだけ journal へ出す。
+ * 途絶（反復）を送れないうちに戻った時は、復旧の 1 通に置き換えず「途絶えていて戻った」の 1 通にする（2026-11-09：前は復旧だけが届き、途絶があったことが消えた）。
  * 一度も受信していない間は知らせない。VPS が止まっていた時は起動から LIMIT_MS 待つ（止まっていた間を Mac の途絶と言わない）。再起動が続くだけなら待ち直さない。
  * 限界：VPS 自身・Cloudflare・Discord が止まると知らせられない。
  */
@@ -31,8 +32,16 @@ export const TEXT = Object.freeze({
   down: `${HEADER}\n【重大】Mac mini：生存信号が 60 分以上届いていない（電源・回線・監視・経路の停止のどれかは不明）→ 確認`,
   repeat: `${HEADER}\n【反復】Mac mini：生存信号の途絶を繰り返している（原因は不明）→ 確認。落ち着くまで通知を控える`,
   up: `${HEADER}\n【復旧】Mac mini：生存信号が戻った → 対応不要`,
+  down_up: `${HEADER}\n【途絶と復旧】Mac mini：生存信号が 60 分以上途絶えていた（通知を送れないうちに戻った・原因は不明）→ 確認`,
+  repeat_up: `${HEADER}\n【反復と復旧】Mac mini：生存信号の途絶を繰り返していた（通知を送れないうちに落ち着いた・原因は不明）→ 確認`,
   test: `${HEADER}\n配送試験：異常ではありません → 対応不要`,
 });
+
+/** 送れていない途絶の予約に復旧が重なった時の置き換え先。送れていない予約が無ければ復旧だけ */
+const UNSENT_THEN_UP = Object.freeze({ down: 'down_up', repeat: 'repeat_up', down_up: 'down_up', repeat_up: 'repeat_up' });
+const upAfter = (pending) => UNSENT_THEN_UP[pending] ?? 'up';
+/** 送れた予約が、送っている間に「途絶と復旧」へ変わっていたら、残りは復旧だけ */
+const SENT_PART = Object.freeze({ down: { down_up: 'up' }, repeat: { repeat_up: 'up' } });
 
 export const initialState = (now) => ({ started_at: now, alive_at: now, last_seen: null, last_ts: 0, down: false, alerted: false, owed_up: false, hits: [], quiet_until: 0, pending: null, next_try: 0 });
 
@@ -52,7 +61,7 @@ export function onBeat(s, { now, ts }) {
     next.down = false;
     if (s.alerted) {
       next.alerted = false;
-      if (now >= s.quiet_until) next.pending = 'up';
+      if (now >= s.quiet_until) next.pending = upAfter(s.pending);
       else next.owed_up = true;
     }
   }
@@ -70,13 +79,17 @@ export function onTick(s, { now }) {
     const repeat = next.hits.length >= FLAP.count;
     return { ...next, alerted: true, owed_up: false, pending: repeat ? 'repeat' : 'down', quiet_until: repeat ? now + FLAP.window_ms : next.quiet_until, next_try: 0 };
   }
-  if (!next.down && next.owed_up) return { ...next, owed_up: false, pending: 'up', next_try: 0 }; // 反復の後に落ち着いた
+  if (!next.down && next.owed_up) return { ...next, owed_up: false, pending: upAfter(next.pending), next_try: 0 }; // 反復の後に落ち着いた
   return next;
 }
 
 /** 予約の送信の結果を今の state へ当てる。送っている間に別の予約へ変わっていれば消さない */
 export function settle(s, { attempted, ok, now }) {
-  if (ok) return s.pending === attempted ? { ...s, pending: null, next_try: 0 } : s;
+  if (ok) {
+    if (s.pending === attempted) return { ...s, pending: null, next_try: 0 };
+    const rest = SENT_PART[attempted]?.[s.pending];
+    return rest ? { ...s, pending: rest, next_try: 0 } : s;
+  }
   return { ...s, next_try: now + RETRY_MS };
 }
 
@@ -118,7 +131,7 @@ function load(file, now) {
     owed_up: saved.owed_up === true,
     hits: Array.isArray(saved.hits) ? saved.hits.filter((h) => Number.isSafeInteger(h)) : [],
     quiet_until: Math.min(num(saved.quiet_until, 0), now + FLAP.window_ms),
-    pending: Object.hasOwn(TEXT, saved.pending ?? '') ? saved.pending : null,
+    pending: Object.hasOwn(TEXT, saved.pending ?? '') && saved.pending !== 'test' ? saved.pending : null, // 配送試験は予約にならない
     next_try: Math.min(num(saved.next_try, 0), now + RETRY_MS),
   };
 }

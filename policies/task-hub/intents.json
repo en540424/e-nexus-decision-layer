@@ -1,0 +1,94 @@
+{
+  "$comment": "Task Hub の intent 台帳（2026-11-09・MA-24）。依頼（intent）ごとの class・handler・flags・params の形。class：auto＝ローカルで読む・記録するだけの handler が無人で走る／ai_check＝Decision Layer（executor-route）が candidate と読んだ時だけ無人で走る（それ以外は Human 承認待ち）／human_required＝Human の承認が要る（handler が null のものは承認しても走らせない＝blocked/no_handler）／forbidden＝取り込むが必ず blocked（承認もできない）。台帳に無い intent は human_required・handler null。flags は executor-route の input に写す構造情報（auto／ai_check は全部 false でなければ読み込めない）。execution_mode は interactive：scheduled／long-running は executor-route が常に human を返す（常駐の実行主体 Hermes が未導入のため）ので、1 回の短い同期処理で終わるローカルの記録処理は interactive と申告する。environment は dev：作業が影響するのはこの Mac の手元の記録だけで、deploy 済みの環境（staging／production）には触れない。最大の params の大きさ（max_params_bytes）は既定 8192、digest 系だけ 14000（wire の body 上限 16KiB に収める）。",
+  "forbidden_prefixes": [
+    "trading.", "system.", "shell.", "secret.", "permission.", "gate.", "payment.", "account.",
+    "hermes.toolset.", "vault.write", "deploy.", "credential.", "keychain.", "launchd.", "ssh.", "sudo."
+  ],
+  "intents": {
+    "status.query": {
+      "class": "auto", "handler": "status.query", "timeout_ms": 10000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "note": "runtime-brief を読み、全体の水準・要確認の件数・生成時刻だけを返す。値・項目名は返さない"
+    },
+    "task.status": {
+      "class": "auto", "handler": "task.status", "timeout_ms": 10000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["task_ref"], "additionalProperties": false, "properties": { "task_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" } } },
+      "note": "同じ依頼元・同じ business の依頼の状態だけ。それ以外は not_found（存在を教えない）"
+    },
+    "mail.digest.ingest": {
+      "class": "auto", "handler": "mail.digest.ingest", "timeout_ms": 15000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": {
+        "type": "object", "required": ["items"], "additionalProperties": false,
+        "properties": { "items": { "type": "array", "maxItems": 200, "items": {
+          "type": "object", "required": ["id", "received_at", "account", "category", "from_label", "subject"], "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+            "received_at": { "type": "string", "format": "iso" },
+            "account": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$" },
+            "category": { "type": "string", "enum": ["important", "reply_needed", "info", "spam"] },
+            "from_label": { "type": "string", "maxLength": 60 },
+            "subject": { "type": "string", "maxLength": 120 },
+            "due": { "type": "string", "format": "iso" }
+          } } } }
+      },
+      "note": "Grok が作ったメールの要約を business ごとの記録に残すだけ。メールの操作は一切しない（id で重複を除く）"
+    },
+    "calendar.digest.ingest": {
+      "class": "auto", "handler": "calendar.digest.ingest", "timeout_ms": 15000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": {
+        "type": "object", "required": ["events"], "additionalProperties": false,
+        "properties": { "events": { "type": "array", "maxItems": 300, "items": {
+          "type": "object", "required": ["id", "start", "end", "title"], "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+            "start": { "type": "string", "format": "iso" },
+            "end": { "type": "string", "format": "iso" },
+            "title": { "type": "string", "maxLength": 120 },
+            "case_ref": { "type": "string", "maxLength": 64 },
+            "all_day": { "type": "boolean" }
+          } } } }
+      },
+      "note": "予定の要約を記録し、重なり・重複の疑いを検出して返す。予定の作成・変更・削除はしない"
+    },
+    "report.morning": {
+      "class": "auto", "handler": "report.morning", "timeout_ms": 10000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "note": "その business 自身の記録だけから作る決まった文面（3000 字まで）。他の business の記録は読まない"
+    },
+    "note.record": {
+      "class": "ai_check", "handler": "note.record", "timeout_ms": 10000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["text"], "additionalProperties": false, "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 500 } } },
+      "note": "短いメモ（500 字まで）を business のローカルのメモに追記する"
+    },
+    "hermes.task": {
+      "class": "human_required", "handler": "hermes.task", "timeout_ms": 10000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 } } },
+      "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
+    },
+    "freeform.request": {
+      "class": "human_required", "handler": null,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["text"], "additionalProperties": false, "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 1000 } } },
+      "note": "自然文だけの依頼。追跡のために受けるが、ここでは実行しない"
+    },
+    "mail.reply.draft": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "返信の下書き。実行する handler は無い" },
+    "mail.send": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": true }, "params_schema": null, "note": "メール送信は実装しない" },
+    "mail.label": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "メールのラベル変更は実装しない" },
+    "mail.move": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "メールの移動は実装しない" },
+    "mail.mark-read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "既読化は実装しない" },
+    "mail.delete": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": true }, "params_schema": null, "note": "メールの削除は実装しない" },
+    "calendar.event.create": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": false }, "params_schema": null, "note": "予定の作成は実装しない" },
+    "calendar.event.update": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": false }, "params_schema": null, "note": "予定の変更は実装しない" },
+    "calendar.event.delete": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": true }, "params_schema": null, "note": "予定の削除は実装しない" },
+    "docomo.rule.propose": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "ルール案の提案。実行する handler は無い" },
+    "dropbox.read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": true, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "外部ストレージの読み取りは接続していない" },
+    "github.read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": true, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "GitHub の読み取りは接続していない" }
+  }
+}

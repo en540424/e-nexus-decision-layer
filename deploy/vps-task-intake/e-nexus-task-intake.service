@@ -1,0 +1,33 @@
+[Unit]
+Description=E-NEXUS Task Hub intake (MCP in, Mac pulls out)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edl-task-intake
+EnvironmentFile=/etc/e-nexus/task-intake.env
+ExecStart=/usr/bin/node /opt/e-nexus-task-intake/deploy/vps-task-intake/intake.mjs
+Restart=on-failure
+RestartSec=30
+StateDirectory=e-nexus-task-intake
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=256M
+CPUQuota=20%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
