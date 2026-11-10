@@ -1,0 +1,6 @@
+{
+  "description": "e-nexus task intake: only the receiver's routes (2026-11-10). Replace <HOSTNAME>. Human creates it in the dashboard or with the API.",
+  "action": "block",
+  "enabled": true,
+  "expression": "(http.host eq \"<HOSTNAME>\") and not ((http.request.method eq \"POST\" and http.request.uri.path in {\"/mcp\" \"/ack\" \"/status\"}) or (http.request.method eq \"GET\" and http.request.uri.path in {\"/pull\" \"/mcp\"}))"
+}

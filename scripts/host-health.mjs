@@ -775,7 +775,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -801,6 +801,8 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS || Date.parse(at) - Date.parse(prev?.resumed_at) < GAP_MS }));
     if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed', 'boundary_blocked'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     if (heartbeat) { const h = heartbeatItem(prev?.heartbeat, at); if (h) items.push(h); }
+    // Task Hub の監査の鎖（--task-hub の時だけ・読むだけ。2026-11-10。docs/task-hub.md §13）。読み込みの失敗で 1 回分の監視を失敗にしない
+    if (taskHub) items.push(await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubAuditItem(taskHub)).catch(() => ({ id: 'task_hub_audit', level: 'warn', value: 'check_failed', kind: 'state' })));
     // 判定の前に確かめる（今回の結果で知らせる）
     const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
       ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
@@ -895,7 +897,7 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
 
 export function parseArgs(argv) {
   const a = { dataDirs: [], json: false, guard: true, heartbeat: false, report: false, webhookTest: false, quarterlyPreview: false };
-  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential', '--period': 'period' };
+  const map = { '--state-dir': 'stateDir', '--hermes-user': 'hermesUser', '--webhook': 'webhook', '--webhook-format': 'webhookFormat', '--days': 'days', '--github-owner': 'githubOwner', '--github-credential': 'githubCredential', '--period': 'period', '--task-hub': 'taskHub' };
   for (let i = 0; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--json') { a.json = true; continue; }
@@ -929,6 +931,7 @@ export function validateArgs(a) {
   if (a.githubCredential !== undefined && !WEBHOOK.test(a.githubCredential)) errors.push('--github-credential must be credential:E-NEXUS/edl/<name>');
   if ((a.githubOwner === undefined) !== (a.githubCredential === undefined)) errors.push('--github-owner と --github-credential は両方必要（無人 job は gh のログインを使わない）');
   if (a.period !== undefined && !isPeriod(a.period)) errors.push('--period must look like 2026Q4');
+  if (a.taskHub !== undefined && (!path.posix.isAbsolute(a.taskHub) || TRADING_LAB_PATH.test(a.taskHub))) errors.push('--task-hub must be an absolute path outside Trading Lab');
   return errors;
 }
 
@@ -992,6 +995,7 @@ async function main(argv) {
     webhookFormat,
     run: makeRunner(),
     uid: process.getuid(),
+    taskHub: a.taskHub ?? null,
   });
   clearTimeout(deadline);
   if (a.json && r.items) console.log(JSON.stringify({ component: 'edl-host-health', ...r }, null, 2));

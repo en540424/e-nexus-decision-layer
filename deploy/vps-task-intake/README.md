@@ -72,10 +72,18 @@ sudo rm -rf /opt/e-nexus-task-intake /var/lib/e-nexus-task-intake && sudo userde
 
 VPS の既存の契約の範囲（追加なし）。AI の呼び出しなし。メモリ上限 256 MB・保存は数 MB。
 
-## Bot 側の確認（未検証の前提）
+## Bot 側の確認（公式の docs で分かったこと・2026-11-10）
 
-- Grok Bot が MCP の接続に `Authorization: Bearer` を付けられるか（独自 header／API key 欄の仕様は未確認）。付けられない場合は、Bot が付けられる形（独自 header 名・URL に鍵を含める等）に合わせる設計の見直しが要る（URL に鍵を含める形は log に残りやすいので推奨しない）
-- Streamable HTTP の POST（JSON 応答）だけで動くか。この受け口は SSE（GET /mcp）を持たず 405 を返す。SSE 必須の client は繋がらない
+docs.x.ai/grok-bot（computer-and-apps・approvals-security-and-privacy・security）を読んだ結果：
+
+| 項目 | 公式の docs | この受け口 |
+|---|---|---|
+| 認証 | Remote HTTPS の MCP は「Server URL と、任意の **HTTP headers**、OAuth の Client ID」 | `Authorization: Bearer <鍵>` を HTTP headers に入れる想定。**その形がそのまま通るかは記載なし＝導入の時に検収で確かめる**。OAuth は持たない |
+| 通信の方式 | 記載なし（Streamable HTTP か SSE か） | POST（JSON 応答）だけ。GET /mcp（SSE）は 405（WAF でも GET /mcp は通して 405 を返させる）。SSE 必須なら繋がらない＝導入の時に確かめる |
+| 承認 | Auto Review が行動の前に確かめる・「Ask first」の規則に合う行動は必ず承認カード。private network の MCP は追加の時に承認 | 公開の hostname なので private network の扱いではない。Bot の Ask first に submit_task を足すのを推奨 |
+| 送信元 | 共有の固定の egress IP・範囲は公開されず account team から。remote MCP へは Bot の基盤側の server から繋ぐ | IP の allowlist は使えない。Bearer・path・method・rate で絞る（`docs/vps-maintenance.md`） |
+
+- 付けられない場合は、Bot が付けられる形（独自 header 名など）に合わせる見直しが要る（URL に鍵を含める形は log に残りやすいので推奨しない）
 - initialize の protocolVersion は `2025-11-25`・`2025-06-18`・`2025-03-26`・`2024-11-05` を受ける
 - 結果の `result` はそのまま Bot に返る。Mac が書く内容に秘密を入れない
 

@@ -12,6 +12,7 @@
  *   node scripts/task-hub.mjs run [--max N]                      queue を 1 回回す
  *   node scripts/task-hub.mjs verify-audit                       監査 log の鎖を検証
  *   node scripts/task-hub.mjs human                              承認待ちを 1 件 1 行（承認の前に show で全文を確認する）
+ *   node scripts/task-hub.mjs collect-hermes                     Hermes の結果（config の hermes_outbox）を business の記録へ取り込む（休眠：フォルダが無ければ何もしない）
  *   node scripts/task-hub.mjs prune                              古い nonce・配達済みの outbox・保持を過ぎた記録・途中で止まった tmp を消す
  *        共通：[--store <dir>]（既定 ~/e-nexus-runtime/mac-runtime-state/task-hub）[--config <file>]（既定 <store>/config.json）
  *
@@ -24,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { approve, confirmCodeOf, dismiss, reject } from './lib/task-hub/approval.mjs';
 import { keepEvent, keepMail } from './lib/task-hub/digest.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
+import { collectHermesResults } from './lib/task-hub/hermes-results.mjs';
 import { ingestInbox, submitLocal } from './lib/task-hub/intake.mjs';
 import { createPolicy, loadCatalog, loadLocalConfig } from './lib/task-hub/policy.mjs';
 import { readSmallFile } from './lib/task-hub/safe-read.mjs';
@@ -34,7 +36,7 @@ import { ID_RE, STATES } from './lib/task-hub/wire.mjs';
 export const DEFAULT_STORE = path.join(homedir(), 'e-nexus-runtime', 'mac-runtime-state', 'task-hub');
 const KEYCHAIN_SERVICE_PREFIX = 'E-NEXUS/edl/task-intake-';
 const KEYCHAIN_ACCOUNT = 'e-nexus'; // task-intake-sync.mjs・deploy/macos/keychain-edl.sh と同じ account
-const COMMANDS = ['intake', 'submit', 'list', 'show', 'approve', 'reject', 'dismiss', 'run', 'verify-audit', 'human', 'prune'];
+const COMMANDS = ['intake', 'submit', 'list', 'show', 'approve', 'reject', 'dismiss', 'run', 'verify-audit', 'human', 'prune', 'collect-hermes'];
 
 const expand = (p) => (p === '~' ? homedir() : p.startsWith('~/') ? path.join(homedir(), p.slice(2)) : p);
 
@@ -202,6 +204,19 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
       if (rows.length) out('※ 承認の前に必ず show <task_id> で params の全文を読む（approve は記録の前にもう一度全文を表示する）');
       else out('承認待ちはありません');
       return 0;
+    }
+    case 'collect-hermes': {
+      let cfg;
+      try { cfg = loadLocalConfig(config); } catch (e) { err(`config を読めない（${e.message}）`); return 1; }
+      let release;
+      try { release = store.acquireRunLock(now); } catch (e) { if (e?.code === 'lock_conflict') { err('lock の競合（lock_conflict）'); return 1; } throw e; }
+      if (!release) { out('取り込まない（別の intake か run の最中。次の回に回す）'); return 0; }
+      let r;
+      try { r = collectHermesResults({ store, config: cfg, now }); } finally { release(); }
+      if (r.code === 'not_connected') { out('Hermes の結果の場所（hermes_outbox）は未接続（休眠）'); return 0; }
+      for (const x of r.rejected) out(`NG  ${x.file} ${x.code}`);
+      out(`Hermes の結果：記録 ${r.recorded} 件・取り込み済み ${r.already} 件・拒否 ${r.rejected.length} 件${r.overflow ? `・上限で次の回へ ${r.overflow} 件` : ''}`);
+      return r.rejected.length ? 1 : 0;
     }
     case 'prune': {
       let off = 0;

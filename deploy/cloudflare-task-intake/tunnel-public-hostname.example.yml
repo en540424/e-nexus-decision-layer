@@ -1,0 +1,8 @@
+# 既存の Tunnel に「足す 1 行」だけの例（2026-11-10）。既存の ingress の行は変えない・順序も変えない。
+# ダッシュボードで管理している Tunnel（remotely-managed）なら、この file は使わず Public Hostname の画面で同じ内容を足す。
+# 最後の catch-all（http_status:404）より前に置く。
+ingress:
+  - hostname: <HOSTNAME>            # 既存の hostname と別の名前（n8n・電話 AI・heartbeat と共有しない）
+    service: http://127.0.0.1:8796  # task intake（loopback だけで待つ。deploy/vps-task-intake/README.md）
+  # ……既存の行はこの下にそのまま……
+  - service: http_status:404

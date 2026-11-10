@@ -382,7 +382,7 @@ test('Human の一覧：Task Hub の承認待ち・止まった task・PAUSE を
     writeFileSync(path.join(dir, 'tasks', 'evil.json'), JSON.stringify({ state: 'awaiting_approval' }));
     writeFileSync(path.join(dir, 'PAUSE'), 'handler_failures');
     const counts = taskHubCounts(dir);
-    assert.deepEqual(counts, { awaiting: 2, stopped: 1, paused: true, outbox_rejected: 0 });
+    assert.deepEqual(counts, { awaiting: 2, stopped: 1, paused: true, outbox_rejected: 0, audit: null });
     mkdirSync(path.join(dir, 'outbox-rejected'));
     writeFileSync(path.join(dir, 'outbox-rejected', `${'a'.repeat(64)}.json`), '{}');
     assert.equal(taskHubCounts(dir).outbox_rejected, 1);
@@ -409,7 +409,7 @@ test('Task Hub の件数：tasks/ の FIFO で止まらず・symlink をたど�
     writeFileSync(name(3), JSON.stringify({ state: 'stopped', pad: 'x'.repeat(300 * 1024) }));
     const haveFifo = spawnSync('/usr/bin/mkfifo', [name(4)], { timeout: 10_000 }).status === 0;
     const t0 = Date.now();
-    assert.deepEqual(taskHubCounts(dir), { awaiting: 1, stopped: 0, paused: false, outbox_rejected: 0 }, 'symlink・FIFO・巨大な file は数えない');
+    assert.deepEqual(taskHubCounts(dir), { awaiting: 1, stopped: 0, paused: false, outbox_rejected: 0, audit: null }, 'symlink・FIFO・巨大な file は数えない');
     assert.ok(Date.now() - t0 < 5000, haveFifo ? 'FIFO で止まらない' : 'mkfifo が使えない環境');
   } finally {
     rmSync(root, { recursive: true, force: true });

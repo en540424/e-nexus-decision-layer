@@ -24,11 +24,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const SHARED = path.join(os.homedir(), '.claude', 'hooks', 'guard-devlog-before-commit.js');
+// 本体の置き場（2026-11-10 relay mode 候補）：skill-sync の PC は ~/.claude/hooks、
+// Claude Code の user scope に E-NEXUS を置かない machine（Mac mini）は ~/.enexus/hooks。
+// relay の machine の本体を先に（~/.claude に古い本体が置かれても relay mode が黙って外れないように。Windows には ~/.enexus/hooks が無い）
+const SHARED_CANDIDATES = [
+  path.join(os.homedir(), '.enexus', 'hooks', 'guard-devlog-before-commit.js'),
+  path.join(os.homedir(), '.claude', 'hooks', 'guard-devlog-before-commit.js')
+];
+const SHARED = SHARED_CANDIDATES.find((p) => fs.existsSync(p)) || SHARED_CANDIDATES[1];
 
-// fallback専用の粗い判定（本体側の GIT_COMMIT_RE と役割が違う点に注意：
-// ここは「本体が無いときに止めるべきか」だけを決める）。
-const LOOKS_LIKE_COMMIT = /(^|[;&|]+)\s*git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+|--?\S+\s+)*commit\b/;
+// fallback専用の粗い判定（本体側の判定と役割が違う点に注意：
+// ここは「本体が無いときに止めるべきか」だけを決める）。本体が無い時は広めに止める
+// （env git commit・/usr/bin/git commit・bash -c "git commit" 等も。止めすぎは安全側）。
+const LOOKS_LIKE_COMMIT = /(^|[^A-Za-z0-9_.-])git([^A-Za-z0-9_-]|$)[\s\S]*\bcommit\b|git-commit|\bcommit-tree\b/;
 
 function emit(decision, reason) {
   process.stdout.write(JSON.stringify({
@@ -75,7 +83,8 @@ if (!input) {
       emit('deny',
         '作業ログ確認Hook：共通Hook本体が見つかりません（' + SHARED + '）。' +
         'EN-Knowledge-Vaultで次を実行して共通基盤を同期してください：' +
-        'pwsh -File AI-Workflow-System/01_harness/skill-sync.ps1 -Group AppRepoClaude -Apply');
+        'pwsh -File AI-Workflow-System/01_harness/skill-sync.ps1 -Group AppRepoClaude -Apply' +
+        '（Vault を書けない machine は relay mode の本体を ~/.enexus/hooks/ へ。作業ログ自動運用_正本§19）');
     } else {
       process.exitCode = 0;
     }

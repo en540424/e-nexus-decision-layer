@@ -275,7 +275,9 @@ test('store：nonce は 1 回だけ・封の最大の古さ（8 日）＋1 日�
   const env = makeEnv();
   const n = 'a'.repeat(32);
   assert.equal(env.store.claimNonce(n, NOW), true);
-  assert.equal(env.store.claimNonce(n, NOW), false);
+  assert.throws(() => env.store.claimNonce(n, NOW), { code: 'nonce_busy' }, '終わっていない印は replay にしない（取り込みの最中かもしれない）');
+  assert.equal(env.store.finishNonce(n, NOW), true);
+  assert.equal(env.store.claimNonce(n, NOW), false, '終わった印は replay');
   assert.throws(() => env.store.claimNonce('../../etc', NOW), StoreError);
   assert.equal(env.store.pruneNonces(Date.now() + 8.5 * 86_400_000), 0, '封が受け付けられる間（8 日）は残る');
   assert.equal(env.store.pruneNonces(Date.now() + 10 * 86_400_000), 1);
@@ -687,14 +689,14 @@ test('handler hermes.task：inbox のフォルダが無い間は休眠（作ら�
   assert.equal(r.delivered, true);
   const files = readdirSync(inbox);
   assert.equal(files.length, 1);
-  assert.equal(statSync(path.join(inbox, files[0])).mode & 0o777, 0o600);
+  assert.equal(statSync(path.join(inbox, files[0])).mode & 0o777, 0o640, 'フォルダの group（hermes）だけが読める');
   assert.equal(JSON.parse(readFileSync(path.join(inbox, files[0]), 'utf8')).title, 'Title');
   cleanup(env);
 });
 
 test('構造（ソースの文字列の検査）：列挙した module の本文に child_process・network の module・fetch・eval・動的 import の記述が無い（import 先の module や実行時の振る舞いまでは保証しない）', () => {
   const dir = new URL('../scripts/lib/task-hub/', import.meta.url);
-  for (const f of ['runner.mjs', 'handlers.mjs', 'digest.mjs', 'store.mjs', 'intake.mjs', 'policy.mjs', 'approval.mjs', 'envelope.mjs', 'safe-read.mjs']) {
+  for (const f of ['runner.mjs', 'handlers.mjs', 'digest.mjs', 'store.mjs', 'intake.mjs', 'policy.mjs', 'approval.mjs', 'envelope.mjs', 'safe-read.mjs', 'hermes-results.mjs']) {
     const src = readSrc(new URL(f, dir), 'utf8');
     assert.ok(!/child_process|node:net|node:http|node:https|node:dgram|node:dns|node:tls|\bfetch\(|XMLHttpRequest|WebSocket|\beval\(|new Function\(|import\(/.test(src), f);
   }
@@ -1105,4 +1107,71 @@ test('runner：実行の途中で run.lock を奪われたら、残りの task �
   } finally {
     rmSync(env.root, { recursive: true, force: true });
   }
+});
+
+test('取り込み：前の回が task を書き終える前に強制終了しても（印だけ「途中」で残る）、依頼は replay で捨てられず次の回で取り込まれる（2026-11-10）', async () => {
+  const env = makeEnv();
+  const rec = seal(envelope({ intent: 'mail.send', params: { to: 'x' } }));
+  dropInbox(env.inbox, 'a.json', rec);
+  // 強制終了の再現：印を取り、監査の created だけ書いて止まった（task の file も done の印も無い）
+  assert.equal(env.store.claimNonce(rec.nonce, NOW), true);
+  env.store.audit({ task_id: 't-20261109090000-deadbeef', event: 'created', state: 'awaiting_approval' }, NOW);
+  // 60 秒以内の次の回：取り込みの最中かもしれないので触らず inbox に残す
+  const r1 = await ingestInbox(env.inbox, { keyFor, now: NOW + 30_000, store: env.store, policy: env.policy });
+  assert.deepEqual(r1.map((x) => x.code), ['inbox_error']);
+  assert.ok(existsSync(path.join(env.inbox, 'a.json')));
+  // それより後の回：印を引き継いで取り込む
+  const r2 = await ingestInbox(env.inbox, { keyFor, now: NOW + 61_000, store: env.store, policy: env.policy });
+  assert.deepEqual([r2[0].ok, r2[0].state], [true, 'awaiting_approval']);
+  assert.equal(env.store.listTasks().length, 1);
+  assert.equal(readdirSync(path.join(env.store.dir, 'outbox')).length, 1, '依頼元への知らせ');
+  assert.equal(env.store.verifyAudit().ok, true);
+  // 終わった後の同じ封は replay
+  dropInbox(env.inbox, 'b.json', rec);
+  assert.equal((await ingestInbox(env.inbox, { keyFor, now: NOW + 200_000, store: env.store, policy: env.policy }))[0].code, 'replay');
+  // 拒否が決まった封も終わった印になる（同じ封の再送は replay）
+  const bad = seal('{not json');
+  dropInbox(env.inbox, 'c.json', bad);
+  assert.equal((await ingestInbox(env.inbox, { keyFor, now: NOW + 300_000, store: env.store, policy: env.policy }))[0].ok, false);
+  dropInbox(env.inbox, 'd.json', bad);
+  assert.equal((await ingestInbox(env.inbox, { keyFor, now: NOW + 400_000, store: env.store, policy: env.policy }))[0].code, 'replay');
+  cleanup(env);
+});
+
+test('nonce：1 行だけの古い形の印は終わった印（replay）・印を終わらせられなければ file は inbox に残り監査に残す（2026-11-10 監査）', async () => {
+  const env = makeEnv();
+  const rec = seal(envelope());
+  writeFileSync(path.join(env.store.dir, 'nonces', rec.nonce), String(NOW - 120_000), { mode: 0o600 }); // 変更前の形
+  dropInbox(env.inbox, 'a.json', rec);
+  assert.equal((await ingestInbox(env.inbox, { keyFor, now: NOW, store: env.store, policy: env.policy }))[0].code, 'replay');
+  const rec2 = seal(envelope());
+  dropInbox(env.inbox, 'b.json', rec2);
+  const orig = env.store.finishNonce.bind(env.store);
+  env.store.finishNonce = () => false;
+  const r = await ingestInbox(env.inbox, { keyFor, now: NOW, store: env.store, policy: env.policy });
+  assert.deepEqual(r.map((x) => x.code), ['inbox_error']);
+  assert.ok(existsSync(path.join(env.inbox, 'b.json')), 'file は inbox に残る');
+  assert.ok(env.store._auditLines().some((l) => JSON.parse(l).code === 'nonce_finish_failed'));
+  env.store.finishNonce = orig;
+  // 60 秒の後の回：引き継いで、task は 1 件のまま・今度は終わる
+  const r2 = await ingestInbox(env.inbox, { keyFor, now: NOW + 61_000, store: env.store, policy: env.policy });
+  assert.deepEqual([r2[0].ok, r2[0].duplicate], [true, true]);
+  assert.equal(env.store.listTasks().length, 1);
+  dropInbox(env.inbox, 'c.json', rec2);
+  assert.equal((await ingestInbox(env.inbox, { keyFor, now: NOW + 62_000, store: env.store, policy: env.policy }))[0].code, 'replay');
+  cleanup(env);
+});
+
+test('nonce：読めない・大きすぎる印は replay の守りを開けず nonce_unreadable（file は inbox に残る）・空の印も 60 秒は待つ（2026-11-10 再検証）', async () => {
+  const env = makeEnv();
+  const n = 'b'.repeat(32);
+  const f = path.join(env.store.dir, 'nonces', n);
+  writeFileSync(f, `${NOW}\ndone${' '.repeat(80)}`);
+  assert.throws(() => env.store.claimNonce(n, NOW + 1000), { code: 'nonce_unreadable' });
+  rmSync(f);
+  writeFileSync(f, '');
+  utimesSync(f, NOW / 1000, NOW / 1000);
+  assert.throws(() => env.store.claimNonce(n, NOW + 30_000), { code: 'nonce_busy' });
+  assert.equal(env.store.claimNonce(n, NOW + 61_000), true, '空の印は 60 秒の後に引き継ぐ');
+  cleanup(env);
 });

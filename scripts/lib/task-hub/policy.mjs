@@ -61,7 +61,7 @@ export function validateConfig(c) {
     if (!Array.isArray(s.businesses) || !s.businesses.length || s.businesses.some((b) => !c.businesses.includes(b))) bad(`${id}.businesses`);
     if (s.intents !== undefined && (!Array.isArray(s.intents) || s.intents.some((x) => !INTENT_RE.test(x)))) bad(`${id}.intents`);
   }
-  for (const k of ['hermes_inbox', 'brief_path']) if (c[k] !== undefined && (typeof c[k] !== 'string' || !c[k].startsWith('/'))) bad(k);
+  for (const k of ['hermes_inbox', 'hermes_outbox', 'brief_path']) if (c[k] !== undefined && (typeof c[k] !== 'string' || !c[k].startsWith('/'))) bad(k);
   if (c.utc_offset_minutes !== undefined && !(Number.isInteger(c.utc_offset_minutes) && c.utc_offset_minutes >= -720 && c.utc_offset_minutes <= 840)) bad('utc_offset_minutes');
   return c;
 }

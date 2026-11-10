@@ -14,7 +14,7 @@ import { ingestInbox, ingestRecord, submitLocal } from '../scripts/lib/task-hub/
 import { runOnce } from '../scripts/lib/task-hub/runner.mjs';
 import { openStatus, sealStatus } from '../scripts/lib/task-hub/wire.mjs';
 import { contentDigest } from '../scripts/lib/task-hub/envelope.mjs';
-import { taskHubCounts } from '../scripts/runtime-ops.mjs';
+import { humanRequired, taskHubCounts } from '../scripts/runtime-ops.mjs';
 import { humanLine, keychainKeyFor, main, showView } from '../scripts/task-hub.mjs';
 import { KEY_A, KEY_B, NOW, dropInbox, envelope, keyFor, keyId, makeEnv, seal } from './task-hub-helpers.mjs';
 
@@ -576,4 +576,112 @@ test('CLI の intake は run と同じ単独実行の lock を取る：持たれ
   assert.equal(await cli(['intake', '--inbox', env.inbox, ...base]), 0);
   assert.match(lines.at(-1), /取り込み 1 件/);
   assert.equal(existsSync(path.join(env.store.dir, 'run.lock')), false, 'intake の後に lock を残さない');
+});
+
+test('runtime-ops の Human の一覧：監査の鎖の分岐（2 つの書き手が同じ前の行に続けた）・末尾の削除を priority 1 で出す。正常なら出さない（2026-11-10）', async () => {
+  const env = makeEnv();
+  await submitLocal(envelope(), { store: env.store, policy: env.policy, now: NOW });
+  await submitLocal(envelope(), { store: env.store, policy: env.policy, now: NOW + 1 });
+  assert.equal(taskHubCounts(env.store.dir).audit, null);
+  const file = path.join(env.store.dir, 'audit.jsonl');
+  const lines = readFileSync(file, 'utf8').trim().split('\n');
+  // lock を失った書き手が、古い末尾を前の行として書いた（分岐）
+  const fork = JSON.stringify({ ...JSON.parse(lines.at(-1)), event: 'forked' });
+  writeFileSync(file, `${lines.join('\n')}\n${fork}\n`);
+  assert.equal(taskHubCounts(env.store.dir).audit, 'chain_broken');
+  const rows = humanRequired({ taskHub: taskHubCounts(env.store.dir), now: NOW, last: { items: [] } });
+  assert.deepEqual(rows.filter((r) => r.id === 'task-hub:audit').map((r) => r.priority), [1]);
+  // 末尾の削除
+  writeFileSync(file, `${lines.slice(0, -1).join('\n')}\n`);
+  assert.equal(taskHubCounts(env.store.dir).audit, 'truncated');
+});
+
+test('E2E：模擬 Hermes の往復（承認済みの hermes.task → inbox → 模擬 Hermes が outbox へ結果 → collect-hermes で business の記録へ）。不信頼の結果は記録しない（2026-11-10）', async () => {
+  const { env, lines, cli, base, cfgFile } = cliEnv();
+  const inbox = path.join(env.root, 'hermes-inbox');
+  const outbox = path.join(env.root, 'hermes-outbox');
+  // 未接続（休眠）：フォルダを作らない・何もしない
+  writeFileSync(cfgFile, JSON.stringify({ ...env.config, hermes_inbox: inbox, hermes_outbox: outbox }), { mode: 0o600 });
+  assert.equal(await cli(['collect-hermes', ...base]), 0);
+  assert.match(lines.at(-1), /未接続/);
+  assert.equal(existsSync(outbox), false);
+  mkdirSync(inbox, { mode: 0o700 });
+  mkdirSync(outbox, { mode: 0o700 });
+  const r = await submitLocal(envelope({ intent: 'hermes.task', params: { title: '週報', body: 'notes を要約する' } }), { store: env.store, policy: env.policy, now: NOW });
+  const t = env.store.readTask(r.task_id);
+  assert.equal(t.state, 'awaiting_approval', 'Hermes へ渡すのは承認の後だけ');
+  approve(env.store, t.task_id, { confirm: t.content_digest.slice(0, 12), isTTY: true, now: NOW });
+  const policy = { ...env.policy, config: { ...env.config, hermes_inbox: inbox } };
+  const ran = await runOnce({ store: env.store, policy, handlers: env.handlers, now: NOW + 1000 });
+  assert.equal(ran.ran[0].state, 'succeeded');
+  const handed = JSON.parse(readFileSync(path.join(inbox, `${t.task_id}.json`), 'utf8'));
+  assert.deepEqual([handed.task_id, handed.business, handed.title], [t.task_id, 'biz-a', '週報']);
+  // 模擬 Hermes：正しい結果 1 件・不信頼の結果いろいろ
+  writeFileSync(path.join(outbox, `${t.task_id}.json`), JSON.stringify({ v: 1, task_id: t.task_id, status: 'done', summary: '今週のメモ 3 件を要約しました' }));
+  const other = await submitLocal(envelope({ intent: 'note.record', params: { text: 'x' } }), { store: env.store, policy: env.policy, now: NOW });
+  writeFileSync(path.join(outbox, `${other.task_id}.json`), JSON.stringify({ v: 1, task_id: other.task_id, status: 'done', summary: 'hermes.task ではない' }));
+  writeFileSync(path.join(outbox, 't-20261109090000-00000001.json'), JSON.stringify({ v: 1, task_id: 't-20261109090000-00000001', status: 'done', summary: '無い task' }));
+  const r2 = await submitLocal(envelope({ intent: 'hermes.task', params: { title: 'b', body: 'b' } }), { store: env.store, policy: env.policy, now: NOW });
+  writeFileSync(path.join(outbox, `${r2.task_id}.json`), JSON.stringify({ v: 1, task_id: r2.task_id, status: 'done', summary: '承認されていない task' }));
+  lines.length = 0;
+  assert.equal(await cli(['collect-hermes', ...base]), 1, '拒否があれば exit 1');
+  const codes = Object.fromEntries(lines.filter((l) => l.startsWith('NG')).map((l) => l.split(/\s+/).slice(1)));
+  assert.equal(codes[`${other.task_id}.json`], 'unknown_task');
+  assert.equal(codes['t-20261109090000-00000001.json'], 'unknown_task');
+  assert.equal(codes[`${r2.task_id}.json`], 'task_not_delivered');
+  const notes = env.store.readRecords('biz-a', 'notes');
+  assert.deepEqual([notes.get(`hermes:${t.task_id}`)?.text, notes.get(`hermes:${t.task_id}`)?.status], ['今週のメモ 3 件を要約しました', 'done']);
+  // 取り込み直しは増やさない
+  lines.length = 0;
+  for (const f of readdirSync(outbox)) if (f !== `${t.task_id}.json`) rmSync(path.join(outbox, f));
+  assert.equal(await cli(['collect-hermes', ...base]), 0);
+  assert.match(lines.at(-1), /記録 0 件・取り込み済み 1 件・拒否 0 件/);
+  // 鍵の形・未知の field・承認の主張・symlink は記録しない
+  const bad = async (content, expect) => {
+    rmSync(path.join(outbox, `${t.task_id}.json`), { force: true });
+    const hermesNotes = () => [...env.store.readRecords('biz-a', 'notes').keys()].filter((k) => k.startsWith('hermes:')).length;
+    const notesBefore = hermesNotes();
+    const r3 = await submitLocal(envelope({ intent: 'hermes.task', params: { title: 'c', body: expect } }), { store: env.store, policy: env.policy, now: NOW });
+    const t3 = env.store.readTask(r3.task_id);
+    approve(env.store, t3.task_id, { confirm: t3.content_digest.slice(0, 12), isTTY: true, now: NOW });
+    await runOnce({ store: env.store, policy, handlers: env.handlers, now: NOW + 2000 });
+    const f = path.join(outbox, `${t3.task_id}.json`);
+    if (content === 'symlink') { writeFileSync(path.join(env.root, 'elsewhere.json'), JSON.stringify({ v: 1, task_id: t3.task_id, status: 'done', summary: 'x' })); symlinkSync(path.join(env.root, 'elsewhere.json'), f); } else writeFileSync(f, typeof content === 'string' ? content : JSON.stringify({ v: 1, task_id: t3.task_id, status: 'done', ...content }));
+    lines.length = 0;
+    assert.equal(await cli(['collect-hermes', ...base]), 1, expect);
+    assert.ok(lines.some((l) => l.includes(t3.task_id) && l.includes(expect)), `${expect}: ${lines.join(' | ')}`);
+    assert.equal(hermesNotes(), notesBefore, `${expect} は記録しない`);
+    rmSync(f, { force: true });
+  };
+  await bad({ summary: 'key sk-abcdefghijklmnopqrstuvwx' }, 'summary_');
+  await bad({ summary: 'ok', approved: true }, 'bad_shape');
+  await bad({ summary: 'ok', business: 'biz-b' }, 'bad_shape');
+  await bad('{not json', 'bad_json');
+  await bad('symlink', 'bad_');
+  await bad({ summary: 'x'.repeat(2001) }, 'summary_');
+  assert.equal(env.store.verifyAudit().ok, true);
+  cleanup(env);
+});
+
+test('collect-hermes：取り込んだ印で二度記録しない（notes が保持の上限で消えても・Hermes が file を書き換えても）・監査を先に書く（2026-11-10 監査）', async () => {
+  const env = makeEnv();
+  const outbox = path.join(env.root, 'hermes-outbox');
+  const inbox = path.join(env.root, 'hermes-inbox');
+  mkdirSync(outbox); mkdirSync(inbox, { mode: 0o700 }); // other・staff に読めない inbox（hermes_inbox_unsafe でない）
+  const r = await submitLocal(envelope({ intent: 'hermes.task', params: { title: 't', body: 'b' } }), { store: env.store, policy: env.policy, now: NOW });
+  const t = env.store.readTask(r.task_id);
+  approve(env.store, t.task_id, { confirm: t.content_digest.slice(0, 12), isTTY: true, now: NOW });
+  await runOnce({ store: env.store, policy: { ...env.policy, config: { ...env.config, hermes_inbox: inbox } }, handlers: env.handlers, now: NOW + 1 });
+  const { collectHermesResults } = await import('../scripts/lib/task-hub/hermes-results.mjs');
+  const cfg = { hermes_outbox: outbox };
+  writeFileSync(path.join(outbox, `${t.task_id}.json`), JSON.stringify({ v: 1, task_id: t.task_id, status: 'done', summary: 'first' }));
+  assert.equal(collectHermesResults({ store: env.store, config: cfg, now: NOW + 2 }).recorded, 1);
+  // notes が上限で消えた（compact で全部落とす）・Hermes が file を書き換えた
+  env.store.compactRecords('biz-a', 'notes', () => false);
+  writeFileSync(path.join(outbox, `${t.task_id}.json`), JSON.stringify({ v: 1, task_id: t.task_id, status: 'done', summary: 'rewritten' }));
+  const again = collectHermesResults({ store: env.store, config: cfg, now: NOW + 3 });
+  assert.deepEqual([again.recorded, again.already], [0, 1]);
+  assert.equal(env.store._auditLines().filter((l) => JSON.parse(l).event === 'hermes_result').length, 1);
+  assert.equal(env.store.readRecords('biz-a', 'notes').has(`hermes:${t.task_id}`), false, '書き換えた内容を記録し直さない');
+  cleanup(env);
 });

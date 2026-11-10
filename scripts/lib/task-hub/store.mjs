@@ -3,7 +3,8 @@
  *
  *   tasks/<task_id>.json        task 1 件（state は wire.STATES）
  *   keys/<sha256(source|key)>   (source, idempotency_key) の重複の印（link で中身ごと作る＝先着 1 つ）
- *   nonces/<nonce>              封の再送の印（7 日以上残す）
+ *   hermes-collected/<task_id>  Hermes の結果を取り込んだ印（O_EXCL・以後その task の結果の file を読まない）
+ *   nonces/<nonce>              封の再送の印（7 日以上残す）。中身は「取った時刻\npending」→ 取り込みが終わると「取った時刻\ndone」。1 行だけの古い形は終わった印として扱う
  *   audit.jsonl / audit.tip     追記だけの監査 log。各行に前の行の sha256（prev）。値・params は書かない
  *   outbox/ outbox-sent/        依頼元（人以外）へ返す結果。配る側は別の部品で、配ったら outbox-sent へ移す
  *   records/<business>/*.jsonl  handler が残す business ごとの記録（mail・calendar・notes）
@@ -13,7 +14,7 @@
  *   PAUSE                       中身は理由のコード。あれば runner は走らない
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync, fstatSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync, fstatSync } from 'node:fs';
 import path from 'node:path';
 import { BUSINESS_RE } from './envelope.mjs';
 import { openPlain, readJsonSafe, readSmallFile } from './safe-read.mjs';
@@ -26,7 +27,7 @@ export const NONCE_RETENTION_MS = RECORD_MAX_AGE_MS + 86_400_000;
 const TASK_FILE_MAX = 256 * 1024;
 const OUTBOX_FILE_MAX = 64 * 1024;
 const RECORDS_FILE_MAX = 32 * 1024 * 1024;
-const AUDIT_FILE_MAX = 256 * 1024 * 1024;
+export const AUDIT_FILE_MAX = 256 * 1024 * 1024;
 /** 記録の保持の上限（件）。retention（日数）とは別に、file を有限に保つ */
 export const RECORD_MAX_ROWS = Object.freeze({ mail: 5000, calendar: 5000, notes: 2000 });
 export const LOCK_STALE_MS = 60_000; // owner.json が無い lock（普通は作れない形）と、短い排他（audit・task ごと）の持ち主の最長
@@ -69,10 +70,49 @@ function writeAtomic(file, text) {
   writeExcl(tmp, text);
   try { renameSync(tmp, file); } catch (e) { try { unlinkSync(tmp); } catch { /* 残さない努力 */ } throw e; }
 }
+/** 無い時だけ作る（tmp に書いて link。既にあれば false で、既にある file は変えない） */
+function writeNew(file, text) {
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  writeExcl(tmp, text);
+  try { linkSync(tmp, file); return true; } catch (e) {
+    if (e.code === 'EEXIST') return false;
+    throw e;
+  } finally { try { unlinkSync(tmp); } catch { /* 済 */ } }
+}
+/** file・フォルダを disk へ（fsync を拒む環境〈EINVAL・EPERM・ENOTSUP〉と無い file は飛ばす。本当の I/O エラーは投げる） */
+function fsyncPath(p) {
+  let fd;
+  try { fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (e) {
+    if (['ENOENT', 'ELOOP', 'ENXIO'].includes(e?.code)) return;
+    throw e;
+  }
+  try { fsyncSync(fd); } catch (e) {
+    if (!['EINVAL', 'EPERM', 'ENOTSUP', 'EBADF'].includes(e?.code)) throw e;
+  } finally { closeSync(fd); }
+}
 const readJson = (file, max) => readJsonSafe(file, max); // symlink・FIFO・巨大な file は読まない（safe-read.mjs）
 const pidAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
+/**
+ * 監査の鎖を頭から確かめる（store を開かずに読む側＝runtime-ops も使う）。{ ok, lines, code?, line? }。
+ * 途中の編集・削除・入れ替え（chain_broken）、2 つの書き手が同じ前の行に続けた分岐（chain_broken）、tip より短い（末尾の削除）を見つける
+ */
+export function verifyAuditLines(lines, tip) {
+  let prev = ZERO;
+  for (let i = 0; i < lines.length; i += 1) {
+    let o;
+    try { o = JSON.parse(lines[i]); } catch { return { ok: false, lines: lines.length, code: 'unparseable', line: i + 1 }; }
+    if (o?.prev !== prev) return { ok: false, lines: lines.length, code: 'chain_broken', line: i + 1 };
+    prev = sha(lines[i]);
+  }
+  if (tip) {
+    if (!Number.isInteger(tip.n) || lines.length < tip.n) return { ok: false, lines: lines.length, code: 'truncated', line: lines.length };
+    if (tip.n >= 1 && sha(lines[tip.n - 1]) !== tip.hash) return { ok: false, lines: lines.length, code: 'tip_mismatch', line: tip.n };
+  } else if (lines.length) return { ok: false, lines: lines.length, code: 'tip_missing', line: lines.length };
+  return { ok: true, lines: lines.length };
+}
+
 /** owner.json の持ち主が古いか。pid が居ない／started_at からの経過が maxAgeMs を超える（pid の再利用・固まった持ち主）／owner.json が読めない lock は mtime で LOCK_STALE_MS */
 function lockIsStale(owner, lockPath, at, maxAgeMs) {
   if (Number.isInteger(owner?.pid)) {
@@ -193,9 +233,19 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
         if (!owns()) throw new StoreError('lock_lost'); // 追記の直前に確かめる（奪われていたら書かない＝鎖が分岐しない）
         const last = lastAuditLine();
         const line = JSON.stringify({ at: iso(at), task_id, event, state, ...(code ? { code } : {}), prev: last ? sha(last) : ZERO });
-        appendFileSync(p('audit.jsonl'), `${line}\n`, { mode: 0o600 });
+        // 行の数（2026-11-10 監査 F1）：tip が最後の行を指していれば tip.n を使う。指していない時、強制終了で tip だけ遅れた形
+        // （file の頭の tip.n 行が tip と一致し、後ろに行が足されている）なら数え直して直す。それ以外（file が tip より短い・tip の位置の行が違う
+        // ＝末尾の削除・改ざん）は直さない＝verify-audit の異常を消さない
         const tip = readJson(p('audit.tip'));
-        const n = (Number.isInteger(tip?.n) ? tip.n : this._countAudit() - 1) + 1;
+        let base;
+        if (Number.isInteger(tip?.n) && last && tip.hash === sha(last)) base = tip.n;
+        else {
+          const lines = this._auditLines();
+          const lagging = Number.isInteger(tip?.n) && tip.n >= 1 && lines.length > tip.n && sha(lines[tip.n - 1]) === tip.hash;
+          base = lagging || !tip ? lines.length : (Number.isInteger(tip?.n) ? tip.n : lines.length);
+        }
+        appendFileSync(p('audit.jsonl'), `${line}\n`, { mode: 0o600 });
+        const n = base + 1;
         writeAtomic(p('audit.tip'), JSON.stringify({ n, hash: sha(line) }));
         return line;
       });
@@ -208,40 +258,62 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
     },
     /** 鎖を頭から確かめる。{ ok, lines, code?, line? }。途中の編集・削除・入れ替えと、tip より短い（末尾の削除）を見つける */
     verifyAudit() {
+      // tip を先に読む（行を読んだ後に書き手が足した行の tip を見て、末尾の削除と誤らない）
+      const tip = readJson(p('audit.tip'));
       let lines;
       try { lines = this._auditLines(); } catch { return { ok: false, lines: 0, code: 'audit_unreadable', line: 0 }; }
-      let prev = ZERO;
-      for (let i = 0; i < lines.length; i += 1) {
-        let o;
-        try { o = JSON.parse(lines[i]); } catch { return { ok: false, lines: lines.length, code: 'unparseable', line: i + 1 }; }
-        if (o.prev !== prev) return { ok: false, lines: lines.length, code: 'chain_broken', line: i + 1 };
-        prev = sha(lines[i]);
-      }
-      const tip = readJson(p('audit.tip'));
-      if (tip) {
-        if (lines.length < tip.n) return { ok: false, lines: lines.length, code: 'truncated', line: lines.length };
-        if (tip.n >= 1 && sha(lines[tip.n - 1]) !== tip.hash) return { ok: false, lines: lines.length, code: 'tip_mismatch', line: tip.n };
-      } else if (lines.length) return { ok: false, lines: lines.length, code: 'tip_missing', line: lines.length };
-      return { ok: true, lines: lines.length };
+      return verifyAuditLines(lines, tip);
     },
 
     // ─── 再送（nonce）───
     /** 初めて見る nonce なら true（O_EXCL）。見たことがあれば false */
-    /** claimNonce の後で取り込みに失敗した時に、自分の印だけ外す（ファイルを inbox に残して次の回で取り込み直せるように）。中身が自分の at の時だけ消す */
+    /** claimNonce の後で取り込みに失敗した時に、自分の印だけ外す（ファイルを inbox に残して次の回で取り込み直せるように）。中身が自分の at（終わっていない印）の時だけ消す */
     releaseNonce(nonce, at = now()) {
       if (!/^[0-9a-f]{32}$/.test(nonce)) throw new StoreError('bad_nonce');
       try {
-        if (readSmallFile(p('nonces', nonce), 64) !== String(at)) return false;
+        if (readSmallFile(p('nonces', nonce), 64) !== `${at}\npending`) return false;
         unlinkSync(p('nonces', nonce));
         return true;
       } catch { return false; }
     },
+    /**
+     * 初めて見る nonce なら true（O_EXCL）。取り込みが終わった（done の）nonce なら false＝replay。
+     * 終わっていない印（前の回が task を書き終える前に強制終了した）は replay にしない（2026-11-10）：
+     * 取った時刻から LOCK_STALE_MS 未満なら nonce_busy（取り込みの最中かもしれない＝file を inbox に残して次の回へ）、
+     * それより古ければ引き継いで true（取り込み直しは (source, key) の印で重複にならない）。
+     * 呼び出し側は run.lock を持つこと（CLI の intake が持つ。同時の 2 つの取り込みが同じ封を引き継ぎ合わないように）。1 行だけの古い形の印は終わった印（replay）
+     */
     claimNonce(nonce, at = now()) {
       if (!/^[0-9a-f]{32}$/.test(nonce)) throw new StoreError('bad_nonce');
-      try { writeExcl(p('nonces', nonce), String(at)); return true; } catch (e) {
-        if (e.code === 'EEXIST') return false;
-        throw e;
+      const file = p('nonces', nonce);
+      try { writeExcl(file, `${at}\npending`); return true; } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
       }
+      let text;
+      try { text = readSmallFile(file, 64); } catch (e) {
+        if (e?.code === 'ENOENT') return this.claimNonce(nonce, at); // 読む直前に消えた（prune）：取り直す
+        throw new StoreError('nonce_unreadable'); // 権限・I/O・大きすぎる：replay の守りを開けない（file は inbox に残る）
+      }
+      const [first, mark] = text.split('\n');
+      // done・古い形（1 行の時刻）だけが replay。それ以外の中身（途中で切れた・NUL で埋まった・知らない形）は印が壊れている：
+      // replay として捨てず、nonce_unreadable で止める（file は inbox に残る。2026-11-10 監査 F3）
+      if (/^[0-9]{1,16}\ndone$/.test(text) || /^[0-9]{1,16}$/.test(text)) return false;
+      if (text !== '' && !/^[0-9]{1,16}\npending$/.test(text)) throw new StoreError('nonce_unreadable');
+      // 途中の印：取った時刻から 60 秒未満は busy。空の印（作った直後・書く前）は file の時刻で同じく待つ
+      let t0 = mark === 'pending' && /^[0-9]{1,16}$/.test(first) ? Number(first) : NaN;
+      if (text === '') { try { t0 = statSync(file).mtimeMs; } catch { t0 = at; } }
+      if (!Number.isFinite(t0) || at - t0 < LOCK_STALE_MS) throw new StoreError('nonce_busy');
+      writeAtomic(file, `${at}\npending`); // 前の回が途中で止まった印を引き継ぐ
+      return true;
+    },
+    /** 取り込みが終わった印にする（task ができた・拒否が決まった）。中身が自分の at の時だけ。以後の同じ封は replay */
+    finishNonce(nonce, at = now()) {
+      if (!/^[0-9a-f]{32}$/.test(nonce)) throw new StoreError('bad_nonce');
+      try {
+        if (readSmallFile(p('nonces', nonce), 64) !== `${at}\npending`) return false;
+        writeAtomic(p('nonces', nonce), `${at}\ndone`);
+        return true;
+      } catch { return false; }
     },
     pruneNonces(at = now(), retentionMs = NONCE_RETENTION_MS) {
       let n = 0;
@@ -304,9 +376,22 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
      */
     _create(task, at, code = null) {
       this.audit({ task_id: task.task_id, event: 'created', state: task.state, code }, at);
-      writeAtomic(taskFile(task.task_id), `${JSON.stringify(task)}\n`);
+      // 無い時だけ作る（2026-11-10 監査 F4）：止まっていた古い取り込みが再開して、終わった task を created の形で上書きし、もう一度実行させない
+      if (!writeNew(taskFile(task.task_id), `${JSON.stringify(task)}\n`)) {
+        const existing = this.readTask(task.task_id);
+        if (!existing) throw new StoreError('task_unreadable');
+        return existing;
+      }
       this._outbox(task, at);
       return task;
+    },
+    /**
+     * 取り込みの結果を disk へ（2026-11-10 監査 F7）。inbox の file を done/ へ移す＝元の写しを手放す前に、task・印・監査を fsync する
+     * （電源断で rename だけ残り task が空・無い形を作らない）。macOS の fsync は F_FULLFSYNC ではない（vps-client と同じ注）
+     */
+    syncIntake(taskId = null) {
+      if (taskId && TASK_ID_RE.test(taskId)) fsyncPath(taskFile(taskId));
+      for (const f of [p('audit.jsonl'), p('audit.tip'), p('tasks'), p('keys'), p('nonces'), root]) fsyncPath(f);
     },
     _build(t, id, at) {
       return {

@@ -94,8 +94,8 @@ local config：`{ "sources": { "<source>": { "channels": [...], "businesses": [.
 1. **VPS の受け口**：受け口が封を作り、inbox に `*.json` を**一時名で書いて rename**（途中の file を読ませない）。channel ごとの鍵を Keychain に登録（登録・配置は Human）
 2. **Mac の取り込み**：local config を作る（source と channel と business の対応）→ `intake` を手で実行して様子を見る → 定期化は別途 Human が決める
 3. **返信**：別の部品が outbox を読んで `wire.sealStatus` で署名し VPS の状態の板へ送り、配ったら `markDelivered`
-4. **Hermes**：Hermes の inbox フォルダを **Human が作り**、config の `hermes_inbox` に書く。それまで `hermes.task` は休眠
-5. **runtime-ops**：`human` の出力を Human への一覧に足す（別作業）
+4. **Hermes**：Hermes の inbox・outbox のフォルダを **Human が作り**、config の `hermes_inbox`・`hermes_outbox` に書く。それまで `hermes.task`・`collect-hermes` は休眠。権限の範囲・費用・検収は `docs/hermes-work.md`
+5. **VPS の保守と Cloudflare・Bot の登録**：`docs/vps-maintenance.md`（1 回の ssh にまとめた手順と検収）
 
 ## 10. ロールバック
 
@@ -106,14 +106,15 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 
 ## 11. 既知の限界
 
-- **nonce を取った後の失敗**（lock_timeout・disk のエラーなど）：取り込みは nonce の印を外してから失敗を返すので、inbox に残った file が**次の回でそのまま取り込まれる**（以前は印だけが消費されて replay として捨てられ、依頼が消えた）。外せなかった場合は `replay` で捨てられるので、その時は依頼元が**新しい `idempotency_key` で出し直す**。同じ key の出し直しは VPS 経由では効かない（VPS は取得済みの key を `seen` で 14 日覚えていて、同じ key を重複として黙って捨てる。Mac 側の `keys/` の印でも同じ内容は 1 件に収まる）。詰まった依頼を出し直す時は必ず新しい key を使う
+- **nonce を取った後の失敗**（lock_timeout・disk のエラーなど）：取り込みは nonce の印を外してから失敗を返すので、inbox に残った file が**次の回でそのまま取り込まれる**（以前は印だけが消費されて replay として捨てられ、依頼が消えた）。外せなかった場合も印は途中（pending）のまま残り、60 秒の後の回が引き継いで取り込み直す（2026-11-10）。それでも詰まった依頼は依頼元が**新しい `idempotency_key` で出し直す**。同じ key の出し直しは VPS 経由では効かない（VPS は取得済みの key を `seen` で 14 日覚えていて、同じ key を重複として黙って捨てる。Mac 側の `keys/` の印でも同じ内容は 1 件に収まる）。詰まった依頼を出し直す時は必ず新しい key を使う
 - **`approve` は表示の直後に記録する**：端末・確認コードが通ると全文を表示してすぐ承認を記録する（その間に止める確認は無い）。**判断の場は `show`**（承認の前に必ず全文を読む）。表示を見てから取り消す仕組みは無い
 - `show` の escape が出せない：結合文字（combining mark）を重ねた装飾（打ち消し線・Zalgo など）と、見た目が同じ別の文字（キリル文字の a など）は区別しない。重ね書きで読めない文字列は params の全文を別の手段（`--file` の JSON など）でも確かめる
 - VPS の queue で Mac が残している封（鍵の設定・時刻・版の違いかもしれないもの）は、`task-intake-sync pull` が読み飛ばして後ろの有効な封を取る（1 回で最大 10 ページ）。残している封があれば出力の `kept` に件数が出て **exit 1** になる＝止まっている依頼が定期実行の失敗として見える。原因（鍵・時計・版）を直せば次の回で取り込まれ、7 日で VPS が捨てる
 - outbox の結果を VPS が永久に拒む場合（`unknown_source` など）は、`outbox-rejected/`（outbox の隣・0700）へ退避して毎回送り直さない（`quarantined` に数える。削除はしない）
 - lock の持ち主は pid だけでなく起動時刻（`started_at`）でも見る：audit・task の lock は 60 秒、run の lock は 30 分を超えたら（pid が別の process に再利用されていても）古いとして引き継ぐ。`run` が lock を取れず、持ち主が 30 分を超えていれば exit 1、lock の競合（`lock_conflict`）は audit に残して走らない
-- **lock の確かめと書き込みは原子的でない**（受け入れた残り・2026-11-10）：持ち主は書く直前に `owns()` で確かめるが、その直後から書き終わるまでの間に持ち主が上限（60 秒）より長く止まると（SIGSTOP・スリープの復帰など）、別の process が古い lock として引き継ぎ、両方が書きうる。監査の鎖が分かれた場合は `verify-audit` が `chain_broken` として見つける（task の記録は state の遷移の検査で、終わった task を動かさない）。OS の排他（flock）は node に無く、依存を足さないため、この形のまま残す
-- **作る時は監査が先**（2026-11-10 再検証）：新しい task は監査の `created` を書いてから task の file を書く。監査が書けなければ task は無く、取り込みは nonce を外して失敗し、次の回に印の id で作り直す（監査は `created`・`recovered`）。作った直後のまま（履歴 1 行）の task への重複は outbox の知らせを書き直す（前の回が outbox の前に止まっていても依頼元が状態を知れる。時刻は task の `updated_at` のまま＝後の承認・却下の知らせを追い越さない）。**残り**：監査の行を書いた後・task の file の前で process が強制終了すると、nonce は取られたままなので次の回は replay として捨てる（監査に task の無い `created` が 1 行残り、依頼元は新しい key で出し直す。nonce を取ってから task が disk に残るまでの窓は前からある）。nonce などを O_EXCL で作って書けなかった時（disk full）は空の file を残さない
+- **lock の確かめと書き込みは原子的でない**（受け入れた残り・2026-11-10）：持ち主は書く直前に `owns()` で確かめるが、その直後から書き終わるまでの間に持ち主が上限（60 秒）より長く止まると（SIGSTOP・スリープの復帰など）、別の process が古い lock として引き継ぎ、両方が書きうる。監査の鎖が分かれた場合は `verify-audit` が `chain_broken` として見つけ、**Human が `runtime-ops human`・`overview` を実行した時に priority 1 で出す**（読むだけ・2026-11-10）。無人の見張りは §13（休眠の check・Human が有効にする）。task の記録は state の遷移の検査で、終わった task を動かさない。OS の排他（flock）は node に無く、依存を足さないため、防ぐのではなく見つける形にしている
+- **作る時は監査が先**（2026-11-10 再検証）：新しい task は監査の `created` を書いてから task の file を書く。監査が書けなければ task は無く、取り込みは nonce を外して失敗し、次の回に印の id で作り直す（監査は `created`・`recovered`）。作った直後のまま（履歴 1 行）の task への重複は outbox の知らせを書き直す（前の回が outbox の前に止まっていても依頼元が状態を知れる。時刻は task の `updated_at` のまま＝後の承認・却下の知らせを追い越さない）。**強制終了の後**（2026-11-10）：nonce の印は「取った時刻＋pending」で、取り込みが終わると `done` になる（1 行だけの古い形は終わった印）。印を終わらせられない時（disk のエラー）は監査に `nonce_finish_failed` を残して投げる＝file は inbox に残り、次の回で終わらせ直す（task にならなかった封はその時の policy でもう一度判定される）。終わっていない印（前の回が task を書き終える前に止まった）は replay にせず、印に書いた時刻（その intake の回の開始の時刻）から 60 秒未満なら `nonce_busy`（file は inbox に残る）、それより古ければ引き継いで取り込み直す（重複は (source, key) の印で 1 件に収まる・監査には task の無い `created` が 1 行残りうる）。nonce などを O_EXCL で作って書けなかった時（disk full）は空の file を残さない
+- **終わった印の後・done への移動の前に止まった封**（2026-11-10 監査 F8・受け入れた残り）：次の回は `replay` として rejected/ へ移し exit 1 になるが、task は 1 件できている（`list` で確かめられる）。同じ封の再送を見える形（replay・rejected）に保つため、この狭い窓のために replay の扱いは変えない
 - `intake` の CLI は `run` と同じ単独実行の lock（`run.lock`）を取る：持たれている間は取り込まず exit 0（file は inbox に残る。持ち主が 30 分を超えていれば exit 1）。2 つの intake が同じ file を同時に読み、片方の失敗の後にもう片方が replay として捨てるのを防ぐ
 - `task-intake-sync pull` は、新しく置いた封が無く既にあった封（existing）だけの回もフォルダを fsync してから ack する。macOS の fsync は F_FULLFSYNC ではない（OS の cache までは確実・disk の書き込み cache の電源断には弱い。node に F_FULLFSYNC は無い）
 - `task-intake-sync` の 1 回の運び（pull の各ページ・ack・push）は、要求の時刻を 1 つの時計（`requestClock`）で必ず前より大きくする（2026-11-10。以前は時計が同じ ms のままだと 2 ページ目が VPS に再送として拒まれ exit 1 になった）
@@ -122,3 +123,37 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 - `show` の escape は見えない・紛らわしい制御／空白類の文字を出すが、見た目が同じ別の文字（キリル文字の a など）は区別しない。承認の最後の保証は Human が全文を読むこと（結合文字の重ね書きも同様。上の項）
 - 監査の鎖は末尾の削除を `audit.tip` で見つけるが、store の書き込み権限を持つ者が鎖ごと作り直すのは防げない（同じ OS ユーザー内の改ざんは範囲外）
 - executor-route の rules が将来変わって `interactive` でも human を返すようになったら、全部が承認待ちになる（fail-closed。`tests/task-hub-e2e.test.mjs` が検知する）
+
+## 12. 通知（Discord）の整理（案・2026-11-10）
+
+既存の監視の Webhook（host-health・heartbeat の受け側）はそのまま。**新しい Webhook・新しい定期の通知は足していない**（足すのは Human の承認）。
+
+| 通知 | 今 | 案 |
+|---|---|---|
+| 異常（Mac・Hermes・バックアップ・生存信号の途絶） | host-health と VPS の受け側が Discord へ（普段は静か・`docs/runtime-monitoring.md`） | 変えない |
+| Task Hub の承認待ち・止まった task・PAUSE・監査の鎖の破損・outbox の隔離 | `runtime-ops human` の一覧に件数だけ（Discord へは送らない） | 承認待ちを Discord へ出すなら、host-health の既存の回の WARN として「件数だけ」（本文・依頼元・params は出さない）。承認は Discord のボタンではなく Mac の端末だけ |
+| task の完了 | 依頼元（Grok Bot）が `get_task_status` で見る | Discord へは送らない（Bot と Discord の二重を避ける。依頼した側へ返すのが 1 本の経路） |
+| 通知の失敗・再送 | host-health・受け側はそれぞれ失敗を数えて再送（受け側は 5 分ごと・未送信を消さない） | 変えない |
+
+- **情報漏れの防止**：Discord へ出すのは固定の文と件数だけ（`lib/alert-policy.mjs` の形）。依頼の本文・メールの件名・宛先は出さない
+- **Grok Bot との重複**：Bot の朝の報告（Gmail・予定）は Bot の中で完結。Task Hub は Bot が渡した集計を記録するだけで、同じ内容を Discord へ流さない
+- 承認待ちを Discord へ出す変更（host-health の項目を 1 つ足す）は Human の判断の後に作る。検収：承認待ちを 1 件作り、次の回で WARN が 1 通・本文に件数だけ・24 時間は重ねない
+
+## 13. 監査の鎖の無人の見張りと、壊れた時の手順（2026-11-10）
+
+**見張り（休眠・Human が有効にする）**：host-health に `--task-hub <保存先の絶対 path>` を渡した時だけ、毎回（:20・:50）監査の鎖を読むだけで確かめる（`lib/task-hub/audit-watch.mjs`。store を開かない・作らない・直さない・上限 32 MB）。
+
+- 正常：`task_hub_audit` が ok の 1 項目として記録されるだけ（通知しない）
+- 鎖が壊れている（`chain_broken`・`unparseable`・`truncated`・`tip_mismatch`・`tip_missing`）：crit。hold 0 ですぐ 1 通、本文は固定の文と**コードだけ**（task の id・中身・path は出さない）。新しいコードが増えた時だけ知らせ直す
+- 読めない（`audit_unreadable`・`audit_unreadable_or_large`〈32 MB 超え〉・`check_failed`）：warn
+- 有効にする（Human・launchd の登録の変更）：`node scripts/scheduled-job-service.mjs install --job host-health --target launchd … --task-hub ~/e-nexus-runtime/mac-runtime-state/task-hub`（今の引数に足すだけ）。検収：store の写しで `audit.jsonl` の途中の 1 行を書き換え、`node scripts/host-health.mjs --state-dir <一時の dir> --no-guard --task-hub <写し> --json` が `task_hub_audit` crit・`chain_broken` を返す。本物では正常の回に通知が出ないこと
+- 戻す：`--task-hub` を外して入れ直す
+
+**強制終了で tip だけ遅れた形**（追記の後・tip を書く前に止まった）は異常ではない：tip が file の頭の行と一致し、後ろに行が足されている形は、次の監査の書き込みが数え直して直す（`store.audit`・2026-11-10 監査 F1）。file が tip より短い・tip の位置の行が違う形（末尾の削除・改ざん）は直さない＝異常のまま残る。
+
+**壊れた時の手順（Human）**：
+
+1. `node scripts/task-hub.mjs verify-audit` でコードと行の番号を見る。**確かめるまで承認しない**（runner・approve は鎖を見ないので、自動では止まらない。止めたい時は `PAUSE` を書く）
+2. `chain_broken`：その行の前後を読む（`sed -n '<n-2>,<n+1>p' audit.jsonl`）。同じ `prev` の 2 行＝2 つの書き手の分岐（§11 の lock の限界。task の state は遷移の検査で守られる）。それ以外の書き換え＝改ざんの疑い。task の file・`history` と照らす
+3. `truncated`・`tip_mismatch`：バックアップ（`runtime-backup`）の同じ file と比べ、消えた行があるかを見る
+4. 原因が分かったら、壊れた log を `audit.jsonl.broken-<日付>` に改名して残し（消さない）、`audit.tip` も同じく改名する。次の書き込みが新しい鎖を 1 行目から始める。改名と理由は作業ログに残す

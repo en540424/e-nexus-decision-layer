@@ -1,0 +1,12 @@
+{
+  "description": "e-nexus task intake /mcp burst limit (2026-11-10). Free plan: 1 rule, 10 s period and 10 s mitigation only. Optional. Replace <HOSTNAME>.",
+  "action": "block",
+  "enabled": true,
+  "expression": "(http.host eq \"<HOSTNAME>\" and http.request.uri.path eq \"/mcp\")",
+  "ratelimit": {
+    "characteristics": ["ip.src", "cf.colo.id"],
+    "period": 10,
+    "requests_per_period": 20,
+    "mitigation_timeout": 10
+  }
+}

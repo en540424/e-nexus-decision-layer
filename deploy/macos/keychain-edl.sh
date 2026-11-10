@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ACCOUNT="e-nexus"
-KNOWN="gateway-token-staging gateway-token-production jev-key-staging jev-key-production llm-anthropic digest-webhook host-health-webhook github-monitor-token backup-passphrase backup-token heartbeat-url heartbeat-token"
+KNOWN="gateway-token-staging gateway-token-production jev-key-staging jev-key-production llm-anthropic digest-webhook host-health-webhook github-monitor-token backup-passphrase backup-token heartbeat-url heartbeat-token task-intake-url task-intake-vps-intake"
 
 valid_name() {
   [[ "$1" =~ ^[a-z0-9-]{1,64}$ ]]

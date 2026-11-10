@@ -723,3 +723,32 @@ test('前の版が作った DISABLED を Human が消しても数え直す（dis
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('--task-hub（2026-11-10）：監査の鎖が正常なら ok の項目だけで通知しない・壊れたら crit を 1 通（コードだけ）・引数の検査', async () => {
+  const dir = tmp();
+  const hub = tmp();
+  try {
+    const posted = [];
+    const post = async (n) => { posted.push(n); return { sent: true, code: 'SENT' }; };
+    const { run } = fixtureRunner();
+    const webhook = 'credential:E-NEXUS/edl/h';
+    mkdirSync(path.join(hub, 'tasks'));
+    const r1 = await runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, now: later(0), post, webhook, webhookCheck: null, taskHub: hub });
+    assert.equal(r1.notifyCode, 'NOTHING_TO_SEND');
+    assert.equal(JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8')).items.task_hub_audit.level, 'ok');
+    // 鎖の途中を書き換える（2 行目の prev が合わない）
+    writeFileSync(path.join(hub, 'audit.jsonl'), `${JSON.stringify({ at: 'x', prev: '0'.repeat(64) })}\n${JSON.stringify({ at: 'y', prev: 'f'.repeat(64) })}\n`);
+    const r2 = await runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, now: later(30 * 60_000), post, webhook, taskHub: hub });
+    const n = r2.notify.filter((x) => x.id === 'task_hub_audit');
+    assert.equal(n.length, 1);
+    assert.equal(n[0].level, 'crit');
+    assert.equal(posted.flat().filter((x) => x.id === 'task_hub_audit').length, 1);
+    const r3 = await runHostHealth({ stateDir: dir, dataDirs: [], run, uid: 501, now: later(60 * 60_000), post, webhook, taskHub: hub });
+    assert.equal(r3.notify.filter((x) => x.id === 'task_hub_audit').length, 0, '同じコードは重ねて知らせない');
+    assert.deepEqual(validateArgs({ ...parseArgs(['--task-hub', hub]) }), []);
+    assert.ok(validateArgs(parseArgs(['--task-hub', 'rel'])).some((e) => e.includes('--task-hub')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(hub, { recursive: true, force: true });
+  }
+});

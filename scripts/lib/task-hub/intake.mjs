@@ -9,7 +9,7 @@ import { lstatSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { contentDigest, parseEnvelope } from './envelope.mjs';
 import { readSmallFile } from './safe-read.mjs';
-import { HUMAN_SOURCE } from './store.mjs';
+import { HUMAN_SOURCE, StoreError } from './store.mjs';
 import { openRecord } from './wire.mjs';
 
 export const LOCAL_CHANNEL = 'local-cli';
@@ -57,19 +57,28 @@ export async function ingestRecord(raw, { keyFor, now = Date.now(), store, polic
     store.audit({ event: 'intake_rejected', code: 'replay' }, now);
     return { ok: false, code: 'replay' };
   }
+  let result;
   try {
     const parsed = parseEnvelope(record.body);
     if (!parsed.ok) {
       store.audit({ event: 'intake_rejected', code: `envelope_${parsed.code}` }, now);
       if (policy.config?.sources?.[record.source]?.channels?.includes(record.channel)) store.rejectNotice({ source: record.source, channel: record.channel, idempotency_key: looseKey(record.body), code: `envelope_${parsed.code}`.replace(/[^a-z0-9_]/g, '_').slice(0, 48) }, now);
-      return { ok: false, code: `envelope_${parsed.code}` };
+      result = { ok: false, code: `envelope_${parsed.code}` };
+    } else {
+      result = await admit({ source: record.source, channel: record.channel, envelope: parsed.envelope, store, policy, now });
     }
-    return await admit({ source: record.source, channel: record.channel, envelope: parsed.envelope, store, policy, now });
   } catch (e) {
     // nonce を取った後の失敗（lock_timeout・I/O）：印を外して投げ直す＝inbox に残った file が次の回で取り込まれる（外さないと replay として捨てられ、依頼が消える）
     try { store.releaseNonce(record.nonce, now); } catch { /* 外せなくても元の失敗を返す */ }
     throw e;
   }
+  // 終わった印にする。書けなければ印は「途中」のまま＝60 秒の後の回が引き継いで取り込み直す（task は (source, key) の印で 1 件に収まるが、
+  // task にならなかった封は今の policy でもう一度判定される）。黙らない：監査に残して投げる＝file は inbox に残り（inbox_error・CLI は exit 1）、次の回で印を終わらせ直す
+  if (!store.finishNonce(record.nonce, now)) {
+    try { store.audit({ event: 'intake_warning', code: 'nonce_finish_failed' }, now); } catch { /* 投げる方を優先 */ }
+    throw new StoreError('nonce_finish_failed');
+  }
+  return result;
 }
 
 /** Human の CLI の依頼（封なし）。source は human-cli 固定で、local config に宣言されていなければ拒否 */
@@ -82,7 +91,7 @@ export async function submitLocal(input, { store, policy, now = Date.now(), sour
   return admit({ source, channel: LOCAL_CHANNEL, envelope: parsed.envelope, store, policy, now });
 }
 
-/** inbox の *.json（1 file ＝ 1 封）を順に取り込み、done/ か rejected/ へ移す（残す＝監査）。普通の file 以外（symlink・FIFO）・大きすぎる file は読まずに rejected へ（開く時に O_NOFOLLOW・O_NONBLOCK で確かめる＝lstat の後の差し替えで止まらない） */
+/** 呼び出し側は run.lock を持つこと（scripts/task-hub.mjs の intake が持つ）。inbox の *.json（1 file ＝ 1 封）を順に取り込み、done/ か rejected/ へ移す（残す＝監査）。普通の file 以外（symlink・FIFO）・大きすぎる file は読まずに rejected へ（開く時に O_NOFOLLOW・O_NONBLOCK で確かめる＝lstat の後の差し替えで止まらない） */
 export async function ingestInbox(dir, { keyFor, now = Date.now(), store, policy }) {
   const out = [];
   const move = (name, to) => {
@@ -107,6 +116,7 @@ export async function ingestInbox(dir, { keyFor, now = Date.now(), store, policy
       if (res.code === 'bad_file') {
         store.audit({ event: 'intake_rejected', code: 'bad_file' }, now);
       }
+      store.syncIntake(res.ok ? res.task_id : null); // 元の写しを手放す前に、作った物を disk へ（監査 F7）
       move(name, res.ok ? 'done' : 'rejected');
     } catch {
       res = { ok: false, code: 'inbox_error' };

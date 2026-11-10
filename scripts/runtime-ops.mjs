@@ -23,7 +23,8 @@ import { classify } from './lib/ops-classify.mjs';
 import { BRIEF_FILE, externalView, readBriefFile, renderReply } from './lib/runtime-brief.mjs';
 import { EVENT_IDS, GUARD_LIMITS, MONITOR_LABEL } from './lib/runtime-guard.mjs';
 import { STATUS_DIR } from './lib/runtime-status-summary.mjs';
-import { readJsonSafe } from './lib/task-hub/safe-read.mjs';
+import { readJsonSafe, readSmallFile } from './lib/task-hub/safe-read.mjs';
+import { AUDIT_FILE_MAX, verifyAuditLines } from './lib/task-hub/store.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BACKUP_LABEL = 'com.e-nexus.runtime-backup';
@@ -198,6 +199,7 @@ export function humanRequired({ ledger = [], last = null, state = null, receipt 
   }
   // Task Hub（docs/task-hub.md）：承認待ち・止まった task・PAUSE。件数だけ（中身は task-hub.mjs human／show で見る）
   if (taskHub?.paused) rows.push({ id: 'task-hub:paused', priority: 1, title: 'Task Hub が止まっている（PAUSE）→ node scripts/task-hub.mjs list で原因を確かめ、直してから PAUSE を消す', due: null, source: 'task-hub' });
+  if (taskHub?.audit) rows.push({ id: 'task-hub:audit', priority: 1, title: `Task Hub の監査の記録が壊れている（${taskHub.audit}）→ node scripts/task-hub.mjs verify-audit で行を確かめる（2 つの書き手の分岐・消えた行・改ざんのどれか。自動では止まらないので、確かめるまで承認しない。手順は docs/task-hub.md §13）`, due: null, source: 'task-hub' });
   if (taskHub?.awaiting) rows.push({ id: 'task-hub:awaiting', priority: 2, title: `Task Hub の承認待ち ${taskHub.awaiting} 件 → 端末で node scripts/task-hub.mjs human`, due: null, source: 'task-hub' });
   if (taskHub?.outbox_rejected) rows.push({ id: 'task-hub:outbox-rejected', priority: 2, title: `Task Hub の結果のうち VPS に受け付けられず隔離した ${taskHub.outbox_rejected} 件（依頼元へ届いていない）→ <保存先>/outbox-rejected を確かめる`, due: null, source: 'task-hub' });
   if (taskHub?.stopped) rows.push({ id: 'task-hub:stopped', priority: 2, title: `Task Hub の途中で止まった task ${taskHub.stopped} 件（再実行はしていない）→ node scripts/task-hub.mjs list --state stopped で確かめ、済んだら dismiss`, due: null, source: 'task-hub' });
@@ -219,6 +221,13 @@ export function taskHubCounts(dir) {
     else if (t?.state === 'stopped') n.stopped += 1;
   }
   try { n.outbox_rejected = readdirSync(path.join(dir, 'outbox-rejected')).filter((x) => x.endsWith('.json')).length; } catch { n.outbox_rejected = 0; }
+  // 監査の鎖（読むだけ）。2 つの書き手の分岐（lock の確かめと書き込みの間の隙）・改ざん・末尾の削除を、Human の一覧に出す
+  n.audit = null;
+  // Human が `runtime-ops human` を実行した時だけ読む（定期の見張りではない）。tip を先に読む（読む間に足された行で末尾の削除と誤らない）。上限は store と同じ
+  const tip = readJsonSafe(path.join(dir, 'audit.tip'), 4096);
+  let lines = null;
+  try { lines = readSmallFile(path.join(dir, 'audit.jsonl'), AUDIT_FILE_MAX).split('\n').filter(Boolean); } catch (e) { if (e?.code === 'ENOENT') lines = []; else n.audit = 'audit_unreadable'; } // 無い log も tip と照らす（tip があれば truncated。監査 F2）
+  if (lines) { const v = verifyAuditLines(lines, tip); if (!v.ok) n.audit = v.code; }
   return n;
 }
 

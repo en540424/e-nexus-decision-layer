@@ -179,6 +179,14 @@ test('host-health（2026-10-21）：Mac mini（launchd）だけ・毎時 :20／:
   assert.match(h.content, /<string>scripts\/host-health\.mjs<\/string>\s*<string>--hermes-user<\/string>\s*<string>hermes<\/string>/);
   assert.ok(validateJobArgs({ ...a, hermesUser: 'bad user' }).some((e) => e.includes('--hermes-user')));
   assert.ok(validateJobArgs({ job: 'rotate-logs', target: 'launchd', dir: MAC.dir, base: '/x', hermesUser: 'hermes' }).some((e) => e.includes('host-health only')));
+  // 2026-11-10：Task Hub の監査の鎖の見張り（休眠の引数。付けた時だけ plist に入る）
+  assert.ok(!/--task-hub/.test(r.content), '既定では入らない');
+  const th = renderJob({ ...a, taskHub: '/Users/x/e-nexus-runtime/mac-runtime-state/task-hub' });
+  assert.deepEqual(validateJobArgs({ ...a, taskHub: '/Users/x/e-nexus-runtime/mac-runtime-state/task-hub' }), []);
+  assert.match(th.content, /<string>--task-hub<\/string>\s*<string>\/Users\/x\/e-nexus-runtime\/mac-runtime-state\/task-hub<\/string>/);
+  assert.ok(validateJobArgs({ ...a, taskHub: 'relative' }).some((e) => e.includes('--task-hub')));
+  assert.ok(validateJobArgs({ ...a, taskHub: '/Users/x/ai-trading-lab-runtime' }).some((e) => e.includes('--task-hub')));
+  assert.ok(validateJobArgs({ job: 'rotate-logs', target: 'launchd', dir: MAC.dir, base: '/x', taskHub: '/x' }).some((e) => e.includes('host-health only')));
 });
 
 test('host-health（2026-11-04）：Discord は --webhook-format を job へ渡す（既定の json は Discord に拒否される）・GitHub の見張りは owner を付けた時だけ', () => {

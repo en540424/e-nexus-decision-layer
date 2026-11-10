@@ -5,7 +5,7 @@
  * handler の形：{ resumable, run({ task, store, config, signal, now }) → { result } }。result は JSON で 16 KiB まで。
  * 失敗は fail(code, { retryable, expected }) を throw する。expected: true は「想定内の終わり方」（休眠中・未設定）で、runner の連続失敗に数えない。
  */
-import { closeSync, constants, existsSync, lstatSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readBriefFile } from '../runtime-brief.mjs';
@@ -91,6 +91,12 @@ const noteRecord = ({ task, store, now }) => {
   return { result: { recorded: true } };
 };
 
+export function inboxModeSafe(st, platform = process.platform) {
+  if ((st.mode & 0o007) !== 0) return false;
+  if (platform === 'darwin' && st.gid === 20 && (st.mode & 0o070) !== 0) return false;
+  return true;
+}
+
 /** 休眠中：設定された inbox のフォルダが「もう在る」時だけ、承認済みの依頼を 1 ファイル書く。フォルダは作らない */
 const hermesTask = ({ task, config }) => {
   const dir = config.hermes_inbox;
@@ -98,11 +104,16 @@ const hermesTask = ({ task, config }) => {
   try { ok = Boolean(dir) && path.isAbsolute(dir) && !lstatSync(dir).isSymbolicLink() && statSync(dir).isDirectory(); } catch { ok = false; }
   if (!ok) throw fail('hermes_inbox_not_connected', { expected: true });
   const real = realpathSync(dir);
+  // 承認済みの依頼の本文を、Hermes 以外の local user に読ませない（2026-11-10 監査 F14）：other に権限のあるフォルダ、
+  // macOS で全員の group（staff＝gid 20）に読み・入る権限のあるフォルダには書かない（docs/hermes-work.md §4 の 3：専用の group にする）
+  if (!inboxModeSafe(statSync(real))) throw fail('hermes_inbox_unsafe');
   const file = path.join(real, `${task.task_id}.json`);
   if (existsSync(file)) return { result: { delivered: true, already: true } };
   const tmp = path.join(real, `.${task.task_id}.${randomBytes(4).toString('hex')}.tmp`);
-  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  // 0640：inbox のフォルダの group（Human が hermes を入れた group にする。macOS は新しい file がフォルダの group を継ぐ）だけが読める。other は読めない
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o640);
   try {
+    fchmodSync(fd, 0o640); // umask に左右されない
     // 承認の記録は別の名前で渡す（受け側が「承認済み」の主張と読み違えないように、確かめる材料＝digest を添える）
     writeSync(fd, `${JSON.stringify({ v: 1, task_id: task.task_id, business: task.business, title: task.params.title, body: task.params.body, approval_record: task.approval ? { at: task.approval.at, digest: task.approval.digest } : null })}\n`);
   } finally { closeSync(fd); }
