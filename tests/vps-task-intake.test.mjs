@@ -898,3 +898,23 @@ test('pushStatuses：outbox の symlink・FIFO は読まない（invalid）・�
     assert.ok(existsSync(outside));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('CLI の pull：時計が進まなくても（同じ ms）ページと ack をまたいで要求の時刻を進める＝2 ページ目が再送として拒まれない（2026-11-10）', async () => {
+  const clock = { t: T0 };
+  const env = await boot({ clock });
+  const dir = mkdtempSync(path.join(tmpdir(), 'edl-ti-'));
+  try {
+    for (let i = 1; i <= 3; i += 1) { clock.t += 10; assert.equal((await tool(env, BOT_A, 'submit_task', submitArgs(i))).data.state, 'received'); }
+    const keychain = (name) => ({ [KEYCHAIN_URL]: env.url, [keychainKeyTarget(CHANNEL)]: KEY_HEX })[name] ?? null;
+    const frozen = () => clock.t; // 進まない時計
+    const r = await runSync({ argv: ['pull', '--inbox', path.join(dir, 'inbox'), '--max', '1'], keychain, fetchImpl: globalThis.fetch, now: frozen });
+    assert.deepEqual([r.code, r.exit, r.pulled, r.written, r.deleted], ['pulled', 0, 3, 3, 3]);
+    assert.equal(env.stats().queue, 0);
+    // 次の回（新しい時計）も、前の回が先へ進めた時刻より後なら通る
+    clock.t += 1000;
+    assert.deepEqual([(await runSync({ argv: ['pull', '--inbox', path.join(dir, 'inbox')], keychain, fetchImpl: globalThis.fetch, now: frozen })).exit], [0]);
+  } finally {
+    await cleanup(env);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

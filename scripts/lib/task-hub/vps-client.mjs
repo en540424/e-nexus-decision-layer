@@ -8,6 +8,7 @@
  *
  * baseUrl は https://（試験の loopback http://127.0.0.1 だけ例外）・path なし。redirect に従わない・15 秒で切る。鍵・本文・応答の中身はログにも例外にも出さない（コードだけ）。
  * 要求の署名は channel の鍵の HMAC-SHA256。時刻は ms で、同じ endpoint では前より大きくする（VPS が再送を拒む）。呼び出し側の now が進まない時は自分で +1 する。
+ * 1 回の運びで何度も呼ぶ時は requestClock(now) を作って全部の呼び出しへ stamp で渡す（ページ・ack をまたいで時刻を戻さない）。
  */
 import { createHash, createHmac } from 'node:crypto';
 import { closeSync, constants, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, renameSync, unlinkSync, writeSync } from 'node:fs';
@@ -19,6 +20,12 @@ const DISCARD_CODES = /^(?:bad_signature|too_old|shape_(?!version$)[a-z_]+)$/; /
 export const CLIENT_LIMITS = Object.freeze({ timeout_ms: 15_000, status_batch: 20, status_batch_bytes: 256 * 1024, ack_batch: 200, response_bytes: 4 * 1024 * 1024, outbox_file_bytes: 64 * 1024, record_max_age_ms: RECORD_MAX_AGE_MS });
 
 const sha256hex = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+/** 要求の時刻：呼ぶたびに前より大きい ms（now が進まない・戻る時は +1）。VPS は endpoint ごとに前の時刻以下を再送として拒む */
+export function requestClock(now = Date.now) {
+  let last = 0;
+  return () => { last = Math.max(now(), last + 1); return last; };
+}
 
 /** baseUrl を検査して origin を返す（https のみ・loopback の http は試験用）。違えば null */
 export function normalizeBase(baseUrl) {
@@ -64,11 +71,11 @@ export const PULL_OFFSET_MAX = 500;
  * 取りに行く。{ ok, records, invalid, kept_count, received } か { ok:false, code }。records は channel を渡した時は検査済みの物だけ。
  * offset：queue の先頭から読み飛ばす件数（残してある封＝kept が先頭を塞ぎ、後ろの有効な封が見えなくなるのを避ける）。署名の対象に含める。
  */
-export async function pull({ baseUrl, key, fetchImpl, now = Date.now, max = 50, offset = 0, channel, timeoutMs }) {
+export async function pull({ baseUrl, key, fetchImpl, now = Date.now, stamp, max = 50, offset = 0, channel, timeoutMs }) {
   const n = Number.isInteger(max) && max >= 1 ? Math.min(max, 50) : 50;
   const off = Number.isInteger(offset) && offset >= 0 ? Math.min(offset, PULL_OFFSET_MAX) : 0;
   const query = `offset=${off}&max=${n}`;
-  const r = await call({ baseUrl, key, fetchImpl, now, timeoutMs }, { method: 'GET', route: `/pull?${query}`, label: 'edl-pull-v1', tail: `GET /pull?${query}` });
+  const r = await call({ baseUrl, key, fetchImpl, now, ts: stamp?.(), timeoutMs }, { method: 'GET', route: `/pull?${query}`, label: 'edl-pull-v1', tail: `GET /pull?${query}` });
   if (!r.ok) return r;
   if (!Array.isArray(r.json?.records)) return { ok: false, code: 'bad_response' };
   const records = [];
@@ -127,18 +134,18 @@ export function writeInbox(records, inboxDir) {
       failed += 1;
     }
   }
-  // link の記録を disk へ（ack で VPS から消す前に、置いた名前が電源断で消えないように）。できなければ ack させない（次の回は existing として扱われる）
-  if (written.length && !fsyncDir(inboxDir)) { failed += written.length; written.length = 0; }
+  // link の記録を disk へ（ack で VPS から消す前に、置いた名前が電源断で消えないように）。できなければ ack させない（次の回は existing として扱われる）。
+  // existing だけの回も fsync する（前の回が link の後・fsync の前に止まっていた file を、確かめずに ack しない。2026-11-10 再検証）。
+  // 注：macOS の fsync は F_FULLFSYNC ではない＝OS の cache までは確実、disk の書き込み cache の電源断には弱い（node に F_FULLFSYNC は無い）
+  if ((written.length || existing.length) && !fsyncDir(inboxDir)) { failed += written.length + existing.length; written.length = 0; existing.length = 0; }
   return { written, existing, failed };
 }
 
 /** VPS から消す。{ ok, deleted } か { ok:false, code } */
-export async function ack({ baseUrl, key, fetchImpl, now = Date.now, nonces, timeoutMs }) {
+export async function ack({ baseUrl, key, fetchImpl, now = Date.now, stamp = requestClock(now), nonces, timeoutMs }) {
   let deleted = 0;
-  let last = 0;
   for (let i = 0; i < nonces.length; i += CLIENT_LIMITS.ack_batch) {
-    const ts = Math.max(now(), last + 1);
-    last = ts;
+    const ts = stamp();
     const r = await call({ baseUrl, key, fetchImpl, now, ts, timeoutMs }, { method: 'POST', route: '/ack', label: 'edl-ack-v1', body: { nonces: nonces.slice(i, i + CLIENT_LIMITS.ack_batch) } });
     if (!r.ok) return { ...r, deleted };
     deleted += Number.isInteger(r.json?.deleted) ? r.json.deleted : 0;
@@ -174,7 +181,7 @@ export const rejectedDirFor = (outboxDir) => path.join(path.dirname(path.resolve
  * outbox の結果に署名して VPS へ返す。20 件（または 256KiB）ごとに 1 要求。
  * 戻り値：{ sent, kept, invalid, rejected:[{file, code}], quarantined, failed_batches, code? }。届かなかった物と一時的に拒まれた物は outbox に残る。永久に拒まれる物（unknown_source 等）は outbox-rejected/ へ移して quarantined に数える。
  */
-export async function pushStatuses({ baseUrl, key, fetchImpl, now = Date.now, outboxDir, sentDir, channel, timeoutMs }) {
+export async function pushStatuses({ baseUrl, key, fetchImpl, now = Date.now, stamp = requestClock(now), outboxDir, sentDir, channel, timeoutMs }) {
   const out = { sent: 0, kept: 0, invalid: 0, rejected: [], quarantined: 0, failed_batches: 0 };
   if (!normalizeBase(baseUrl) || !keyOk(key)) return { ...out, code: 'bad_config' };
   let names;
@@ -191,7 +198,6 @@ export async function pushStatuses({ baseUrl, key, fetchImpl, now = Date.now, ou
       out.invalid += 1;
     }
   }
-  let last = 0;
   for (let i = 0; i < items.length;) {
     const batch = [];
     let bytes = 0;
@@ -202,8 +208,7 @@ export async function pushStatuses({ baseUrl, key, fetchImpl, now = Date.now, ou
       bytes += size;
       i += 1;
     }
-    const ts = Math.max(now(), last + 1);
-    last = ts;
+    const ts = stamp();
     const r = await call({ baseUrl, key, fetchImpl, now, ts, timeoutMs }, { method: 'POST', route: '/status', label: 'edl-status-v1', body: { statuses: batch.map((b) => b.sealed) } });
     const results = r.ok && Array.isArray(r.json?.results) && r.json.results.length === batch.length ? r.json.results : null;
     if (!results) {

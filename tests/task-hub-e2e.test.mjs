@@ -526,3 +526,54 @@ test('CLI：run は別の runner が lock を持っているだけなら exit 0�
   assert.match(lines.at(-1), /locked/);
   cleanup(env);
 });
+
+// ─── 2026-11-10 再検証 ───
+
+test('作る時の監査が書けなければ task を残さない：nonce を外して失敗 → 次の回に印の id で作り直し、監査の created と outbox が揃う', async () => {
+  const env = makeEnv();
+  const rec = seal(envelope({ intent: 'mail.send', params: { to: 'x' } }));
+  const realAudit = env.store.audit.bind(env.store);
+  env.store.audit = (e, at) => { if (e.event === 'created') { const err = new Error('lock_timeout'); err.code = 'lock_timeout'; throw err; } return realAudit(e, at); };
+  await assert.rejects(ingestRecord(rec, { keyFor, now: NOW, store: env.store, policy: env.policy }), { code: 'lock_timeout' });
+  assert.deepEqual(env.store.listTasks(), [], '監査の無い task は無い');
+  env.store.audit = realAudit;
+  const r = await ingestRecord(rec, { keyFor, now: NOW + 1, store: env.store, policy: env.policy });
+  assert.equal(r.ok, true);
+  assert.equal(r.duplicate, false);
+  assert.equal(r.state, 'awaiting_approval');
+  const lines = readFileSync(path.join(env.store.dir, 'audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.filter((l) => l.task_id === r.task_id).map((l) => [l.event, l.code ?? null]), [['created', 'recovered']]);
+  assert.equal(env.store.verifyAudit().ok, true);
+  assert.equal(readdirSync(path.join(env.store.dir, 'outbox')).length, 1, '依頼元への知らせ');
+});
+
+test('作った直後のままの task への重複は outbox を書き直す（前の回が outbox の前に止まっていても依頼元が状態を知れる）。動いた後の task には書かない', async () => {
+  const env = makeEnv();
+  const body = envelope({ intent: 'mail.send', params: { to: 'x' } });
+  const first = await ingestRecord(seal(body), { keyFor, now: NOW, store: env.store, policy: env.policy });
+  const ob = path.join(env.store.dir, 'outbox');
+  for (const f of readdirSync(ob)) rmSync(path.join(ob, f));
+  const dup = await ingestRecord(seal(body), { keyFor, now: NOW + 5, store: env.store, policy: env.policy });
+  assert.deepEqual([dup.ok, dup.duplicate, dup.task_id], [true, true, first.task_id]);
+  assert.equal(readdirSync(ob).length, 1);
+  assert.equal(JSON.parse(readFileSync(path.join(ob, readdirSync(ob)[0]), 'utf8')).updated_at, NOW, '時刻は task の updated_at のまま（取り込みの時刻で後の知らせを追い越さない）');
+  // 動いた後（却下）は重複で outbox を増やさない（却下の知らせは却下の時に書かれている）
+  env.store.transition(first.task_id, 'rejected', { event: 'rejected_by_human', code: 'rejected_by_human', at: NOW + 10 });
+  for (const f of readdirSync(ob)) rmSync(path.join(ob, f));
+  await ingestRecord(seal(body), { keyFor, now: NOW + 20, store: env.store, policy: env.policy });
+  assert.deepEqual(readdirSync(ob), []);
+});
+
+test('CLI の intake は run と同じ単独実行の lock を取る：持たれている間は取り込まず file は inbox に残る（exit 0）・空けば取り込む', async () => {
+  const { env, lines, cli, base } = cliEnv();
+  dropInbox(env.inbox, 'a.json', seal(envelope()));
+  const release = env.store.acquireRunLock(env.clock.t);
+  assert.ok(release);
+  assert.equal(await cli(['intake', '--inbox', env.inbox, ...base]), 0);
+  assert.match(lines.at(-1), /取り込まない/);
+  assert.deepEqual(readdirSync(env.inbox).filter((f) => f.endsWith('.json')), ['a.json']);
+  release();
+  assert.equal(await cli(['intake', '--inbox', env.inbox, ...base]), 0);
+  assert.match(lines.at(-1), /取り込み 1 件/);
+  assert.equal(existsSync(path.join(env.store.dir, 'run.lock')), false, 'intake の後に lock を残さない');
+});

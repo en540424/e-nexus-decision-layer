@@ -112,6 +112,11 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 - VPS の queue で Mac が残している封（鍵の設定・時刻・版の違いかもしれないもの）は、`task-intake-sync pull` が読み飛ばして後ろの有効な封を取る（1 回で最大 10 ページ）。残している封があれば出力の `kept` に件数が出て **exit 1** になる＝止まっている依頼が定期実行の失敗として見える。原因（鍵・時計・版）を直せば次の回で取り込まれ、7 日で VPS が捨てる
 - outbox の結果を VPS が永久に拒む場合（`unknown_source` など）は、`outbox-rejected/`（outbox の隣・0700）へ退避して毎回送り直さない（`quarantined` に数える。削除はしない）
 - lock の持ち主は pid だけでなく起動時刻（`started_at`）でも見る：audit・task の lock は 60 秒、run の lock は 30 分を超えたら（pid が別の process に再利用されていても）古いとして引き継ぐ。`run` が lock を取れず、持ち主が 30 分を超えていれば exit 1、lock の競合（`lock_conflict`）は audit に残して走らない
+- **lock の確かめと書き込みは原子的でない**（受け入れた残り・2026-11-10）：持ち主は書く直前に `owns()` で確かめるが、その直後から書き終わるまでの間に持ち主が上限（60 秒）より長く止まると（SIGSTOP・スリープの復帰など）、別の process が古い lock として引き継ぎ、両方が書きうる。監査の鎖が分かれた場合は `verify-audit` が `chain_broken` として見つける（task の記録は state の遷移の検査で、終わった task を動かさない）。OS の排他（flock）は node に無く、依存を足さないため、この形のまま残す
+- **作る時は監査が先**（2026-11-10 再検証）：新しい task は監査の `created` を書いてから task の file を書く。監査が書けなければ task は無く、取り込みは nonce を外して失敗し、次の回に印の id で作り直す（監査は `created`・`recovered`）。作った直後のまま（履歴 1 行）の task への重複は outbox の知らせを書き直す（前の回が outbox の前に止まっていても依頼元が状態を知れる。時刻は task の `updated_at` のまま＝後の承認・却下の知らせを追い越さない）。**残り**：監査の行を書いた後・task の file の前で process が強制終了すると、nonce は取られたままなので次の回は replay として捨てる（監査に task の無い `created` が 1 行残り、依頼元は新しい key で出し直す。nonce を取ってから task が disk に残るまでの窓は前からある）。nonce などを O_EXCL で作って書けなかった時（disk full）は空の file を残さない
+- `intake` の CLI は `run` と同じ単独実行の lock（`run.lock`）を取る：持たれている間は取り込まず exit 0（file は inbox に残る。持ち主が 30 分を超えていれば exit 1）。2 つの intake が同じ file を同時に読み、片方の失敗の後にもう片方が replay として捨てるのを防ぐ
+- `task-intake-sync pull` は、新しく置いた封が無く既にあった封（existing）だけの回もフォルダを fsync してから ack する。macOS の fsync は F_FULLFSYNC ではない（OS の cache までは確実・disk の書き込み cache の電源断には弱い。node に F_FULLFSYNC は無い）
+- `task-intake-sync` の 1 回の運び（pull の各ページ・ack・push）は、要求の時刻を 1 つの時計（`requestClock`）で必ず前より大きくする（2026-11-10。以前は時計が同じ ms のままだと 2 ページ目が VPS に再送として拒まれ exit 1 になった）
 - メールの「返信済み」の印は無く、取り込み直しで category を変えると閉じる（返信待ちは受信から 14 日で数えなくなる）
 - handler が AbortSignal を聞かない非同期処理だと timeout 後も裏で動き続けうる。同期の handler は止められず、戻った後に timeout として扱うだけ（今の handler は短い同期処理）
 - `show` の escape は見えない・紛らわしい制御／空白類の文字を出すが、見た目が同じ別の文字（キリル文字の a など）は区別しない。承認の最後の保証は Human が全文を読むこと（結合文字の重ね書きも同様。上の項）

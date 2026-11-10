@@ -137,7 +137,16 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     case 'intake': {
       const p = needPolicy();
       if (!p) return 1;
-      const rows = await ingestInbox(path.resolve(expand(a.inbox)), { keyFor, now, store, policy: p });
+      // run と同じ単独実行の lock（2026-11-10 再検証）：2 つの intake が同じ inbox の file を同時に読むと、片方の失敗の後にもう片方が replay として捨て、依頼が消える
+      let release;
+      try { release = store.acquireRunLock(now); } catch (e) { if (e?.code === 'lock_conflict') { err('lock の競合（lock_conflict）'); return 1; } throw e; }
+      if (!release) {
+        const age = store.runLockAgeMs(now);
+        out('取り込まない（別の intake か run の最中。次の回に回す）');
+        return Number.isFinite(age) && age > RUN_LOCK_MAX_AGE_MS ? 1 : 0;
+      }
+      let rows;
+      try { rows = await ingestInbox(path.resolve(expand(a.inbox)), { keyFor, now, store, policy: p }); } finally { release(); }
       for (const r of rows) out(`${r.ok ? 'OK ' : 'NG '} ${r.file} ${r.ok ? `${r.task_id} ${r.state}${r.duplicate ? ' (duplicate)' : ''}` : r.code}`);
       out(`取り込み ${rows.filter((r) => r.ok).length} 件・拒否 ${rows.filter((r) => !r.ok).length} 件`);
       return rows.some((r) => !r.ok) ? 1 : 0;

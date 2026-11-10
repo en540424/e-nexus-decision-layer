@@ -55,7 +55,13 @@ export class StoreError extends Error {
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 function writeExcl(file, text) {
   const fd = openSync(file, 'wx', 0o600);
-  try { writeSync(fd, text); } finally { closeSync(fd); }
+  try { writeSync(fd, text); } catch (e) {
+    // 書けなかった（disk full など）：作った空・途中の file を残さない（nonce の印が空のまま残ると、次の回の取り込みが replay として捨てる）
+    try { closeSync(fd); } catch { /* 済 */ }
+    try { unlinkSync(file); } catch { /* 済 */ }
+    throw e;
+  }
+  closeSync(fd);
 }
 /** tmp に書いて rename（途中の中身を見せない）。tmp は O_EXCL */
 function writeAtomic(file, text) {
@@ -281,11 +287,26 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
       if (taken) {
         if (taken.content_digest !== t.content_digest) return { conflict: true, task_id: taken.task_id };
         const existing = TASK_ID_RE.test(taken.task_id) ? this.readTask(taken.task_id) : null;
-        if (existing) return { created: false, task: existing };
+        if (existing) {
+          // 作った直後のまま（何も起きていない）なら、結果の板への知らせを書き直す（前の回が outbox を書く前に止まっていても、依頼元が状態を知れる。同じ名前の file を上書きするだけ）
+          // 時刻は task の updated_at（取り込みの開始の時刻ではない）＝並んで起きた Human の承認・却下の知らせより新しくならない
+          if (existing.history?.length === 1) { const t = Date.parse(existing.updated_at); this._outbox(existing, Number.isFinite(t) ? t : at); }
+          return { created: false, task: existing };
+        }
         // 印だけ残って task が無い（作る途中で止まった）：同じ内容なので、印の id で作り直す
-        return { created: true, task: this._write(this._build(t, taken.task_id, at), 'created', at), recovered: true };
+        return { created: true, task: this._create(this._build(t, taken.task_id, at), at, 'recovered'), recovered: true };
       }
-      return { created: true, task: this._write(this._build(t, id, at), 'created', at) };
+      return { created: true, task: this._create(this._build(t, id, at), at) };
+    },
+    /**
+     * 新しい task を書く。監査の「created」を先に書いてから task の file を書く（2026-11-10 再検証）：監査が書けなければ task は無い＝
+     * 取り込みは nonce を外して失敗し、次の回に印の id で作り直す（監査の無い task を残さない）。task の file が書けなかった時も同じ道（監査は 2 行になりうる）
+     */
+    _create(task, at, code = null) {
+      this.audit({ task_id: task.task_id, event: 'created', state: task.state, code }, at);
+      writeAtomic(taskFile(task.task_id), `${JSON.stringify(task)}\n`);
+      this._outbox(task, at);
+      return task;
     },
     _build(t, id, at) {
       return {

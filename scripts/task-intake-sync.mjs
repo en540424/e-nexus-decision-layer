@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ID_RE } from './lib/task-hub/wire.mjs';
-import { PULL_OFFSET_MAX, ack, keyFromHex, normalizeBase, pull, pushStatuses, writeInbox } from './lib/task-hub/vps-client.mjs';
+import { PULL_OFFSET_MAX, ack, keyFromHex, normalizeBase, pull, pushStatuses, requestClock, writeInbox } from './lib/task-hub/vps-client.mjs';
 
 const MAX_PAGES = 10; // 1 回の pull で進むページ数の上限（残してある封を飛び越える分）
 const ACCOUNT = 'e-nexus'; // scripts/lib/env-file.mjs の readCredential と同じ
@@ -54,7 +54,7 @@ export async function runSync({ argv, keychain = readKeychain, fetchImpl, now = 
   if (!baseUrl || !keyHex) return { code: 'not_configured', exit: 0 };
   const key = keyFromHex(keyHex);
   if (!key || !normalizeBase(baseUrl)) return { code: 'config_invalid', exit: 1 };
-  const common = { baseUrl: baseUrl.trim(), key, fetchImpl, now };
+  const common = { baseUrl: baseUrl.trim(), key, fetchImpl, now, stamp: requestClock(now) }; // 1 回の運びの全部の要求で時刻を進める（同じ ms の 2 ページ目・2 回目の ack を再送と見なされない）
 
   if (command === 'pull') {
     const max = opts.max === undefined ? 50 : Number(opts.max);
