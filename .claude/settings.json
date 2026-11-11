@@ -6,7 +6,8 @@
                                          "hooks":  [
                                                        {
                                                            "type":  "command",
-                                                           "command":  "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-devlog-before-commit.js\""
+                                                           "command":  "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-devlog-before-commit.js\"",
+                                                           "timeout":  90
                                                        }
                                                    ]
                                      }
