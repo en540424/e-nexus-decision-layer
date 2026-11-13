@@ -77,9 +77,11 @@ test('Task Hub の回：config.json が無ければ何もしない。段の結�
   assert.equal(statSync(path.join(root, CYCLE_LAST_FILE)).mode & 0o777, 0o600);
   assert.equal(statSync(path.join(root, 'inbox', 'vps-intake')).mode & 0o077, 0);
   r = cycle({ store: root, run: (node, args) => (args[1] === 'run' ? { status: 1, stdout: '' } : { status: 0, stdout: '{"code":"pulled","pulled":2}\n' }) });
-  assert.deepEqual(r.steps.map((s) => s.step), ['pull', 'intake', 'run', 'collect_hermes', 'push']);
+  assert.deepEqual(r.steps.map((s) => s.step), ['pull', 'intake', 'run', 'collect_hermes', 'business', 'push'], '業務の段（2026-11-13）は休眠・時刻前でない時だけ残る');
   assert.deepEqual([r.code, r.exit, r.steps[0].pulled], ['problem', 1, 2]);
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, CYCLE_LAST_FILE), 'utf8')).failed, ['run']);
+  const dormant = cycle({ store: root, run: (node, args) => ({ status: 0, stdout: `${JSON.stringify({ code: path.basename(args[0]) === 'business-cycle.mjs' ? 'not_due' : 'pulled' })}\n` }) });
+  assert.deepEqual(dormant.steps.map((s) => s.step), ['pull', 'intake', 'run', 'collect_hermes', 'push'], '週の時刻前の業務の段は残さない');
   // PAUSE の間は run を呼ばない（失敗に数えない）
   writeFileSync(path.join(root, 'PAUSE'), '');
   calls.length = 0;

@@ -529,7 +529,8 @@ const VALUE_SHAPES = Object.freeze([
   [/^host_health$/, /^(?:disabled|state_unwritable)$/],
   [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed|boundary_blocked)$/],
   [/^heartbeat$/, /^(?:sent|failed|rejected|config_invalid)$/],
-  [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push)(?:,(?:pull|intake|run|collect_hermes|push)){0,4})?)$/],
+  [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push|business)(?:,(?:pull|intake|run|collect_hermes|push|business)){0,5})?)$/],
+  [/^business_backup$/, /^(?:ok|problem|stale|config_invalid)$/],
   [/^task_hub_approval$/, /^\d{1,3}$/],
   [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'check_failed')],
   [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],
@@ -816,6 +817,8 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (taskHub) { const c = await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubCycleItem(taskHub, Date.parse(at), { scheduled: taskHubScheduled })).catch(() => null); if (c) items.push(c); }
     // 承認待ちの件数・止まった queue・Hermes の実行の問題（2026-11-13・読むだけ。件数とコードだけ）
     if (taskHub) items.push(...await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubWorkItems(taskHub, Date.parse(at))).catch(() => []));
+    // 工程表の週 1 回のバックアップ（2026-11-13・business-last.json がある時だけ）
+    if (taskHub) { const b = await import('./lib/task-hub/audit-watch.mjs').then((m) => m.businessBackupItem(taskHub, Date.parse(at))).catch(() => null); if (b) items.push(b); }
     // ドコモメールの読み取りの最後の結果（2026-11-13・fetch-last.json がある時だけ・連続 3 回の失敗で warn）
     if (docomoState) { const d = await import('./lib/docomo-watch.mjs').then((m) => m.docomoFetchItem(docomoState)).catch(() => null); if (d) items.push(d); }
     // 判定の前に確かめる（今回の結果で知らせる）

@@ -1,6 +1,7 @@
 /**
  * Task Hub の handler（2026-11-09・MA-24）。ここにあるものだけが無人で走りうる。どれも「読む・自分の記録に書く」だけ。
- * process を起こさない・通信しない・メールや予定を操作しない（そういう handler はそもそも無い。intents.json の handler: null の intent は承認されても blocked/no_handler）。
+ * process を起こさない・メールや予定を操作しない（そういう handler はそもそも無い。intents.json の handler: null の intent は承認されても blocked/no_handler）。
+ * 通信は Dropbox の業務の handler（business-handlers.mjs・2026-11-13）だけ：role ごとの資格情報（読みは書けない・書きは App folder の中だけ）と business ごとの許可フォルダ。
  *
  * handler の形：{ resumable, run({ task, store, config, signal, now }) → { result } }。result は JSON で 16 KiB まで。
  * 失敗は fail(code, { retryable, expected }) を throw する。expected: true は「想定内の終わり方」（休眠中・未設定）で、runner の連続失敗に数えない。
@@ -13,15 +14,10 @@ import { readBriefFile } from '../runtime-brief.mjs';
 import { analyzeEvents, keepEvent, keepMail, morningReport, parseTime } from './digest.mjs';
 import { jobStatus, RETRYABLE } from './hermes-jobs.mjs';
 
-export class HandlerError extends Error {
-  constructor(code, { retryable = false, expected = false } = {}) {
-    super(code);
-    this.code = code;
-    this.retryable = retryable;
-    this.expected = expected;
-  }
-}
-export const fail = (code, opts) => new HandlerError(code, opts);
+import { fail, HandlerError } from './handler-error.mjs';
+import { BUSINESS_HANDLERS } from './business-handlers.mjs';
+
+export { fail, HandlerError };
 
 const iso = (ms) => new Date(ms).toISOString();
 const sameRow = (a, b) => JSON.stringify({ ...a, ingested_at: 0 }) === JSON.stringify({ ...b, ingested_at: 0 });
@@ -207,4 +203,5 @@ export const HANDLERS = Object.freeze({
   'report.morning': { resumable: true, run: reportMorning }, // 読むだけ
   'note.record': { resumable: true, run: noteRecord }, // task_id で重複しない
   'hermes.task': { resumable: false, run: hermesTask }, // 外へ渡す：途中で止まったら二度書かない（Human が見る）
+  ...BUSINESS_HANDLERS,
 });

@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOADER, productionParams, sandboxArgs, WORK_PROFILE } from './lib/hermes-sandbox.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
+import { businessServices } from './lib/task-hub/business-services.mjs';
 import { dismissJob, jobStatus, pgrepAlive } from './lib/task-hub/hermes-jobs.mjs';
 import { runWork } from './lib/task-hub/hermes-work.mjs';
 import { createPolicy, loadCatalog, loadLocalConfig } from './lib/task-hub/policy.mjs';
@@ -187,7 +188,7 @@ async function approveHermesTasks({ store, out, isTTY }) {
 async function deliver({ store, configPath, out }) {
   const policy = createPolicy({ catalog: loadCatalog(), config: loadLocalConfig(configPath) });
   for (let i = 0; i < 6; i += 1) {
-    const r = await runOnce({ store, policy, handlers: HANDLERS, maxTasks: 10 });
+    const r = await runOnce({ store, policy, handlers: HANDLERS, config: { ...policy.config, services: businessServices(policy.config) }, maxTasks: 10 });
     if (r.skipped !== 'locked') { for (const x of r.ran) out(`queue：${x.task_id} → ${x.state}${x.code ? ` (${x.code})` : ''}`); return; }
     out('Task Hub の定期の回の最中。20 秒待つ');
     await new Promise((res) => { setTimeout(res, 20_000); });

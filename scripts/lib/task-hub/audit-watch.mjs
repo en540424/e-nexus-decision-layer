@@ -44,7 +44,7 @@ export function taskHubAuditItem(dir) {
  */
 export const CYCLE_WATCH_ID = 'task_hub_cycle';
 const CYCLE_STALE_MS = 30 * 60_000;
-const STEP_NAMES = new Set(['pull', 'intake', 'run', 'collect_hermes', 'push']);
+const STEP_NAMES = new Set(['pull', 'intake', 'run', 'collect_hermes', 'push', 'business']);
 export function taskHubCycleItem(dir, now = Date.now(), { scheduled = false } = {}) {
   const item = (level, value) => ({ id: CYCLE_WATCH_ID, level, value, kind: 'state' });
   try {
@@ -114,4 +114,23 @@ export function taskHubWorkItems(dir, now = Date.now()) {
   } catch {
     return [{ id: QUEUE_WATCH_ID, level: 'warn', value: 'check_failed', kind: 'state' }];
   }
+}
+
+/**
+ * 工程表の週 1 回のバックアップ（2026-11-13・scripts/business-cycle.mjs の business-last.json）。無ければ項目なし（休眠）。
+ * problem：最後の週の回で失敗した file がある／stale：成功した週の回が 8 日より前（Mac が止まっていた・取れない状態が続いた）。値はコードだけ
+ */
+export const BUSINESS_WATCH_ID = 'business_backup';
+export function businessBackupItem(dir, now = Date.now()) {
+  try {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir) || !existsSync(path.join(dir, 'business-last.json'))) return null;
+    const j = readJsonSafe(path.join(dir, 'business-last.json'), 16_384);
+    const item = (level, value) => ({ id: BUSINESS_WATCH_ID, level, value, kind: 'state' });
+    if (!j) return item('warn', 'problem');
+    if (j.code === 'config_invalid') return item('warn', 'config_invalid');
+    if (j.code === 'problem') return item('warn', 'problem');
+    const okAt = Date.parse(j.last_weekly_ok_at);
+    if (Number.isFinite(okAt) && now - okAt > 8 * 86_400_000) return item('warn', 'stale');
+    return item('ok', 'ok');
+  } catch { return null; }
 }

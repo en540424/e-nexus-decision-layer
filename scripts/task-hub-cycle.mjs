@@ -65,6 +65,12 @@ export function cycle({ store = DEFAULT_STORE, max = DEFAULT_MAX, run = spawnSyn
   const breaker = paused && pauseCodeOf(store) === 'circuit_open';
   if (!paused) go('run', 'task-hub.mjs', ['run', '--max', String(max), ...s], RUN_TIMEOUT_MS);
   if (!hermesRunning(store)) go('collect_hermes', 'task-hub.mjs', ['collect-hermes', ...s]);
+  // 業務の週 1 回のバックアップ（2026-11-13・dropbox の設定が無ければ何もしない＝休眠。時刻が来た週だけ通信する）
+  // Human の PAUSE の間は業務の段も動かさない（Task Hub を止めた＝Dropbox にも触らない・監査 nit 9）
+  if (!paused) {
+    const biz = go('business', 'business-cycle.mjs', ['--store', store], RUN_TIMEOUT_MS);
+    if (biz.exit === 0 && ['not_configured', 'not_due'].includes(biz.code)) steps.pop(); // 休眠・時刻前は段の一覧に残さない
+  }
   if (pull.code !== 'not_configured') go('push', 'task-intake-sync.mjs', ['push', '--outbox', path.join(store, 'outbox'), '--sent', path.join(store, 'outbox-sent')]);
   const bad = steps.filter((x) => x.exit !== 0);
   // VPS の URL・鍵が Keychain に無い＝受け渡しは休眠（ok と区別して残す。定期の job がある時は host-health が warn にする）

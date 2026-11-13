@@ -72,6 +72,84 @@
       "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 } } },
       "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
     },
+    "dropbox.search": {
+      "class": "auto", "handler": "dropbox.search", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["query"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 200 }, "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "note": "2026-11-13：その business の許可フォルダ（config の dropbox・Human が承認）の中だけを、読み取り専用の資格情報で検索。名前・path・大きさ・更新時刻だけ返す"
+    },
+    "dropbox.list": {
+      "class": "auto", "handler": "dropbox.list", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": { "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "note": "許可フォルダの中の 1 つのフォルダの一覧（読み取り専用）"
+    },
+    "schedule.read": {
+      "class": "auto", "handler": "schedule.read", "timeout_ms": 45000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "sheet": { "type": "string", "minLength": 1, "maxLength": 31 }, "query": { "type": "string", "minLength": 1, "maxLength": 100 } } },
+      "note": "工程表（config の schedule_files）を読むだけ。query を含む行（現場名など）を返す。工程表に書く道は無い"
+    },
+    "schedule.backup": {
+      "class": "auto", "handler": "schedule.backup", "timeout_ms": 60000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "note": "工程表の臨時バックアップ（AI を使わない）。Dropbox の版を content_hash で確かめ、Dropbox の外の Mac の場所へ保存・読み直して sha256 を確かめた時だけ completed。同じ中身なら新しい世代を作らない"
+    },
+    "schedule.backup.list": {
+      "class": "auto", "handler": "schedule.backup.list", "timeout_ms": 10000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" } } },
+      "note": "バックアップの世代の一覧（新しい順・20 件まで）"
+    },
+    "schedule.restore": {
+      "class": "auto", "handler": "schedule.restore", "timeout_ms": 60000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "generation": { "type": "string", "pattern": "^[0-9TZ]{15}-[0-9a-f]{8}$" }, "at": { "type": "string", "format": "iso" } } },
+      "note": "世代を App folder の restore/ へ別の file として出す（原本は変えない・置き換えは Human）"
+    },
+    "karte.create": {
+      "class": "auto", "handler": "karte.create", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["case_id", "site_name"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "site_name": { "type": "string", "minLength": 1, "maxLength": 120 }, "fields": { "type": "object", "additionalProperties": false, "properties": { "site_name": { "type": "string", "minLength": 1, "maxLength": 2000 }, "case_id": { "type": "string", "minLength": 1, "maxLength": 2000 }, "address": { "type": "string", "minLength": 1, "maxLength": 2000 }, "survey_date": { "type": "string", "minLength": 1, "maxLength": 2000 }, "schedule": { "type": "string", "minLength": 1, "maxLength": 2000 }, "work": { "type": "string", "minLength": 1, "maxLength": 2000 }, "building": { "type": "string", "minLength": 1, "maxLength": 2000 }, "floors_height": { "type": "string", "minLength": 1, "maxLength": 2000 }, "perimeter": { "type": "string", "minLength": 1, "maxLength": 2000 }, "scaffold_area": { "type": "string", "minLength": 1, "maxLength": 2000 }, "materials": { "type": "string", "minLength": 1, "maxLength": 2000 }, "carport": { "type": "string", "minLength": 1, "maxLength": 2000 }, "special": { "type": "string", "minLength": 1, "maxLength": 2000 }, "access": { "type": "string", "minLength": 1, "maxLength": 2000 }, "neighborhood": { "type": "string", "minLength": 1, "maxLength": 2000 }, "safety": { "type": "string", "minLength": 1, "maxLength": 2000 }, "photos": { "type": "string", "minLength": 1, "maxLength": 2000 }, "estimates": { "type": "string", "minLength": 1, "maxLength": 2000 }, "process": { "type": "string", "minLength": 1, "maxLength": 2000 }, "survey_log": { "type": "string", "minLength": 1, "maxLength": 2000 }, "human_log": { "type": "string", "minLength": 1, "maxLength": 2000 }, "ai_notes": { "type": "string", "minLength": 1, "maxLength": 2000 }, "unknowns": { "type": "string", "minLength": 1, "maxLength": 2000 } } } } },
+      "note": "現場カルテを AI の共通の書式で作る（App folder の karte/・在れば作らない）。渡された値だけを書き、無い項目は未確認"
+    },
+    "karte.get": {
+      "class": "auto", "handler": "karte.get", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["case_id"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "section": { "type": "string", "enum": ["site_name", "case_id", "address", "survey_date", "schedule", "work", "building", "floors_height", "perimeter", "scaffold_area", "materials", "carport", "special", "access", "neighborhood", "safety", "photos", "estimates", "process", "survey_log", "human_log", "ai_notes", "unknowns"] } } },
+      "note": "現場カルテを読む（全文は 6000 字まで・節を指定できる）"
+    },
+    "karte.append": {
+      "class": "auto", "handler": "karte.append", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["case_id", "section", "text"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "section": { "type": "string", "enum": ["site_name", "case_id", "address", "survey_date", "schedule", "work", "building", "floors_height", "perimeter", "scaffold_area", "materials", "carport", "special", "access", "neighborhood", "safety", "photos", "estimates", "process", "survey_log", "human_log", "ai_notes", "unknowns"] }, "text": { "type": "string", "minLength": 1, "maxLength": 2000 }, "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } } },
+      "note": "節の末尾に AI の囲みを差し込むだけ（Human の文は 1 文字も変えない・rev つきで上げる＝同時の編集は読み直す）"
+    },
+    "karte.search": {
+      "class": "auto", "handler": "karte.search", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["query"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 100 } } },
+      "note": "カルテの検索（App folder の karte/ の中だけ）"
+    },
+    "karte.report": {
+      "class": "auto", "handler": "karte.report", "timeout_ms": 30000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["case_id"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" } } },
+      "note": "決まった形の要点（作業予定・注意事項・未確認事項・現調履歴の抜き出し。AI の要約ではない）"
+    },
+    "estimate.ai.create": {
+      "class": "human_required", "handler": "estimate.ai.create", "timeout_ms": 60000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["original_path", "sheet_name", "title", "rows"], "additionalProperties": false, "properties": { "original_path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" }, "sheet_name": { "type": "string", "minLength": 4, "maxLength": 31, "pattern": "^AI_" }, "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "rows": { "type": "array", "maxItems": 300, "items": { "type": "object", "required": ["item", "qty", "price"], "additionalProperties": false, "properties": { "item": { "type": "string", "minLength": 1, "maxLength": 200 }, "spec": { "type": "string", "maxLength": 200 }, "qty": { "type": "number" }, "unit": { "type": "string", "maxLength": 20 }, "price": { "type": "number" }, "note": { "type": "string", "maxLength": 200 } } } } } },
+      "note": "見積書の AI 作業版に AI の tab を足す（原本は読むだけ・L2＝毎回 Human の承認）。Human の tab と他の部品は 1 byte も変えない（保存の前に確かめる）"
+    },
+    "estimate.ai.edit": {
+      "class": "human_required", "handler": "estimate.ai.edit", "timeout_ms": 60000, "max_params_bytes": 14000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["working_name", "sheet_name", "title", "rows"], "additionalProperties": false, "properties": { "working_name": { "type": "string", "minLength": 1, "maxLength": 120 }, "sheet_name": { "type": "string", "minLength": 4, "maxLength": 31, "pattern": "^AI_" }, "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "rows": { "type": "array", "maxItems": 300, "items": { "type": "object", "required": ["item", "qty", "price"], "additionalProperties": false, "properties": { "item": { "type": "string", "minLength": 1, "maxLength": 200 }, "spec": { "type": "string", "maxLength": 200 }, "qty": { "type": "number" }, "unit": { "type": "string", "maxLength": 20 }, "price": { "type": "number" }, "note": { "type": "string", "maxLength": 200 } } } } } },
+      "note": "AI 作業版の AI の tab（台帳に AI が作ったと記録した AI_ の tab）だけを作り直す"
+    },
     "freeform.request": {
       "class": "human_required", "handler": null,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },

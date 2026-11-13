@@ -6,6 +6,7 @@
  * local config（repo に置かない）：{ sources: { <id>: { channels: [..], businesses: [..], intents?: [..] } }, businesses: [..], hermes_inbox?, brief_path?, utc_offset_minutes? }
  */
 import { readFileSync, statSync } from 'node:fs';
+import { loadScopes } from '../dropbox/scope.mjs';
 import { createDecisionLayerEngine, createGateway, createMemoryMeter } from '../../../src/index.mjs';
 import { interpretEnvelope } from '../../../consumer-kit/node/interpret.mjs';
 import { DEFAULT_MAX_PARAMS_BYTES, INTENT_RE, checkSpec } from './envelope.mjs';
@@ -63,6 +64,13 @@ export function validateConfig(c) {
   }
   for (const k of ['hermes_inbox', 'hermes_outbox', 'brief_path']) if (c[k] !== undefined && (typeof c[k] !== 'string' || !c[k].startsWith('/'))) bad(k);
   if (c.utc_offset_minutes !== undefined && !(Number.isInteger(c.utc_offset_minutes) && c.utc_offset_minutes >= -720 && c.utc_offset_minutes <= 840)) bad('utc_offset_minutes');
+  // Dropbox の業務の範囲（2026-11-13・Human が承認したフォルダだけ）。business は上の businesses のどれか
+  if (c.dropbox !== undefined) {
+    let scopes;
+    try { scopes = loadScopes(c.dropbox); } catch { bad('dropbox'); }
+    for (const b of scopes.keys()) if (!c.businesses.includes(b)) bad(`dropbox.${b}`);
+  }
+  if (c.business_backup_dir !== undefined && (typeof c.business_backup_dir !== 'string' || !c.business_backup_dir.startsWith('/'))) bad('business_backup_dir');
   return c;
 }
 

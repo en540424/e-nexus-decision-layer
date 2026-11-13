@@ -188,6 +188,8 @@ export function checkSpec(spec, v, at = '$') {
       return null;
     case 'integer':
       return Number.isInteger(v) ? null : bad('type');
+    case 'number': // 2026-11-13：見積の数量・単価（小数）。有限の数だけ
+      return typeof v === 'number' && Number.isFinite(v) ? null : bad('type');
     case 'boolean':
       return typeof v === 'boolean' ? null : bad('type');
     default:

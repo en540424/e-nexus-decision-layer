@@ -55,3 +55,27 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 ## 5. 確かめ方（Claude Code）
 
 `node scripts/task-hub.mjs list`（Mac の task）・`node scripts/task-hub-cycle.mjs`（手で 1 回）・`node scripts/task-intake-edge-check.mjs`（入口の 11 項目）。往復の検収は Human が EN司令塔に依頼して task_ref を伝える。
+
+## 6. 普段の言葉での使い方（2026-11-13）
+
+「今使える」＝EN司令塔に許可済みで本番で動く。「承認の後」＝実装・試験は済み、Human の承認（許可フォルダ・EN司令塔への公開・資格情報）の後に使える。
+
+| したいこと | EN司令塔への言い方の例 | 中身（intent） | 状態 |
+|---|---|---|---|
+| Mac mini の状態 | 「Mac の状況を詳しく教えて」 | `status.query {detail:true}` | 今使える |
+| Hermes の状態 | 「Hermes の業務はどうなってる？」 | `status.query {detail:true}` の hermes・`task.status {view:"hermes"}` | 今使える |
+| 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | 今使える（承認は Mac の端末） |
+| 朝のまとめ | 「朝のまとめを出して」 | `report.morning` | 今使える |
+| メモ | 「現場A のメモ：図面は来週」 | `note.record {text, case_ref}` | 今使える |
+| 現場資料の検索 | 「現場A の平面図を探して」 | `dropbox.search` | 承認の後（Dropbox の設定・許可フォルダ・公開） |
+| 現場カルテの確認 | 「C-001 のカルテの注意事項は？」 | `karte.get {section:"safety"}`・`karte.report` | 承認の後 |
+| 現場カルテへの追記 | 「C-001 の搬入経路に、西側から入れると追記して」 | `karte.append` | 承認の後 |
+| 見積の AI タブの作成 | 「現場A の見積を見て、AI_案2 に新しい見積を作って」 | `estimate.ai.create`（毎回 Mac で承認） | 承認の後 |
+| AI タブの修正 | 「AI_案2 の足場の数量を 300 にして」 | `estimate.ai.edit`（毎回 Mac で承認） | 承認の後 |
+| 工程表の予定 | 「工程表で現場A の予定は？」 | `schedule.read {query}` | 承認の後 |
+| 工程表の臨時バックアップ | 「今の工程表をバックアップして」 | `schedule.backup`（完了は保存と検証の後だけ） | 承認の後 |
+| バックアップの履歴 | 「工程表のバックアップの一覧」 | `schedule.backup.list` | 承認の後 |
+| 昨日の工程表 | 「昨日の工程表を出して」 | `schedule.restore {at}`（別の file） | 承認の後 |
+| ドコモメール | 「ドコモの新着は？」 | （読み取りの取得は実装済み・資格情報と取り込みの決定の後） | 承認の後 |
+
+Human が「人間が作ったタブ 1 と 2 は触らないで」と言わなくても、AI が直せるのは AI が作った `AI_` のタブだけ（docs/dropbox-business.md §6）。

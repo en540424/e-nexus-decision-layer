@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { approve, confirmCodeOf, dismiss, reject } from './lib/task-hub/approval.mjs';
 import { keepEvent, keepMail } from './lib/task-hub/digest.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
+import { businessServices } from './lib/task-hub/business-services.mjs';
 import { pgrepAlive, recoverInterrupted } from './lib/task-hub/hermes-jobs.mjs';
 import { collectHermesResults } from './lib/task-hub/hermes-results.mjs';
 import { ingestInbox, submitLocal } from './lib/task-hub/intake.mjs';
@@ -185,7 +186,7 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     case 'run': {
       const p = needPolicy();
       if (!p) return 1;
-      const r = await runOnce({ store, policy: p, handlers: HANDLERS, now: clock, maxTasks: Number(a.max ?? 10) });
+      const r = await runOnce({ store, policy: p, handlers: HANDLERS, config: { ...p.config, services: businessServices(p.config) }, now: clock, maxTasks: Number(a.max ?? 10) });
       if (r.skipped) out(`実行しない（${r.skipped}${r.skipped === 'paused' ? `：${store.pauseCode() ?? ''}` : ''}）`);
       for (const x of r.recovered) out(`復旧 ${x.task_id} → ${x.state}`);
       for (const x of r.ran) out(`${x.task_id} → ${x.state}${x.code ? ` (${x.code})` : ''}`);
