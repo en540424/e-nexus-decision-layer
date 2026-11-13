@@ -62,11 +62,17 @@ if [ ! -f "$ENV_FILE" ]; then
   ( umask 077; printf 'TASK_INTAKE_CHANNEL_KEY=%s\nTASK_INTAKE_CHANNEL=vps-intake\nTASK_INTAKE_SOURCES=%s\nTASK_INTAKE_PORT=%s\nTASK_INTAKE_STATE=/var/lib/e-nexus-task-intake\n' "$key" "$SOURCES_FILE" "$PORT" > "$ENV_FILE" )
   chown root:root "$ENV_FILE"
   chmod 0600 "$ENV_FILE"  # 読むのは systemd（PID 1）
-  echo
-  echo "Mac の Keychain（E-NEXUS/edl/task-intake-vps-intake）へ入れる channel の鍵（この画面にだけ出します）："
-  echo "$key"
+  if [ -n "${TASK_INTAKE_KEY_OUT:-}" ]; then
+    # 2026-11-11：画面に出さず 0600 の新しい file へ（Mac の connect-from-mac.sh が取り、Keychain へ入れて消す）
+    ( umask 077; set -o noclobber; printf '%s\n' "$key" > "$TASK_INTAKE_KEY_OUT" )
+    echo "channel の鍵：受け渡しの file に書きました（画面には出しません）"
+  else
+    echo
+    echo "Mac の Keychain（E-NEXUS/edl/task-intake-vps-intake）へ入れる channel の鍵（この画面にだけ出します）："
+    echo "$key"
+    echo
+  fi
   unset key
-  echo
 fi
 
 ( set -a; . "$ENV_FILE"; set +a; "$NODE" "$APP/deploy/vps-task-intake/intake.mjs" --check ) || { echo "NG：env か sources の形が違います（service は変えていません）" >&2; exit 1; }

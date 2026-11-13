@@ -14,7 +14,7 @@
  * 限界：VPS・Cloudflare が止まると依頼も結果も届かない。Bearer 鍵が漏れると、その bot として依頼を置ける（置かれた依頼は Mac の Human の承認と policy を通る）。
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -529,8 +529,19 @@ if (isMain) {
     if (!file || !arg1) { console.error('usage: TASK_INTAKE_SOURCES=<file> node intake.mjs --add-source <id> [intent,…] | --remove-source <id>'); process.exit(2); }
     try {
       if (flag === '--add-source') {
-        const key = addSource(file, arg1, arg2 ? arg2.split(',').filter(Boolean) : undefined);
-        console.log(`source=${arg1}\nBearer key（この画面にだけ出ます。Grok Bot の MCP 設定へ貼り、控えは残さない）：\n${key}`);
+        // TASK_INTAKE_KEY_OUT（2026-11-11）：画面に出さず 0600 の新しい file へ書く（Mac の connect-from-mac.sh が ssh で取り、Keychain へ入れて消す）。
+        // 先に file を作る（既にあれば登録しない＝誰も鍵を持たない source を残さない）
+        const out = process.env.TASK_INTAKE_KEY_OUT;
+        const fd = out ? openSync(out, 'wx', 0o600) : null;
+        let key;
+        try { key = addSource(file, arg1, arg2 ? arg2.split(',').filter(Boolean) : undefined); } catch (e) { if (fd !== null) { closeSync(fd); unlinkSync(out); } throw e; }
+        if (fd !== null) {
+          writeSync(fd, `${key}\n`);
+          closeSync(fd);
+          console.log(`source=${arg1}\nBearer key: written to the handoff file (not shown)`);
+        } else {
+          console.log(`source=${arg1}\nBearer key（この画面にだけ出ます。Grok Bot の MCP 設定へ貼り、控えは残さない）：\n${key}`);
+        }
       } else {
         console.log(removeSource(file, arg1) ? `removed=${arg1}` : 'not_found');
       }

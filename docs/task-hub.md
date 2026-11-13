@@ -112,7 +112,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 - VPS の queue で Mac が残している封（鍵の設定・時刻・版の違いかもしれないもの）は、`task-intake-sync pull` が読み飛ばして後ろの有効な封を取る（1 回で最大 10 ページ）。残している封があれば出力の `kept` に件数が出て **exit 1** になる＝止まっている依頼が定期実行の失敗として見える。原因（鍵・時計・版）を直せば次の回で取り込まれ、7 日で VPS が捨てる
 - outbox の結果を VPS が永久に拒む場合（`unknown_source` など）は、`outbox-rejected/`（outbox の隣・0700）へ退避して毎回送り直さない（`quarantined` に数える。削除はしない）
 - lock の持ち主は pid だけでなく起動時刻（`started_at`）でも見る：audit・task の lock は 60 秒、run の lock は 30 分を超えたら（pid が別の process に再利用されていても）古いとして引き継ぐ。`run` が lock を取れず、持ち主が 30 分を超えていれば exit 1、lock の競合（`lock_conflict`）は audit に残して走らない
-- **lock の確かめと書き込みは原子的でない**（受け入れた残り・2026-11-10）：持ち主は書く直前に `owns()` で確かめるが、その直後から書き終わるまでの間に持ち主が上限（60 秒）より長く止まると（SIGSTOP・スリープの復帰など）、別の process が古い lock として引き継ぎ、両方が書きうる。監査の鎖が分かれた場合は `verify-audit` が `chain_broken` として見つけ、**Human が `runtime-ops human`・`overview` を実行した時に priority 1 で出す**（読むだけ・2026-11-10）。無人の見張りは §13（休眠の check・Human が有効にする）。task の記録は state の遷移の検査で、終わった task を動かさない。OS の排他（flock）は node に無く、依存を足さないため、防ぐのではなく見つける形にしている
+- **lock の確かめと書き込みは原子的でない**（受け入れた残り・2026-11-10）：持ち主は書く直前に `owns()` で確かめるが、その直後から書き終わるまでの間に持ち主が上限（60 秒）より長く止まると（SIGSTOP・スリープの復帰など）、別の process が古い lock として引き継ぎ、両方が書きうる。監査の鎖が分かれた場合は `verify-audit` が `chain_broken` として見つけ、**Human が `runtime-ops human`・`overview` を実行した時に priority 1 で出す**（読むだけ・2026-11-10）。無人の見張りは §13（2026-11-11 から既定で有効）。task の記録は state の遷移の検査で、終わった task を動かさない。OS の排他（flock）は node に無く、依存を足さないため、防ぐのではなく見つける形にしている
 - **作る時は監査が先**（2026-11-10 再検証）：新しい task は監査の `created` を書いてから task の file を書く。監査が書けなければ task は無く、取り込みは nonce を外して失敗し、次の回に印の id で作り直す（監査は `created`・`recovered`）。作った直後のまま（履歴 1 行）の task への重複は outbox の知らせを書き直す（前の回が outbox の前に止まっていても依頼元が状態を知れる。時刻は task の `updated_at` のまま＝後の承認・却下の知らせを追い越さない）。**強制終了の後**（2026-11-10）：nonce の印は「取った時刻＋pending」で、取り込みが終わると `done` になる（1 行だけの古い形は終わった印）。印を終わらせられない時（disk のエラー）は監査に `nonce_finish_failed` を残して投げる＝file は inbox に残り、次の回で終わらせ直す（task にならなかった封はその時の policy でもう一度判定される）。終わっていない印（前の回が task を書き終える前に止まった）は replay にせず、印に書いた時刻（その intake の回の開始の時刻）から 60 秒未満なら `nonce_busy`（file は inbox に残る）、それより古ければ引き継いで取り込み直す（重複は (source, key) の印で 1 件に収まる・監査には task の無い `created` が 1 行残りうる）。nonce などを O_EXCL で作って書けなかった時（disk full）は空の file を残さない
 - **終わった印の後・done への移動の前に止まった封**（2026-11-10 監査 F8・受け入れた残り）：次の回は `replay` として rejected/ へ移し exit 1 になるが、task は 1 件できている（`list` で確かめられる）。同じ封の再送を見える形（replay・rejected）に保つため、この狭い窓のために replay の扱いは変えない
 - `intake` の CLI は `run` と同じ単独実行の lock（`run.lock`）を取る：持たれている間は取り込まず exit 0（file は inbox に残る。持ち主が 30 分を超えていれば exit 1）。2 つの intake が同じ file を同時に読み、片方の失敗の後にもう片方が replay として捨てるのを防ぐ
@@ -141,7 +141,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 
 ## 13. 監査の鎖の無人の見張りと、壊れた時の手順（2026-11-10）
 
-**見張り（休眠・Human が有効にする）**：host-health に `--task-hub <保存先の絶対 path>` を渡した時だけ、毎回（:20・:50）監査の鎖を読むだけで確かめる（`lib/task-hub/audit-watch.mjs`。store を開かない・作らない・直さない・上限 32 MB）。
+**見張り**（2026-11-11 から既定の保存先に `config.json` があれば有効。§14）：host-health に `--task-hub <保存先の絶対 path>` を渡した時か、既定の保存先に config.json がある時、毎回（:20・:50）監査の鎖を読むだけで確かめる（`lib/task-hub/audit-watch.mjs`。store を開かない・作らない・直さない・上限 32 MB）。
 
 - 正常：`task_hub_audit` が ok の 1 項目として記録されるだけ（通知しない）
 - 鎖が壊れている（`chain_broken`・`unparseable`・`truncated`・`tip_mismatch`・`tip_missing`）：crit。hold 0 ですぐ 1 通、本文は固定の文と**コードだけ**（task の id・中身・path は出さない）。新しいコードが増えた時だけ知らせ直す
@@ -157,3 +157,12 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 2. `chain_broken`：その行の前後を読む（`sed -n '<n-2>,<n+1>p' audit.jsonl`）。同じ `prev` の 2 行＝2 つの書き手の分岐（§11 の lock の限界。task の state は遷移の検査で守られる）。それ以外の書き換え＝改ざんの疑い。task の file・`history` と照らす
 3. `truncated`・`tip_mismatch`：バックアップ（`runtime-backup`）の同じ file と比べ、消えた行があるかを見る
 4. 原因が分かったら、壊れた log を `audit.jsonl.broken-<日付>` に改名して残し（消さない）、`audit.tip` も同じく改名する。次の書き込みが新しい鎖を 1 行目から始める。改名と理由は作業ログに残す
+
+## 14. 本番の回（2026-11-11）
+
+- **保存先の本番の設定**：`~/e-nexus-runtime/mac-runtime-state/task-hub/config.json`（repo の外・0600）。第 1 段（Human 指示 2026-11-11）：VPS から来る source は `grok-commander`（EN司令塔）だけ・business は `e-nexus` だけ・intents は `status.query`・`task.status`・`report.morning`・`note.record`＋`hermes.task`（2026-11-11 Human 承認。**毎回 Mac の端末での承認が要る**・承認の前に Hermes へ渡らない）。E-STEP・個人・メールの操作は含めない（VPS の `add-source` でも同じ intents に絞る＝2 重。`connect-from-mac.sh`・`vps-apply.sh` は `--source` に `--intents` を必須にする）。`human-cli` は Human の端末からの依頼
+- **1 回の回し**：`node scripts/task-hub-cycle.mjs`＝VPS から pull → intake → run → collect-hermes → push（run は 120 秒・ほかの段は 45 秒で打ち切り・既定 5 件・出力は段ごとのコードだけ。Hermes の 1 件実行の間＝印 `hermes-run.active` がある間は collect-hermes を呼ばない）。config.json が無ければ何もしない。最後の結果を `cycle-last.json` に残す
+- **定期の回**：`deploy/macos/connect-task-hub.sh --apply`（LaunchAgent `com.e-nexus.task-hub`・5 分ごと・常駐しない・Background。**新しい LaunchAgent なので Human の承認の後だけ**）。host-health の中では回さない（host-health は 1 回 60 秒の期限があり、VPS への通信の遅れで監視本体を巻き込まない）
+- **見張り**：host-health は config.json がある時、`--task-hub` が無くても既定の保存先の監査の鎖（§13）と `cycle-last.json` を読む（読むだけ）。`task_hub_cycle`：ok／`paused`（Human の PAUSE の間は run を呼ばない＝失敗に数えない）／`paused_breaker`（runner の回路遮断＝warn）／`not_configured`（Keychain に VPS の URL か鍵が無い）／`problem <段>`／`stale`（30 分以上回っていない）。`not_configured`・`stale` は LaunchAgent の plist がある時だけ。warn で、45 分続いた時に 1 通
+- **Hermes の結果の返却**：`collect-hermes` は依頼元が人以外の時、結果の板へ同じ `task_ref` の新しい知らせ（`result.hermes = { status, summary }`）を書く（板は新しい `updated_at` が勝つ）。Grok Bot は `get_task_status` で Hermes の要約まで見える
+- **止める**：`connect-task-hub.sh --remove`、または保存先に `PAUSE`。VPS の入口を止める時は Cloudflare の hostname を消す（`deploy/cloudflare-task-intake/README.md`「戻す」）

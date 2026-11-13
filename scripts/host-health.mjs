@@ -47,6 +47,8 @@ import { GITHUB_OWNER, collectGithub, evaluateGithub, evaluateGithubEvents, next
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_STATE_DIR = path.join(REPO, 'data', 'host-health');
+/** Task Hub の保存先の既定（2026-11-11）。config.json がある時だけ、--task-hub が無くても監査の鎖と回の結果を見張る（読むだけ） */
+export const DEFAULT_TASK_HUB = path.join(REPO, '..', 'mac-runtime-state', 'task-hub');
 export const STATE_SCHEMA = 'host-health-state/v1';
 export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', ...GUARD_BINS]);
 /** 初期値（2026-10-21。Mac mini の目安で、実測で見直す） */
@@ -525,6 +527,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^host_health$/, /^(?:disabled|state_unwritable)$/],
   [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed|boundary_blocked)$/],
   [/^heartbeat$/, /^(?:sent|failed|rejected|config_invalid)$/],
+  [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push)(?:,(?:pull|intake|run|collect_hermes|push)){0,4})?)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
 export function safeValue(id, v) {
@@ -775,7 +778,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -801,8 +804,10 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (o.guard) items.push(...evaluateGuard(o.guard, prev?.guard, at), ...evaluateGuardEvents(o.guard, prev?.guard), watchdogItem({ installed: o.guard.residents?.includes(WATCHDOG_LABEL), job: o.jobs?.[WATCHDOG_LABEL], updatedAt: watchdogUpdatedAt(stateDir), now: at, gap: gap.length > 0 || Date.parse(at) - (o.boottime ?? 0) * 1000 < GAP_MS || Date.parse(at) - Date.parse(prev?.resumed_at) < GAP_MS }));
     if (statusDir) items.push({ id: 'status_summary', level: ['dir_unsafe', 'write_failed', 'boundary_blocked'].includes(prev?.status_summary) ? 'warn' : 'ok', value: prev?.status_summary ?? 'not_configured', kind: 'state' });
     if (heartbeat) { const h = heartbeatItem(prev?.heartbeat, at); if (h) items.push(h); }
-    // Task Hub の監査の鎖（--task-hub の時だけ・読むだけ。2026-11-10。docs/task-hub.md §13）。読み込みの失敗で 1 回分の監視を失敗にしない
+    // Task Hub の監査の鎖（--task-hub か、既定の保存先に config.json がある時・読むだけ。2026-11-10／既定 2026-11-11。docs/task-hub.md §13・§14）。読み込みの失敗で 1 回分の監視を失敗にしない
     if (taskHub) items.push(await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubAuditItem(taskHub)).catch(() => ({ id: 'task_hub_audit', level: 'warn', value: 'check_failed', kind: 'state' })));
+    // Task Hub の回の最後の結果（2026-11-11・読むだけ。回していなければ項目なし）
+    if (taskHub) { const c = await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubCycleItem(taskHub, Date.parse(at), { scheduled: taskHubScheduled })).catch(() => null); if (c) items.push(c); }
     // 判定の前に確かめる（今回の結果で知らせる）
     const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
       ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
@@ -995,7 +1000,8 @@ async function main(argv) {
     webhookFormat,
     run: makeRunner(),
     uid: process.getuid(),
-    taskHub: a.taskHub ?? null,
+    taskHub: a.taskHub ?? (existsSync(path.join(DEFAULT_TASK_HUB, 'config.json')) ? path.resolve(DEFAULT_TASK_HUB) : null),
+    taskHubScheduled: existsSync(path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', 'com.e-nexus.task-hub.plist')),
   });
   clearTimeout(deadline);
   if (a.json && r.items) console.log(JSON.stringify({ component: 'edl-host-health', ...r }, null, 2));

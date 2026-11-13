@@ -1,6 +1,23 @@
-# VPS の保守を 1 回にまとめる手順（Human・2026-11-10）
+# VPS の保守を 1 回にまとめる手順（Human・2026-11-10／1 コマンド化 2026-11-11）
 
-**全部 Human が行う**（AI は SSH しない・Cloudflare を変えない・鍵を見ない）。2 つの作業を 1 回の ssh にまとめる。どちらも独立した判断なので、片方だけでもよい。
+**ssh を始めるのは Human**（AI は SSH しない・Cloudflare を変えない・鍵を見ない）。2 つの作業を 1 回の ssh にまとめる。どちらも独立した判断なので、片方だけでもよい。
+
+## 2026-11-11：Mac から 1 コマンド（推奨）
+
+下の A・B の手作業と、鍵の写し取り・Mac の Keychain への登録を 1 回で行う（鍵は画面・引数・Mac の file に出ない。VPS の受け渡しの file は取った後に消す）：
+
+```
+bash deploy/vps-task-intake/connect-from-mac.sh --ssh <user@VPS> [--identity ~/.ssh/<鍵>] \
+  --public-url https://<Cloudflare に足す hostname> --heartbeat --intake \
+  --source grok-commander --intents status.query,task.status,report.morning,note.record,hermes.task
+```
+
+- 中で `deploy/vps-task-intake/vps-apply.sh` を root で動かす（sudo の password は 1 回）。heartbeat は同じ版なら入れ替えない・入れ替えた後に起きなければ自動で前の版へ戻す。前の版と state は VPS の `/var/lib/e-nexus-maint/<時刻>/`
+- 既存の service（Product Hub・audio-processor・cloudflared・tailscaled・docker）の PID と container の起動時刻を前後で比べ、変われば NG
+- Keychain に入るもの：`task-intake-vps-intake`（channel の鍵・新しく作った時だけ）・`task-intake-url`・`task-intake-bot-grok-commander`（Grok Bot へ貼る鍵。貼る時は表示された `security … -w | pbcopy` を使う）
+- 写すのは commit 済みの版だけ（未 commit の変更があれば止まる）
+- 2 回目以降も安全（channel の鍵・bot の鍵は作り直さない。替える時は `install.sh remove-source <id>` の後）
+- その後の Cloudflare・Grok Bot・検収は下の「Cloudflare」「Grok Bot」「検収」のとおり（Mac の Keychain の手順は済んでいる）
 
 | # | 作業 | 判断 | 既存への影響 |
 |---|---|---|---|

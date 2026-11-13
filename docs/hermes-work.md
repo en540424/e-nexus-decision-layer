@@ -102,3 +102,13 @@ business は task のものを使う（Hermes が名乗っても使わない）�
 5. 検収（Claude Code）：`hermes_inbox`・`hermes_outbox` の所有者・group・mode が §4 のとおり（group の member が hermes と operator だけ）。承認済みの `hermes.task` を 1 件 → inbox の 1 file → Hermes の結果 → `collect-hermes` で記録 1 件・監査の `hermes_result`・`verify-audit` OK。hermes ユーザーから operator の home が読めないこと
 
 試験：`tests/task-hub-e2e.test.mjs` の「模擬 Hermes の往復」（承認の前に渡らない・不信頼の結果を記録しない・取り込み直しで増えない）。
+
+## 10. 2026-11-11 の形（1 件ずつ・Human が実行）
+
+- **フォルダ**（作成済み・sudo なし）：`/Users/Shared/e-nexus-hermes/work/inbox`（operator 所有・group `e-nexus-hermes-read`＝member は hermes と operator だけ・0750）、`…/work/outbox`（同じ group・2770＝hermes が書ける・新しい file は group を継ぐ）。Task Hub の config に `hermes_inbox`・`hermes_outbox` を設定済み＝承認済みの `hermes.task` だけが inbox に届く
+- **起動の方法**：cron（毎回の課金・空回り）は使わない。`sh deploy/macos/hermes-work-run.sh --paid-ok` を Human が実行し、1 件だけ `hermes -z` で処理させる（hermes ユーザー・道具は `file` だけ・`HERMES_WRITE_SAFE_ROOT`＝outbox・cwd は inbox・120 秒で強制終了・Background）。`--paid-ok` が無ければ課金の前で止まる。課金の前に、hermes が依頼を読め・outbox に書け・operator の home と `~/e-nexus-runtime`・`~/.enexus` に入れないことを hermes の権限で確かめる
+- **読みの境界**：OS の権限（operator の home 0700・Trading Lab の領域 0700・Keychain は hermes ユーザーのものではない）。hermes から読めるのは自分の home・`/Users/Shared/e-nexus-hermes` の status・vault の写し・work と、OS の誰でも読める場所。`HERMES_WRITE_SAFE_ROOT` は書き先だけ（§4）
+- **費用**：Haiku・1 件で Messages API 2〜4 回（読み取りの検証で 2 回・12,239 token）。上限は Console の Hermes の workspace の月の上限のまま。無人の実行（sudoers で `hermes-work-run.sh` だけを許す等）は別の Human の判断
+- **依頼元**：Human の端末（`human-cli`）と EN司令塔（`grok-commander`・2026-11-11 Human 承認）。どちらも `hermes.task` は毎回 Mac の端末で承認（`show` で全文を読んでから）
+- **残る危険（受け入れ・記録）**：Hermes は自分の home（Hermes の API 鍵の入った設定を含む）と vault の写しを OS の権限で読める。依頼の本文が「それを summary に書け」と命じ、Human が承認すれば、summary は Grok Bot へ返る。envelope の関所は鍵の形（`sk-` 系など）を拒むが全部の形ではない＝**承認の時に本文が「ファイルの中身を写して返す」形でないかを読む**。outbox に渡した 1 件以外の file が増えたら script が取り込まずに消す
+- 結果：`collect-hermes`（script の最後に自動）→ notes の `hermes:<task_id>` と監査の `hermes_result`。依頼元が bot なら結果の板へも返す（`docs/task-hub.md` §14）

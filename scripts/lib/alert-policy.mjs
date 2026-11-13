@@ -64,6 +64,7 @@ const RULES = Object.freeze([
   [/^github_visibility_changed$/, { target: 'GitHub の公開範囲', what: '変わった', action: IF_UNKNOWN }],
   [/^github_default_branch_changed$/, { target: 'GitHub の既定 branch', what: '変わった', action: IF_UNKNOWN }],
   [/^github:/, { target: (id) => `GitHub の ${name(id)}`, what: '異常がある', action: CHECK }],
+  [/^task_hub_cycle$/, { target: 'Task Hub の回（VPS との受け渡し）', what: (value) => (value === 'stale' ? '30 分以上回っていない' : value === 'not_configured' ? 'VPS の URL か鍵が Keychain に無い（受け渡しが止まっている）' : value === 'paused_breaker' ? '想定外の失敗が続いて止まった（PAUSE＝circuit_open）' : '失敗が続いている'), action: '確かめる（node scripts/task-hub-cycle.mjs を手で 1 回・docs/task-hub.md §14）', hold: TWO_RUNS_MS }],
   [/^task_hub_audit$/, { target: 'Task Hub の監査の記録', what: (value) => (['chain_broken', 'unparseable', 'truncated', 'tip_mismatch', 'tip_missing'].includes(value) ? '鎖が壊れている（分岐・消えた行・改ざんのどれか）' : '読めない'), action: '確かめるまで承認しない（node scripts/task-hub.mjs verify-audit・docs/task-hub.md §13）', hold: 0, codes: true }],
   [/^monitor_blind$/, { target: '監視の項目', what: '読めない状態が 24 時間以上続いている', action: CHECK, hold: 0 }],
   [/^monitor_args$/, { target: '監視の job の定義', what: '通知か見張りの引数が欠けている', action: ACT, hold: 0, codes: true, flap: '欠けては戻るを繰り返している' }],

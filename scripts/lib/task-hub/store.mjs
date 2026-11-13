@@ -432,6 +432,18 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
       writeAtomic(file, `${JSON.stringify({ task_ref: task.idempotency_key, source: task.source, channel: task.channel, business: task.business, state: task.state, updated_at: at, body })}\n`);
       return file;
     },
+    /**
+     * Hermes の結果を依頼元（人以外）の結果の板へ返す（2026-11-11）。hermes.task は「渡した」で succeeded になっているので、同じ task_ref に
+     * 新しい updated_at の知らせを足す（板は新しい方が勝つ）。summary は collect-hermes が envelope の関所で検査済みの文だけ
+     */
+    hermesNotice(task, { status, text }, at) {
+      if (task.source === HUMAN_SOURCE || task.state !== 'succeeded') return null;
+      const body = JSON.stringify({ task_id: task.task_id, state: 'succeeded', intent: task.intent, result: { delivered: true, hermes: { status, summary: text } } });
+      if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) return null;
+      const file = p('outbox', `${sha(`${task.source}|${task.idempotency_key}|hermes`)}.json`);
+      writeAtomic(file, `${JSON.stringify({ task_ref: task.idempotency_key, source: task.source, channel: task.channel, business: task.business, state: 'succeeded', updated_at: at, body })}\n`);
+      return file;
+    },
     /** task にならなかった依頼の「受け付けなかった」を依頼元へ返す（認証済みの封で、依頼の鍵が読めた時だけ・理由はコードだけ） */
     rejectNotice({ source, channel, idempotency_key: key, business = null, code }, at) {
       if (source === HUMAN_SOURCE || typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(key) || !/^[a-z0-9_]{1,48}$/.test(String(code))) return null;

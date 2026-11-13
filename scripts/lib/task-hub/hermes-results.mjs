@@ -76,7 +76,9 @@ export function collectHermesResults({ store, config, now = Date.now() }) {
     if (!store.readRecords(r.task.business, 'notes').has(id)) {
       store.appendRecords(r.task.business, 'notes', [{ id, at: new Date(now).toISOString(), text: r.text, from: 'hermes', status: r.status, task_id: r.task.task_id }]);
     }
-    closeSync(openSync(mark, 'wx', 0o600));
+    // 依頼元が人以外（Grok Bot 等）なら結果の板へも返す（2026-11-11。同じ名前の file を上書きするだけ＝やり直しても 1 件）
+    store.hermesNotice(r.task, { status: r.status, text: r.text }, now);
+    try { closeSync(openSync(mark, 'wx', 0o600)); } catch (e) { if (e?.code !== 'EEXIST') throw e; out.already += 1; continue; } // 同時に回った別の collect が先に印を付けた（記録・板は同じ内容の上書き）
     out.recorded += 1;
   }
   return out;

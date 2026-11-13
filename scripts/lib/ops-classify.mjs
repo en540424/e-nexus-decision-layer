@@ -34,6 +34,7 @@ const TABLE = Object.freeze([
   [/^heartbeat$/, { class: 'human', cause: '外部の死活監視へ信号が届かない。回線・Tunnel・受け側のどれか', next: 'Human が VPS と Cloudflare を確かめる（AI は SSH しない）', checks: ['node scripts/heartbeat-test.mjs'] }],
   [/^notify_channel$/, { class: 'human', cause: '通知の Webhook の失効か削除', next: 'Human が Webhook を作り直す', checks: ['bash deploy/macos/connect-discord-alerts.sh'] }],
   [/^status_summary$/, { class: 'ai', cause: '要約を書けない。フォルダの権限か入力境界の検査', next: 'Claude Code が記録のコードを確かめる', checks: ['ls -ld /Users/Shared/e-nexus-hermes/status'] }],
+  [/^task_hub_cycle$/, { class: 'ai', cause: 'Task Hub の回（VPS からの取得・取り込み・実行・結果の返却）の失敗か停止', next: 'Claude Code が手で 1 回回して段ごとの code を見る（VPS が止まっていても依頼は VPS に 7 日残る）', checks: ['node scripts/task-hub-cycle.mjs'] }],
   [/^task_hub_audit$/, { class: 'human', cause: 'Task Hub の監査の鎖の異常（2 つの書き手の分岐・消えた行・改ざんのどれか）', next: 'Human が verify-audit で確かめるまで承認しない（docs/task-hub.md §13）', checks: ['node scripts/task-hub.mjs verify-audit'] }],
   [/^monitor_/, { class: 'human', cause: '監視そのものの異常か定義の変更', next: '心当たりがなければ Human が確かめる', checks: ['node scripts/runtime-ops.mjs acceptance'] }],
   [/^hermes_isolation$/, { class: 'human', cause: 'Hermes の隔離の崩れ', next: 'Human がすぐ確かめる', checks: ['node scripts/runtime-ops.mjs why hermes_isolation'] }],

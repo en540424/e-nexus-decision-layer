@@ -36,3 +36,30 @@ export function taskHubAuditItem(dir) {
     return item('warn', 'check_failed');
   }
 }
+
+/**
+ * Task Hub の回（scripts/task-hub-cycle.mjs）の最後の結果（2026-11-11）。cycle-last.json が無ければ null（回していない＝項目を出さない）。
+ * 値：ok／paused（Human の PAUSE）／paused_breaker（runner の回路遮断＝想定外の失敗が続いて止まった。warn）／not_configured（VPS の鍵が Keychain に無い＝受け渡しの休眠）／problem <段,…>／stale（30 分以上回っていない・時刻が未来）。
+ * not_configured と stale は定期の job が登録されている時＝scheduled だけ warn（手で回すだけの間は項目なし）。どれも warn までで、通知は alert-policy の hold（2 回分）を過ぎて続いた時だけ
+ */
+export const CYCLE_WATCH_ID = 'task_hub_cycle';
+const CYCLE_STALE_MS = 30 * 60_000;
+const STEP_NAMES = new Set(['pull', 'intake', 'run', 'collect_hermes', 'push']);
+export function taskHubCycleItem(dir, now = Date.now(), { scheduled = false } = {}) {
+  const item = (level, value) => ({ id: CYCLE_WATCH_ID, level, value, kind: 'state' });
+  try {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) return null;
+    if (!existsSync(path.join(dir, 'cycle-last.json'))) return null;
+    const j = readJsonSafe(path.join(dir, 'cycle-last.json'), 4096);
+    const t = Date.parse(j?.at);
+    if (!Number.isFinite(t) || now - t > CYCLE_STALE_MS || t - now > 5 * 60_000) return scheduled ? item('warn', 'stale') : null;
+    if (j.code === 'ok') return item('ok', 'ok');
+    if (j.code === 'paused') return item('ok', 'paused');
+    if (j.code === 'paused_breaker') return item('warn', 'paused_breaker');
+    if (j.code === 'not_configured') return scheduled ? item('warn', 'not_configured') : null;
+    const failed = (Array.isArray(j.failed) ? j.failed : []).filter((x) => STEP_NAMES.has(x));
+    return item('warn', failed.length ? `problem ${failed.join(',')}` : 'problem');
+  } catch {
+    return scheduled ? item('warn', 'stale') : null;
+  }
+}
