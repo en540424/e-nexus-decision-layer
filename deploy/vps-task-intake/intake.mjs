@@ -4,7 +4,9 @@
  *
  *   node intake.mjs                       env：TASK_INTAKE_CHANNEL_KEY・TASK_INTAKE_CHANNEL・TASK_INTAKE_SOURCES・[TASK_INTAKE_PORT=8796]・[TASK_INTAKE_STATE=/var/lib/e-nexus-task-intake]
  *   node intake.mjs --check               env と sources の形だけ確かめる（件数だけ出す。待ち受けない）
- *   node intake.mjs --add-source <id> [intent,intent…]   bot の Bearer 鍵を 1 つ作り、sha256 だけを sources へ書く（鍵は画面に 1 回だけ出る）
+ *   node intake.mjs --add-source <id> [intent,intent…] [business,…]   bot の Bearer 鍵を 1 つ作り、sha256 だけを sources へ書く（鍵は画面に 1 回だけ出る）
+ *   node intake.mjs --set-source-scope <id> <intent,…> [business,…|keep|all]   登録済みの source の intents・businesses だけを替える（鍵は変えない・2026-11-13）。
+ *        businesses を省く・keep＝今のまま（指定の無い再実行で制限を外さない＝監査 F5）、all＝制限を外す（明示した時だけ）
  *   node intake.mjs --remove-source <id>
  *
  * 役割は「預かる」ことだけ。Grok Bot 等（MCP の client）は Bearer 鍵で認証し、submit_task で依頼を置き、get_task_status で結果を見る。
@@ -98,7 +100,8 @@ export const TOOLS = Object.freeze([
   },
 ]);
 
-/** sources の設定（{ id: { key_sha256, intents? } }）を検査して Map にする。形の違う項目・同じ hash の重複は捨てる（件数だけ返す） */
+/** sources の設定（{ id: { key_sha256, intents?, businesses? } }）を検査して Map にする。形の違う項目・同じ hash の重複は捨てる（件数だけ返す）。
+ * businesses（2026-11-13）：その source が出せる business の一覧（無ければ全部。Mac の Task Hub の config と 2 重に絞る＝Bot の説明文だけに頼らない） */
 export function normalizeSources(raw) {
   const sources = new Map();
   let skipped = 0;
@@ -108,9 +111,11 @@ export function normalizeSources(raw) {
     const hashOk = cfg && typeof cfg === 'object' && typeof cfg.key_sha256 === 'string' && /^[0-9a-f]{64}$/.test(cfg.key_sha256);
     const intents = cfg?.intents;
     const intentsOk = intents === undefined || (Array.isArray(intents) && intents.length <= 100 && intents.every((i) => typeof i === 'string' && /^[a-z][a-z0-9.*-]{0,95}$/.test(i)));
-    if (!ID_RE.test(id) || !hashOk || !intentsOk || seenHash.has(cfg.key_sha256)) { skipped += 1; continue; }
+    const businesses = cfg?.businesses;
+    const businessesOk = businesses === undefined || (Array.isArray(businesses) && businesses.length >= 1 && businesses.length <= 20 && businesses.every((b) => typeof b === 'string' && ID_RE.test(b)));
+    if (!ID_RE.test(id) || !hashOk || !intentsOk || !businessesOk || seenHash.has(cfg.key_sha256)) { skipped += 1; continue; }
     seenHash.add(cfg.key_sha256);
-    sources.set(id, { hash: Buffer.from(cfg.key_sha256, 'hex'), intents: intents === undefined ? null : [...intents] });
+    sources.set(id, { hash: Buffer.from(cfg.key_sha256, 'hex'), intents: intents === undefined ? null : [...intents], businesses: businesses === undefined ? null : [...businesses] });
   }
   return { sources, skipped };
 }
@@ -143,7 +148,7 @@ export function buildTaskBody(args) {
   if (summary !== undefined && (typeof summary !== 'string' || [...summary].length > LIMITS.summary_chars || CONTROL_RE.test(summary))) return { error: 'invalid_summary' };
   const body = JSON.stringify({ v: 1, idempotency_key: key, business, intent, params: params ?? {}, summary: summary ?? '' });
   if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) return { error: 'too_large' };
-  return { body, ref: key, intent };
+  return { body, ref: key, intent, business };
 }
 
 /** 保存：tmp に書いて rename（0600）。失敗してもメモリで続ける（コードだけ出す） */
@@ -293,6 +298,8 @@ export function startIntake({ channelKey, channel, sources, stateDir, port = 879
     const built = buildTaskBody(args);
     if (built.error) return toolError(built.error);
     if (!intentAllowed(built.intent, srcMap.get(source).intents)) return toolError('intent_not_allowed');
+    const allowB = srcMap.get(source).businesses;
+    if (allowB && !allowB.includes(built.business)) return toolError('business_not_allowed');
     const dupKey = `${source}\n${built.ref}`;
     if (st.seen.has(dupKey) || st.board.has(dupKey)) {
       const s = statusOf(source, built.ref);
@@ -490,17 +497,32 @@ function sourcesFileWrite(file, obj) {
 }
 
 /** 新しい bot 鍵を作り、hash だけを sources へ書く。鍵は戻り値（呼び出し側が画面に 1 回だけ出す） */
-export function addSource(file, id, intents) {
+export function addSource(file, id, intents, businesses) {
   if (!ID_RE.test(id)) throw new Error('source id is invalid');
   const current = readJson(file) ?? {};
   if (Object.hasOwn(current, id)) throw new Error('source already exists (remove it first to rotate)');
   const key = `etk_${randomBytes(32).toString('hex')}`;
   const entry = { key_sha256: sha256hex(key) };
   if (intents?.length) entry.intents = intents;
+  if (businesses?.length) entry.businesses = businesses;
   const next = { ...current, [id]: entry };
   if (normalizeSources(next).sources.size !== Object.keys(next).length) throw new Error('sources file would become invalid (check intents)');
   sourcesFileWrite(file, next);
   return key;
+}
+/** 登録済みの source の intents・businesses を替える（鍵の hash はそのまま）。intents は必須（無いと全部の intent を通す）。
+ * businesses：undefined＝今のまま・null＝外す（明示の all）・配列＝それに替える。変わらなければ false */
+export function setSourceScope(file, id, intents, businesses) {
+  const current = readJson(file) ?? {};
+  if (!Object.hasOwn(current, id)) throw new Error('source not found');
+  if (!intents?.length) throw new Error('intents are required');
+  const b = businesses === undefined ? current[id].businesses : businesses;
+  const entry = { key_sha256: current[id].key_sha256, intents, ...(b?.length ? { businesses: b } : {}) };
+  if (JSON.stringify(entry) === JSON.stringify({ key_sha256: current[id].key_sha256, intents: current[id].intents, ...(current[id].businesses ? { businesses: current[id].businesses } : {}) })) return false;
+  const next = { ...current, [id]: entry };
+  if (normalizeSources(next).sources.size !== Object.keys(next).length) throw new Error('sources file would become invalid (check intents/businesses)');
+  sourcesFileWrite(file, next);
+  return true;
 }
 export function removeSource(file, id) {
   const current = readJson(file) ?? {};
@@ -523,7 +545,17 @@ function envConfig(env) {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const [flag, arg1, arg2] = process.argv.slice(2);
+  const [flag, arg1, arg2, arg3] = process.argv.slice(2);
+  if (flag === '--set-source-scope') {
+    const file = process.env.TASK_INTAKE_SOURCES;
+    if (!file || !arg1 || !arg2) { console.error('usage: TASK_INTAKE_SOURCES=<file> node intake.mjs --set-source-scope <id> <intent,…> [business,…|keep|all]'); process.exit(2); }
+    try {
+      const b = !arg3 || arg3 === 'keep' ? undefined : arg3 === 'all' ? null : arg3.split(',').filter(Boolean);
+      const changed = setSourceScope(file, arg1, arg2.split(',').filter(Boolean), b);
+      console.log(changed ? `scope_updated=${arg1}` : `scope_unchanged=${arg1}`);
+    } catch (err) { console.error(String(err?.message ?? 'error')); process.exit(1); }
+    process.exit(0);
+  }
   if (flag === '--add-source' || flag === '--remove-source') {
     const file = process.env.TASK_INTAKE_SOURCES;
     if (!file || !arg1) { console.error('usage: TASK_INTAKE_SOURCES=<file> node intake.mjs --add-source <id> [intent,…] | --remove-source <id>'); process.exit(2); }
@@ -534,7 +566,7 @@ if (isMain) {
         const out = process.env.TASK_INTAKE_KEY_OUT;
         const fd = out ? openSync(out, 'wx', 0o600) : null;
         let key;
-        try { key = addSource(file, arg1, arg2 ? arg2.split(',').filter(Boolean) : undefined); } catch (e) { if (fd !== null) { closeSync(fd); unlinkSync(out); } throw e; }
+        try { key = addSource(file, arg1, arg2 ? arg2.split(',').filter(Boolean) : undefined, arg3 && !['keep', 'all'].includes(arg3) ? arg3.split(',').filter(Boolean) : undefined); } catch (e) { if (fd !== null) { closeSync(fd); unlinkSync(out); } throw e; }
         if (fd !== null) {
           writeSync(fd, `${key}\n`);
           closeSync(fd);

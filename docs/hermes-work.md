@@ -1,6 +1,6 @@
 # Hermes に業務を渡す時の決まり（案・2026-11-10・MA-24）
 
-**状態：案。Hermes には何も渡していない。** 渡し始めるには Human の判断（下の §9）が要る。この文書は、渡し始める前に権限の範囲と検収の手順を決めておくためのもの。
+**状態（2026-11-13）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11 が今の形。
 Hermes は常駐している（gateway だけ・messaging platform なし・cron の job なし）。今の役目は監視の要約を読むことだけ（`docs/runtime-monitoring.md`）。
 
 ## 1. 渡す仕事の形（往きと還り）
@@ -110,5 +110,49 @@ business は task のものを使う（Hermes が名乗っても使わない）�
 - **読みの境界**：OS の権限（operator の home 0700・Trading Lab の領域 0700・Keychain は hermes ユーザーのものではない）。hermes から読めるのは自分の home・`/Users/Shared/e-nexus-hermes` の status・vault の写し・work と、OS の誰でも読める場所。`HERMES_WRITE_SAFE_ROOT` は書き先だけ（§4）
 - **費用**：Haiku・1 件で Messages API 2〜4 回（読み取りの検証で 2 回・12,239 token）。上限は Console の Hermes の workspace の月の上限のまま。無人の実行（sudoers で `hermes-work-run.sh` だけを許す等）は別の Human の判断
 - **依頼元**：Human の端末（`human-cli`）と EN司令塔（`grok-commander`・2026-11-11 Human 承認）。どちらも `hermes.task` は毎回 Mac の端末で承認（`show` で全文を読んでから）
-- **残る危険（受け入れ・記録）**：Hermes は自分の home（Hermes の API 鍵の入った設定を含む）と vault の写しを OS の権限で読める。依頼の本文が「それを summary に書け」と命じ、Human が承認すれば、summary は Grok Bot へ返る。envelope の関所は鍵の形（`sk-` 系など）を拒むが全部の形ではない＝**承認の時に本文が「ファイルの中身を写して返す」形でないかを読む**。outbox に渡した 1 件以外の file が増えたら script が取り込まずに消す
+- **残る危険（2026-11-11 時点・§11 の sandbox で閉じた）**：Hermes は自分の home（Hermes の API 鍵の入った設定を含む）と vault の写しを OS の権限で読める。依頼の本文が「それを summary に書け」と命じ、Human が承認すれば、summary は Grok Bot へ返る。envelope の関所は鍵の形（`sk-` 系など）を拒むが全部の形ではない＝**承認の時に本文が「ファイルの中身を写して返す」形でないかを読む**。outbox に渡した 1 件以外の file が増えたら script が取り込まずに消す
 - 結果：`collect-hermes`（script の最後に自動）→ notes の `hermes:<task_id>` と監査の `hermes_result`。依頼元が bot なら結果の板へも返す（`docs/task-hub.md` §14）
+
+## 11. 2026-11-13 の形（実行の記録・sandbox・課金なしの確かめ）
+
+入口は 1 つ：`sh deploy/macos/hermes-work-run.sh [--paid-ok] [--task <id> --retry]`（＝`node scripts/hermes-work.mjs run`）。**Human が Mac の Terminal で実行**（sudo の password と承認の確認コード）。
+
+1. 承認待ちの `hermes.task` を 1 件ずつ `task-hub show` と同じ全文で見せ、確認コードを打てば承認（`task-hub approve` と同じ関所：端末だけ・digest・24 時間。空 Enter で飛ばす）
+2. Task Hub の queue を回して、承認済みの依頼を Hermes の inbox へ渡す（`hermes.task` の結果は `{ delivered: true, hermes: { status: 'waiting' } }`）
+3. 渡す 1 件を選ぶ（古い順・waiting だけ）。`--paid-ok` が無ければここで止まる。`--paid-ok` なら sudo の password（排他を取る前に聞く）
+4. **課金なしの確かめ**：メモリ・常駐・RSS／hermes の権限（依頼を読める・outbox に書ける・operator の home に入れない）／profile の home に `.env` が無い／root の `.env` に鍵の行がある（値は見ない）／profile に hooks・plugins・cron が無い／sandbox の規則（鍵・gateway の state が読めない・依頼が読める・root の設定と plugins に書けない・outbox の他の名前に書けない・usage に書ける）／**無効な鍵で Hermes を sandbox の中で起動**（Anthropic が 401 を返すところまで＝起動・依存・state の場所が sandbox で壊れないこと）。どれかが違えば始めない（`preflight_<code>`。起動の確かめで止まった時は、その時刻の sandbox の拒否の行〈path だけ〉を store の `hermes-work-logs/` に残す＝Human にもう一度実行してもらわずに原因を読む）
+5. 実行の記録を running にし（監査 `hermes_started`・依頼元へ `hermes.status: running`）、`hermes -z` を 1 回（120 秒・`-t file`）
+6. 渡した 1 件以外に増えた・書き換えられた outbox の file は取り込まずに store の `hermes-quarantine/` へ移す（消さない・symlink・FIFO は写さずに外す）→ 結果があれば `collect-hermes` の関所 → done／failed、無ければ timeout／no_result、関所に落ちれば result_rejected → 依頼元へ返す（`task-intake-sync push`。失敗しても 5 分の回が返す）
+
+### 実行の記録（`<store>/hermes-jobs/<task_id>.json`・`scripts/lib/task-hub/hermes-jobs.mjs`）
+
+| 状態 | 意味 | 次 |
+|---|---|---|
+| （記録なし）waiting | 承認済みで inbox へ渡した・未実行 | `hermes-work-run.sh --paid-ok` |
+| running | 実行中（名前つきの排他 `hermes-work` を持つ間だけ） | — |
+| done／failed | 結果を記録した（failed は Hermes 自身の「できない」） | 終わり（やり直しは新しい依頼） |
+| timeout・no_result・result_rejected | 時間切れ・結果なし・結果を記録しなかった | Human が `--task <id> --retry --paid-ok`（有料・最大 3 回） |
+| interrupted | running のまま持ち主が居なくなった（強制終了・再起動）。定期の回の `collect-hermes` が見つけて付け替え、依頼元へ返す。始めてから 4 分の間と、run の印（prompt の `run <token>`）を持つ hermes の process が見える間は付け替えない（まだ動いている実行を二重にしない） | 同上 |
+| dismissed | Human が実行せずに閉じた（`node scripts/hermes-work.mjs dismiss <id> --confirm <12 桁>`・端末だけ） | 終わり |
+
+- **二重の実行・課金をしない**：同時に 1 つ（排他）。自動で選ぶのは waiting だけ。結果の file が在る依頼は実行しない（`result_waiting`＝取り込みを待つ）。記録しなかった結果（result_rejected）の file は隔離するので、`--retry` でやり直せる
+- 監査：`hermes_started`・`hermes_timeout`・`hermes_no_result`・`hermes_result_rejected`・`hermes_interrupted`・`hermes_result`・`hermes_job_closed`（値は書かない）。usage は数だけ記録に（token・回数・model 名）
+- 依頼元（Grok）は `get_task_status` の `result.hermes.status`（waiting → running → done／failed／timeout…）と、done／failed の時は `summary`。`task.status`（task_ref）でも同じ
+- `node scripts/hermes-work.mjs status`：記録の一覧（読むだけ）。host-health の `hermes_jobs` が stuck・承認済みで 24 時間未実行・timeout 等を warn で 1 通（`docs/task-hub.md` §15）
+
+### sandbox（`scripts/lib/hermes-sandbox.mjs`・OS の権限で読みを絞る）
+
+2026-11-11 の残る危険（Hermes が自分の home の鍵を読める）は、Hermes 自身の file の守り（v0.22.4 の `agent/file_safety.py`：`.env`・auth の file を拒む）が code の中で「security boundary ではない」と書かれているので、OS の側で閉じる。
+
+- **home**：業務は Hermes の profile の home（`HERMES_HOME=~/.hermes/profiles/work`）で動かす。profile は root の依存の環境をそのまま使い（同期・download をしない＝`HERMES_DISABLE_LAZY_INSTALLS=1` も付ける）、`.env` は自分の home の物だけを読む。profile に `.env` は置かない（在れば始めない）
+- **鍵**：sandbox の外の loader（perl・hermes の権限）が root の `.env` の `ANTHROPIC_API_KEY` の行だけを読み、環境変数で渡す（画面・引数に出さない）。**常駐の gateway の `.env` は変えない**
+- **読める（allowlist・2026-11-13 独立監査 F1・F2 の後）**：Hermes の code（hermes-agent）・python（tools）・依存（installs）・業務の profile の home・~/.local/bin・この依頼の 1 file・状態の要約の 1 file・usage の 1 file・この依頼の結果の 1 file
+- **読めない**：全ユーザーの home（operator・Trading Lab）・`/Volumes`・`/private/tmp`・Keychain・`/private/var/db`、root の state.db・sessions・memories・logs・backups・cron・config・他の profile、outbox の他の結果・inbox の他の依頼（一覧も）、どこでも `.env` 系・auth の file
+- **書ける**：業務の profile の home（state・sessions・logs・cache）・依存の lock（`installs/<key>/.install.lock`）と lease（`…/.leases/`）・usage の 1 file・この依頼の結果の 1 file・OS の一時。**書けない**：常駐の gateway の root（plugins・hooks・cron・skills・config・SOUL・code・python・依存の中身）、profile の config.yaml・hooks・plugins・cron・skills・memories・cwd・SOUL.md／AGENTS.md・`.env`（`-z` は hook を自動で受けるので、植えられると次の実行で動く＝書かせない）
+- **通信**：TCP 443 だけ（名前解決は mDNSResponder）。**起動できない**：security・osascript・curl・ssh・scp・rsync・open・launchctl・pbcopy・screencapture・sudo
+- 確かめ：`tests/hermes-sandbox.test.mjs`（Mac の sandbox-exec で模擬の /Users の上の読み 25・書き 33・起動 2）・2026-11-13 に 443 だけ通ること（api.anthropic.com は届き、80 番は EPERM）を手で確認。Hermes 本体での起動は手順 4 の無効な鍵の確かめ（課金なし）
+- 残る範囲：profile の state.db・sessions（前の業務の会話）は読める。業務の依頼は毎回 Human が全文を読んで承認する。sandbox-exec は Apple が非推奨としている（動いている間は使い、使えなくなれば手順 4 で止まる）
+
+### 戻す
+
+`deploy/macos/hermes-work-run.sh` を 2026-11-11 の版（git の `87eeeb1`）に戻せば前の形（sandbox なし）。profile の home（`~/.hermes/profiles/work`）は hermes の権限で消してよい（業務の会話だけ）。記録 `hermes-jobs/` は消しても task は変わらない。

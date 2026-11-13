@@ -38,7 +38,7 @@ test('Hermes の結果：依頼元が bot なら結果の板へ新しい updated
   const policy = { ...env.policy, config: { ...env.config, hermes_inbox: inbox } };
   await runOnce({ store: env.store, policy, handlers: env.handlers, now: NOW + 1000 });
   const delivered = outbox(env).find((o) => o.task_ref === e.idempotency_key && o.state === 'succeeded');
-  assert.deepEqual(delivered.body.result, { delivered: true });
+  assert.deepEqual(delivered.body.result, { delivered: true, hermes: { status: 'waiting' } }, '渡した直後は waiting（実行・結果は hermes-jobs の知らせで続く・2026-11-13）');
   for (const o of env.store.listOutbox()) env.store.markDelivered(o.file);
   writeFileSync(path.join(out, `${t.task_id}.json`), JSON.stringify({ v: 1, task_id: t.task_id, status: 'done', summary: '全体は ok・要確認 0 件' }));
   const c = collectHermesResults({ store: env.store, config: { hermes_outbox: out }, now: NOW + 5000 });
@@ -180,13 +180,15 @@ test('保守の script の形：構文・vps-apply が再起動するのは e-ne
   assert.match(mac, /security -i/, '鍵は security -i の標準入力で');
   assert.doesNotMatch(mac, /add-generic-password[^\n|]*-w\s+"\$/, '鍵を引数に置かない');
   const hw = readFileSync(path.join(REPO, 'deploy/macos/hermes-work-run.sh'), 'utf8');
-  assert.match(hw, /\[ -n "\$PAID" \] \|\| \{ echo "有料の実行の前で止めました/);
-  assert.match(hw, /HERMES_WRITE_SAFE_ROOT="\$OUTBOX"/);
-  assert.match(hw, /-t file /);
-  assert.match(hw, /alarm 120/);
-  assert.match(hw, /comm -13 "\$SNAP\/before" "\$SNAP\/after"/, '渡した 1 件以外の outbox の file は取り込まない');
-  assert.match(hw, /hermes-run\.active/, '実行の間は定期の回が collect しない印');
-  assert.match(hw, /shasum -a 256 -c "\$SNAP\/before\.sha"/, '前からある file の書き換えも取り込まない');
+  // 2026-11-13：中身は scripts/hermes-work.mjs（流れと記録は tests/hermes-work.test.mjs・sandbox は tests/hermes-sandbox.test.mjs）
+  assert.match(hw, /exec "\$NODE" "\$REPO\/scripts\/hermes-work\.mjs" run "\$@"/);
+  const hwm = readFileSync(path.join(REPO, 'scripts/hermes-work.mjs'), 'utf8');
+  assert.match(hwm, /HERMES_WRITE_SAFE_ROOT=\$\{ctx\.outbox\}/);
+  assert.match(hwm, /'-t', 'file'/);
+  assert.match(hwm, /'\/usr\/bin\/sandbox-exec', \.\.\.sandboxArgs\(/, 'Hermes は sandbox の中で動く');
+  assert.match(hwm, /HERMES_HOME=\$\{WORK_HOME\}/, '業務は profile の home（.env を置かない）');
+  assert.match(hwm, /HERMES_DISABLE_LAZY_INSTALLS=1/, '実行の中で依存を同期しない（download しない）');
+  assert.match(hwm, /KEY_PROBE=invalid/, '課金なしの起動の確かめ');
   const plist = spawnSync('/bin/bash', [path.join(REPO, 'deploy/macos/connect-task-hub.sh')], { encoding: 'utf8', timeout: 10_000 });
   assert.equal(plist.status, 0);
   assert.match(plist.stdout, /<key>StartInterval<\/key>\s*<integer>300<\/integer>/);

@@ -4,6 +4,8 @@
  *   tasks/<task_id>.json        task 1 件（state は wire.STATES）
  *   keys/<sha256(source|key)>   (source, idempotency_key) の重複の印（link で中身ごと作る＝先着 1 つ）
  *   hermes-collected/<task_id>  Hermes の結果を取り込んだ印（O_EXCL・以後その task の結果の file を読まない）
+ *   hermes-jobs/<task_id>.json  Hermes の 1 件実行の記録（running・done・timeout など。lib/task-hub/hermes-jobs.mjs・2026-11-13）
+ *   hermes-work-logs/           Hermes の出力の末尾（鍵の形を伏せる・0600。原因を読むためだけ）
  *   nonces/<nonce>              封の再送の印（7 日以上残す）。中身は「取った時刻\npending」→ 取り込みが終わると「取った時刻\ndone」。1 行だけの古い形は終わった印として扱う
  *   audit.jsonl / audit.tip     追記だけの監査 log。各行に前の行の sha256（prev）。値・params は書かない
  *   outbox/ outbox-sent/        依頼元（人以外）へ返す結果。配る側は別の部品で、配ったら outbox-sent へ移す
@@ -436,9 +438,11 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
      * Hermes の結果を依頼元（人以外）の結果の板へ返す（2026-11-11）。hermes.task は「渡した」で succeeded になっているので、同じ task_ref に
      * 新しい updated_at の知らせを足す（板は新しい方が勝つ）。summary は collect-hermes が envelope の関所で検査済みの文だけ
      */
-    hermesNotice(task, { status, text }, at) {
+    hermesNotice(task, { status, text = null, code = null }, at) {
       if (task.source === HUMAN_SOURCE || task.state !== 'succeeded') return null;
-      const body = JSON.stringify({ task_id: task.task_id, state: 'succeeded', intent: task.intent, result: { delivered: true, hermes: { status, summary: text } } });
+      // 2026-11-13：途中の状態（running）・終わり方（timeout・no_result・interrupted・result_rejected）も同じ名前の知らせで返す（summary は検査済みの文だけ・code は固定の語だけ）
+      const hermes = { status, ...(typeof text === 'string' ? { summary: text } : {}), ...(code && /^[a-z0-9_]{1,40}$/.test(code) ? { code } : {}) };
+      const body = JSON.stringify({ task_id: task.task_id, state: 'succeeded', intent: task.intent, result: { delivered: true, hermes } });
       if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) return null;
       const file = p('outbox', `${sha(`${task.source}|${task.idempotency_key}|hermes`)}.json`);
       writeAtomic(file, `${JSON.stringify({ task_ref: task.idempotency_key, source: task.source, channel: task.channel, business: task.business, state: 'succeeded', updated_at: at, body })}\n`);
@@ -465,6 +469,42 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
         try { if (at - statSync(p('outbox-sent', f)).mtimeMs > retentionMs) { unlinkSync(p('outbox-sent', f)); n += 1; } } catch { /* 済 */ }
       }
       return n;
+    },
+
+    // ─── Hermes の実行の記録（2026-11-13・hermes-jobs/<task_id>.json）───
+    /** 1 件読む（無ければ null）。中身は lib/task-hub/hermes-jobs.mjs が決める */
+    readHermesJob(id) {
+      if (!TASK_ID_RE.test(id)) throw new StoreError('bad_task_id');
+      return readJson(p('hermes-jobs', `${id}.json`), TASK_FILE_MAX);
+    },
+    /** 読み直して・排他で・書く。fn(今の記録か null) → 新しい記録（null なら書かない）。戻り値は書いた記録か今の記録 */
+    updateHermesJob(id, fn) {
+      if (!TASK_ID_RE.test(id)) throw new StoreError('bad_task_id');
+      mkdirSync(p('hermes-jobs'), { recursive: true, mode: 0o700 });
+      return locked(p('locks', `hj-${id}.lock`), (owns) => {
+        const cur = readJson(p('hermes-jobs', `${id}.json`), TASK_FILE_MAX);
+        const next = fn(cur);
+        if (!next) return cur;
+        if (!owns()) throw new StoreError('lock_lost');
+        writeAtomic(p('hermes-jobs', `${id}.json`), `${JSON.stringify(next)}\n`);
+        return next;
+      });
+    },
+    listHermesJobs() {
+      let names = [];
+      try { names = readdirSync(p('hermes-jobs')); } catch { return []; }
+      return names.filter((f) => f.endsWith('.json') && TASK_ID_RE.test(f.slice(0, -5))).sort().map((f) => readJson(p('hermes-jobs', f), TASK_FILE_MAX)).filter(Boolean);
+    },
+    /** 長く持つ名前つきの排他（Hermes の 1 件実行など）。取れれば release（.owns()）、生きた持ち主が居れば null。maxAgeMs を超えた持ち主は古いとして引き継ぐ */
+    acquireNamedLock(name, at = now(), maxAgeMs = RUN_LOCK_MAX_AGE_MS) {
+      if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new StoreError('bad_lock_name');
+      return tryLockDir(p('locks', `${name}.lock`), at, { maxAgeMs, hooks: lockHooks, onConflict });
+    },
+    /** 名前つきの排他の持ち主（{ pid, started_at, alive }）。無ければ null */
+    namedLockOwner(name) {
+      if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new StoreError('bad_lock_name');
+      const o = readJson(p('locks', `${name}.lock`, 'owner.json'));
+      return o && Number.isInteger(o.pid) ? { pid: o.pid, started_at: o.started_at, alive: pidAlive(o.pid) } : null;
     },
 
     // ─── 単独実行の lock・PAUSE ───

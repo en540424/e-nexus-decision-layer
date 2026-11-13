@@ -24,6 +24,7 @@ import { BRIEF_FILE, externalView, readBriefFile, renderReply } from './lib/runt
 import { EVENT_IDS, GUARD_LIMITS, MONITOR_LABEL } from './lib/runtime-guard.mjs';
 import { STATUS_DIR } from './lib/runtime-status-summary.mjs';
 import { readJsonSafe, readSmallFile } from './lib/task-hub/safe-read.mjs';
+import { taskHubWorkItems } from './lib/task-hub/audit-watch.mjs';
 import { AUDIT_FILE_MAX, verifyAuditLines } from './lib/task-hub/store.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -202,6 +203,7 @@ export function humanRequired({ ledger = [], last = null, state = null, receipt 
   if (taskHub?.audit) rows.push({ id: 'task-hub:audit', priority: 1, title: `Task Hub の監査の記録が壊れている（${taskHub.audit}）→ node scripts/task-hub.mjs verify-audit で行を確かめる（2 つの書き手の分岐・消えた行・改ざんのどれか。自動では止まらないので、確かめるまで承認しない。手順は docs/task-hub.md §13）`, due: null, source: 'task-hub' });
   if (taskHub?.awaiting) rows.push({ id: 'task-hub:awaiting', priority: 2, title: `Task Hub の承認待ち ${taskHub.awaiting} 件 → 端末で node scripts/task-hub.mjs human`, due: null, source: 'task-hub' });
   if (taskHub?.outbox_rejected) rows.push({ id: 'task-hub:outbox-rejected', priority: 2, title: `Task Hub の結果のうち VPS に受け付けられず隔離した ${taskHub.outbox_rejected} 件（依頼元へ届いていない）→ <保存先>/outbox-rejected を確かめる`, due: null, source: 'task-hub' });
+  if (taskHub?.hermes && taskHub.hermes !== 'ok') rows.push({ id: 'task-hub:hermes', priority: 2, title: `Hermes の業務（${taskHub.hermes}）→ node scripts/hermes-work.mjs status で確かめ、実行・やり直しは sh deploy/macos/hermes-work-run.sh --paid-ok [--task <id> --retry]`, due: null, source: 'task-hub' });
   if (taskHub?.stopped) rows.push({ id: 'task-hub:stopped', priority: 2, title: `Task Hub の途中で止まった task ${taskHub.stopped} 件（再実行はしていない）→ node scripts/task-hub.mjs list --state stopped で確かめ、済んだら dismiss`, due: null, source: 'task-hub' });
   for (const [name, at] of [['GitHub の見張りの token', state?.github_token_expires_at], ['バックアップの token', receipt?.token_expires_at]]) {
     if (!at) continue;
@@ -212,7 +214,7 @@ export function humanRequired({ ledger = [], last = null, state = null, receipt 
 }
 
 /** Task Hub の保存先を読むだけで数える（無ければ null＝未使用。作らない・直さない） */
-export function taskHubCounts(dir) {
+export function taskHubCounts(dir, now = Date.now()) {
   if (!existsSync(path.join(dir, 'tasks'))) return null;
   const n = { awaiting: 0, stopped: 0, paused: existsSync(path.join(dir, 'PAUSE')) };
   for (const f of readdirSync(path.join(dir, 'tasks')).filter((x) => /^t-\d{14}-[0-9a-f]{8}\.json$/.test(x))) {
@@ -228,6 +230,8 @@ export function taskHubCounts(dir) {
   let lines = null;
   try { lines = readSmallFile(path.join(dir, 'audit.jsonl'), AUDIT_FILE_MAX).split('\n').filter(Boolean); } catch (e) { if (e?.code === 'ENOENT') lines = []; else n.audit = 'audit_unreadable'; } // 無い log も tip と照らす（tip があれば truncated。監査 F2）
   if (lines) { const v = verifyAuditLines(lines, tip); if (!v.ok) n.audit = v.code; }
+  // Hermes の業務の実行待ち・やり直しの判断待ち（2026-11-13・host-health の hermes_jobs と同じ読み方）
+  n.hermes = taskHubWorkItems(dir, now).find((x) => x.id === 'hermes_jobs')?.value ?? 'ok';
   return n;
 }
 

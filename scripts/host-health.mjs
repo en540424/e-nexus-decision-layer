@@ -49,6 +49,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_STATE_DIR = path.join(REPO, 'data', 'host-health');
 /** Task Hub の保存先の既定（2026-11-11）。config.json がある時だけ、--task-hub が無くても監査の鎖と回の結果を見張る（読むだけ） */
 export const DEFAULT_TASK_HUB = path.join(REPO, '..', 'mac-runtime-state', 'task-hub');
+/** docomo-mail-lab の bin/dml-fetch.mjs の state（fetch-last.json がある時だけ見る・2026-11-13） */
+export const DEFAULT_DOCOMO_STATE = path.join(REPO, '..', 'mac-runtime-state', 'docomo-mail');
 export const STATE_SCHEMA = 'host-health-state/v1';
 export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', ...GUARD_BINS]);
 /** 初期値（2026-10-21。Mac mini の目安で、実測で見直す） */
@@ -528,6 +530,10 @@ const VALUE_SHAPES = Object.freeze([
   [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed|boundary_blocked)$/],
   [/^heartbeat$/, /^(?:sent|failed|rejected|config_invalid)$/],
   [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push)(?:,(?:pull|intake|run|collect_hermes|push)){0,4})?)$/],
+  [/^task_hub_approval$/, /^\d{1,3}$/],
+  [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'check_failed')],
+  [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],
+  [/^hermes_jobs$/, codes('ok', 'stuck', 'not_run', 'timeout', 'no_result', 'result_rejected', 'interrupted')],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
 export function safeValue(id, v) {
@@ -778,7 +784,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false, docomoState = null }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -808,6 +814,10 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (taskHub) items.push(await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubAuditItem(taskHub)).catch(() => ({ id: 'task_hub_audit', level: 'warn', value: 'check_failed', kind: 'state' })));
     // Task Hub の回の最後の結果（2026-11-11・読むだけ。回していなければ項目なし）
     if (taskHub) { const c = await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubCycleItem(taskHub, Date.parse(at), { scheduled: taskHubScheduled })).catch(() => null); if (c) items.push(c); }
+    // 承認待ちの件数・止まった queue・Hermes の実行の問題（2026-11-13・読むだけ。件数とコードだけ）
+    if (taskHub) items.push(...await import('./lib/task-hub/audit-watch.mjs').then((m) => m.taskHubWorkItems(taskHub, Date.parse(at))).catch(() => []));
+    // ドコモメールの読み取りの最後の結果（2026-11-13・fetch-last.json がある時だけ・連続 3 回の失敗で warn）
+    if (docomoState) { const d = await import('./lib/docomo-watch.mjs').then((m) => m.docomoFetchItem(docomoState)).catch(() => null); if (d) items.push(d); }
     // 判定の前に確かめる（今回の結果で知らせる）
     const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
       ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
@@ -1002,6 +1012,7 @@ async function main(argv) {
     uid: process.getuid(),
     taskHub: a.taskHub ?? (existsSync(path.join(DEFAULT_TASK_HUB, 'config.json')) ? path.resolve(DEFAULT_TASK_HUB) : null),
     taskHubScheduled: existsSync(path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', 'com.e-nexus.task-hub.plist')),
+    docomoState: path.resolve(DEFAULT_DOCOMO_STATE),
   });
   clearTimeout(deadline);
   if (a.json && r.items) console.log(JSON.stringify({ component: 'edl-host-health', ...r }, null, 2));

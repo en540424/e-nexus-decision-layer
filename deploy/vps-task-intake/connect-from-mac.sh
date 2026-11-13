@@ -2,7 +2,7 @@
 # Mac から VPS の 1 回の保守を行う（2026-11-11・MA-24）。**実行は Human**（ssh を始めるのは Human・Mac の Terminal で）。
 #
 #   bash deploy/vps-task-intake/connect-from-mac.sh --ssh <user@host> [--identity <鍵の file>] --public-url https://<足した hostname> \
-#        [--heartbeat] [--intake] [--source grok-commander --intents status.query,task.status,report.morning,note.record]
+#        [--heartbeat] [--intake] [--source grok-commander --intents status.query,task.status,report.morning,note.record [--businesses e-nexus]]
 #
 # すること（docs/vps-maintenance.md の A・B を 1 回に）：
 #   1. この clone から受け口・heartbeat の受け側の file を VPS の ~/task-intake-src へ写す（tar を ssh の標準入力で）
@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 [ "$(uname -s)" = Darwin ] || { echo "macOS だけ" >&2; exit 2; }
 [ -t 0 ] || { echo "Mac の Terminal で実行してください（sudo の password の入力があります）" >&2; exit 2; }
 
-target=; identity=; public_url=; flags=(); source_id=; intents=
+target=; identity=; public_url=; flags=(); source_id=; intents=; businesses=
 while [ $# -gt 0 ]; do
   case "$1" in
     --ssh) target="${2:-}"; shift 2 ;;
@@ -31,6 +31,7 @@ while [ $# -gt 0 ]; do
     --intake) flags+=(--intake); shift ;;
     --source) source_id="${2:-}"; shift 2 ;;
     --intents) intents="${2:-}"; shift 2 ;;
+    --businesses) businesses="${2:-}"; shift 2 ;;
     *) echo "知らない引数：$1" >&2; exit 2 ;;
   esac
 done
@@ -40,6 +41,7 @@ done
 [ -z "$source_id" ] || [[ "$source_id" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "--source の形" >&2; exit 2; }
 [ -z "$source_id" ] || [ -n "$intents" ] || { echo "--source には --intents が要ります（無いと VPS 側で全部の intent を通す）" >&2; exit 2; }
 [ -z "$intents" ] || [[ "$intents" =~ ^[a-z0-9][a-z0-9.*-]*(,[a-z0-9][a-z0-9.*-]*){0,30}$ ]] || { echo "--intents の形" >&2; exit 2; }
+[ -z "$businesses" ] || [ "$businesses" = all ] || [[ "$businesses" =~ ^[a-z0-9][a-z0-9-]{0,62}(,[a-z0-9][a-z0-9-]{0,62}){0,19}$ ]] || { echo "--businesses の形" >&2; exit 2; }
 if [ -n "$public_url" ]; then
   [[ "$public_url" =~ ^https://[a-z0-9.-]+\.[a-z]{2,}$ ]] || { echo "--public-url は https://<hostname>（path なし・小文字）" >&2; exit 2; }
 fi
@@ -64,6 +66,7 @@ COPYFILE_DISABLE=1 tar czf - deploy/vps-task-intake deploy/vps-heartbeat scripts
 echo "2/4 VPS で保守（sudo の password を聞かれたら VPS の password）"
 remote_args=(${flags[@]+"${flags[@]}"})
 [ -z "$source_id" ] || remote_args+=(--source "$source_id" --intents "$intents")
+[ -z "$businesses" ] || remote_args+=(--businesses "$businesses")
 q="$(printf '%q ' "${remote_args[@]}")"
 "${SSH[@]}" -t "$target" "if [ \"\$(id -u)\" = 0 ]; then bash task-intake-src/deploy/vps-task-intake/vps-apply.sh $q; else sudo bash task-intake-src/deploy/vps-task-intake/vps-apply.sh --handoff-owner \"\$(id -un)\" $q; fi" \
   || { echo "NG VPS の保守が失敗しました（上の NG の行を Claude Code に伝えてください）。途中で作られた鍵は VPS の受け渡しの file に残してあり、直した後に同じコマンドをもう一度実行すれば取ります" >&2; exit 1; }

@@ -114,7 +114,7 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
  * 朝のまとめ。1 つの business の記録だけを渡すこと（呼ぶ側が business で絞る）。3000 字を超えたら切る。
  * mails／events は記録の行、awaiting は承認待ちの task の件数。
  */
-export function morningReport({ business, mails, events, awaiting, now, offsetMin = 0 }) {
+export function morningReport({ business, mails, events, awaiting, now, offsetMin = 0, system = undefined, hermes = undefined, notes = [] }) {
   const today = dayStart(now, offsetMin);
   const tomorrow = today + DAY;
   const date = localParts(now, offsetMin).slice(0, 10);
@@ -128,7 +128,13 @@ export function morningReport({ business, mails, events, awaiting, now, offsetMi
   const { overlaps, duplicates, truncated } = analyzeEvents(events.filter((e) => ids.has(e.id)), { offsetMin });
   const title = new Map(events.map((e) => [e.id, oneLine(e.title)]));
   const mailLine = (m) => `- ${clip(oneLine(m.from_label), 30)}「${clip(oneLine(m.subject), 50)}」${mmdd(mailTime(m), offsetMin)}${m.due ? ` 期限 ${oneLine(m.due).slice(0, 16)}` : ''}`;
-  const evLine = ({ e, s }) => `- ${e.all_day ? '終日' : `${hhmm(s.start, offsetMin)}-${hhmm(s.end, offsetMin)}`} ${clip(oneLine(e.title), 50)}${e.case_ref ? `（${clip(oneLine(e.case_ref), 20)}）` : ''}`;
+  // 予定とメモを case_ref で結ぶ（2026-11-13）：今日・明日の予定の case_ref と同じメモの件数を予定の行に、本文の先頭を別の節に
+  const caseNotes = new Map();
+  for (const n of notes) if (typeof n.case_ref === 'string' && typeof n.text === 'string') caseNotes.set(n.case_ref, [...(caseNotes.get(n.case_ref) ?? []), n]);
+  const evLine = ({ e, s }) => `- ${e.all_day ? '終日' : `${hhmm(s.start, offsetMin)}-${hhmm(s.end, offsetMin)}`} ${clip(oneLine(e.title), 50)}${e.case_ref ? `（${clip(oneLine(e.case_ref), 20)}${caseNotes.get(e.case_ref)?.length ? `・メモ ${caseNotes.get(e.case_ref).length} 件` : ''}）` : ''}`;
+  const linked = [...evToday, ...evTomorrow].filter((x) => x.e.case_ref && caseNotes.has(x.e.case_ref)).flatMap((x) => caseNotes.get(x.e.case_ref).map((n) => ({ ref: x.e.case_ref, n })));
+  const seenNote = new Set();
+  const linkedNotes = linked.filter((x) => { const k = x.n.id ?? x.n.text; if (seenNote.has(k)) return false; seenNote.add(k); return true; });
   const section = (head, rows, line, max = 10) => [head(rows.length), ...(rows.length ? [...take(rows, max).map(line), ...(rows.length > max ? [`- ほか ${rows.length - max} 件`] : [])] : ['- なし'])];
   const lines = [
     `【朝のまとめ】${business} ${date}`,
@@ -139,9 +145,12 @@ export function morningReport({ business, mails, events, awaiting, now, offsetMi
     `■ 予定の重なり・重複の疑い ${overlaps.length + duplicates.length} 件`,
     ...(truncated ? ['- （予定が多いので一部だけ照合した）'] : []),
     ...(overlaps.length + duplicates.length ? [...take(overlaps, 5).map((o) => `- 重なり ${o.minutes} 分：${clip(title.get(o.a) ?? o.a, 30)} ／ ${clip(title.get(o.b) ?? o.b, 30)}`), ...take(duplicates, 5).map((d) => `- 重複の疑い：${clip(title.get(d.a) ?? d.a, 30)} ／ ${clip(title.get(d.b) ?? d.b, 30)}`)] : ['- なし']),
+    ...(linkedNotes.length ? [`■ 予定に関係するメモ ${linkedNotes.length} 件`, ...take(linkedNotes, 5).map((x) => `- （${clip(oneLine(x.ref), 20)}）${clip(oneLine(x.n.text), 60)}`), ...(linkedNotes.length > 5 ? [`- ほか ${linkedNotes.length - 5} 件`] : [])] : []),
     `■ 承認待ちのタスク ${awaiting} 件`,
+    ...(system === undefined ? [] : [system ? `■ Mac の稼働状況：${system.overall}（要確認 ${system.open} 件）` : '■ Mac の稼働状況：不明（監視の要約が古い・読めない）']),
+    ...(hermes && Object.values(hermes).some((v) => v > 0) ? [`■ Hermes の業務：実行待ち ${hermes.waiting}・実行中 ${hermes.running}・24 時間で完了 ${hermes.done_24h}・うまくいかなかった ${hermes.problem_24h}`] : []),
   ];
   let text = lines.join('\n');
   if (text.length > REPORT_MAX_CHARS) text = `${text.slice(0, REPORT_MAX_CHARS - 8)}\n…(省略)`;
-  return { text, counts: { reply_needed: reply.length, important: important.length, today: evToday.length, tomorrow: evTomorrow.length, overlaps: overlaps.length, duplicates: duplicates.length, awaiting, ...(truncated ? { analysis_truncated: true } : {}) } };
+  return { text, counts: { reply_needed: reply.length, important: important.length, today: evToday.length, tomorrow: evTomorrow.length, overlaps: overlaps.length, duplicates: duplicates.length, awaiting, ...(linkedNotes.length ? { linked_notes: linkedNotes.length } : {}), ...(system === undefined ? {} : { system: system ? system.overall : 'unknown' }), ...(truncated ? { analysis_truncated: true } : {}) } };
 }

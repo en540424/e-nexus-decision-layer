@@ -15,6 +15,7 @@
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { checkSpec, parseEnvelope } from './envelope.mjs';
+import { recordJobResult } from './hermes-jobs.mjs';
 import { readSmallFile } from './safe-read.mjs';
 import { TASK_ID_RE } from './store.mjs';
 
@@ -78,6 +79,7 @@ export function collectHermesResults({ store, config, now = Date.now() }) {
     }
     // 依頼元が人以外（Grok Bot 等）なら結果の板へも返す（2026-11-11。同じ名前の file を上書きするだけ＝やり直しても 1 件）
     store.hermesNotice(r.task, { status: r.status, text: r.text }, now);
+    recordJobResult(store, r.task, { status: r.status, at: now }); // 実行の記録（hermes-jobs）を done／failed に閉じる（2026-11-13）
     try { closeSync(openSync(mark, 'wx', 0o600)); } catch (e) { if (e?.code !== 'EEXIST') throw e; out.already += 1; continue; } // 同時に回った別の collect が先に印を付けた（記録・板は同じ内容の上書き）
     out.recorded += 1;
   }

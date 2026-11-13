@@ -3,6 +3,7 @@
 #   sudo bash install.sh                          入れる（何度流しても同じ結果。channel の鍵と sources は再利用）
 #   sudo bash install.sh add-source <id> [intents] bot の Bearer 鍵を作る（hash だけを保存・鍵は画面に 1 回だけ）。intents は a.b,c.* のように , 区切り
 #   sudo bash install.sh remove-source <id>
+#   sudo bash install.sh set-scope <id> <intents> [businesses]   登録済みの bot の intents・businesses だけを替える（鍵は変えない・2026-11-13）
 # 変えるもの：user edl-task-intake・/opt/e-nexus-task-intake・/etc/e-nexus/task-intake.env・/etc/e-nexus/task-intake-sources.json・/var/lib/e-nexus-task-intake・unit e-nexus-task-intake.service だけ。
 # 変えないもの：既存の service・Docker・Tailscale の Serve／Funnel・cloudflared の設定・firewall・package。Cloudflare の経路（公開の入口）は Human が README の手順で足す。
 # 既存の service の PID を前後で比べ、変わっていれば NG と言う。
@@ -23,11 +24,12 @@ NODE=/usr/bin/node
 [ -x "$NODE" ] || { echo "$NODE がありません（既存の node を使います。入れ替えません）" >&2; exit 2; }
 [ "$("$NODE" -p 'Number(process.versions.node.split(".")[0])')" -ge 20 ] || { echo "node 20 以上が要ります（何も変えていません）" >&2; exit 2; }
 
-if [ "${1:-}" = add-source ] || [ "${1:-}" = remove-source ]; then
+if [ "${1:-}" = add-source ] || [ "${1:-}" = remove-source ] || [ "${1:-}" = set-scope ]; then
   [ -f "$ENV_FILE" ] || { echo "先に install.sh（引数なし）で入れてください" >&2; exit 2; }
   [ -n "${2:-}" ] || { echo "usage: install.sh $1 <id>" >&2; exit 2; }
   CMD="--$1"
-  ( set -a; . "$ENV_FILE"; set +a; "$NODE" "$APP/deploy/vps-task-intake/intake.mjs" "$CMD" "$2" ${3:+"$3"} )
+  [ "$1" = set-scope ] && CMD=--set-source-scope
+  ( set -a; . "$ENV_FILE"; set +a; "$NODE" "$APP/deploy/vps-task-intake/intake.mjs" "$CMD" "$2" ${3:+"$3"} ${4:+"$4"} )
   chgrp edl-task-intake "$SOURCES_FILE" && chmod 0640 "$SOURCES_FILE"
   systemctl restart "$UNIT"  # sources は起動時に読む。レート枠の数え直しだけが副作用
   echo "OK：$UNIT を再起動しました（保存済みの依頼・結果は残っています）"

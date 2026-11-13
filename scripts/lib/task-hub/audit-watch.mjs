@@ -4,7 +4,7 @@
  * 値は異常のコードだけ（task の id・中身・path は出さない）。docs/task-hub.md §13。
  */
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { readJsonSafe, readSmallFile } from './safe-read.mjs';
 import { verifyAuditLines } from './store.mjs';
 
@@ -61,5 +61,57 @@ export function taskHubCycleItem(dir, now = Date.now(), { scheduled = false } = 
     return item('warn', failed.length ? `problem ${failed.join(',')}` : 'problem');
   } catch {
     return scheduled ? item('warn', 'stale') : null;
+  }
+}
+
+/**
+ * Task Hub の仕事の見張り（2026-11-13・読むだけ・store を開かない）。docs/task-hub.md §12・§15。値は件数かコードだけ（task の id・中身は出さない）。
+ *   task_hub_approval：承認待ちの件数（全 business・全依頼元）。1 件以上で warn・hold 0＝次の回に 1 通（続いている間は重ねない。0 に戻って新たに来れば次の 1 通）
+ *   task_hub_queue：stalled（queued・時刻の来た retry_wait が 30 分以上動いていない＝定期の回が実行できていない）・stopped（途中で止まった task＝Human の dismiss 待ち）
+ *   hermes_jobs：stuck（running のまま 20 分）・not_run（承認して渡したが 24 時間実行していない）・timeout・no_result・result_rejected・interrupted（24 時間以内。Human のやり直しの判断）。
+ *     Hermes 自身の failed（「できない」の返事）は依頼元へ返る普通の結果なので知らせない
+ */
+export const APPROVAL_WATCH_ID = 'task_hub_approval';
+export const QUEUE_WATCH_ID = 'task_hub_queue';
+export const HERMES_JOBS_WATCH_ID = 'hermes_jobs';
+const TASK_FILE_RE = /^t-\d{14}-[0-9a-f]{8}\.json$/;
+const MAX_FILES = 5000;
+const STALL_MS = 30 * 60_000;
+const STUCK_MS = 20 * 60_000;
+const DAY_MS = 86_400_000;
+const HERMES_PROBLEMS = ['timeout', 'no_result', 'result_rejected', 'interrupted'];
+
+function readDirJson(dir) {
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => TASK_FILE_RE.test(f)).slice(0, MAX_FILES); } catch { return []; }
+  return names.map((f) => readJsonSafe(path.join(dir, f), 256 * 1024)).filter(Boolean);
+}
+
+/** [approval, queue, hermes] の項目（使っていない store なら []）。投げない */
+export function taskHubWorkItems(dir, now = Date.now()) {
+  try {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir) || !existsSync(path.join(dir, 'tasks'))) return [];
+    const tasks = readDirJson(path.join(dir, 'tasks'));
+    const awaiting = tasks.filter((t) => t.state === 'awaiting_approval').length;
+    const items = [{ id: APPROVAL_WATCH_ID, level: awaiting ? 'warn' : 'ok', value: String(Math.min(awaiting, 999)), kind: 'state' }];
+    const q = [];
+    if (tasks.some((t) => (t.state === 'queued' && now - Date.parse(t.updated_at) > STALL_MS) || (t.state === 'retry_wait' && now - Date.parse(t.next_try_at) > STALL_MS))) q.push('stalled');
+    if (tasks.some((t) => t.state === 'stopped')) q.push('stopped');
+    items.push({ id: QUEUE_WATCH_ID, level: q.length ? 'warn' : 'ok', value: q.length ? q.join(',') : 'ok', kind: 'state' });
+    const jobs = new Map(readDirJson(path.join(dir, 'hermes-jobs')).map((j) => [j.task_id, j]));
+    const h = new Set();
+    for (const t of tasks) {
+      if (t.intent !== 'hermes.task' || t.state !== 'succeeded') continue;
+      const j = jobs.get(t.task_id);
+      if (!j) { if (now - Date.parse(t.updated_at) > DAY_MS) h.add('not_run'); continue; }
+      if (j.state === 'running' && now - Date.parse(j.started_at) > STUCK_MS) h.add('stuck');
+      else if (HERMES_PROBLEMS.includes(j.state) && now - Date.parse(j.updated_at) <= DAY_MS) h.add(j.state);
+    }
+    const order = ['stuck', 'not_run', ...HERMES_PROBLEMS];
+    const codes = order.filter((c) => h.has(c));
+    if (jobs.size || tasks.some((t) => t.intent === 'hermes.task')) items.push({ id: HERMES_JOBS_WATCH_ID, level: codes.length ? 'warn' : 'ok', value: codes.length ? codes.join(',') : 'ok', kind: 'state' });
+    return items;
+  } catch {
+    return [{ id: QUEUE_WATCH_ID, level: 'warn', value: 'check_failed', kind: 'state' }];
   }
 }

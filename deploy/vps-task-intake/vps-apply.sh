@@ -1,6 +1,8 @@
 #!/bin/bash
 # VPS の 1 回の保守（2026-11-11・MA-24）。**Mac の connect-from-mac.sh が ssh で呼ぶ**（root。Human が ssh を始める）。単独でも動く。
-#   bash vps-apply.sh [--heartbeat] [--intake] [--source <id> --intents <a.b,c.d>] [--handoff-dir <dir>] [--handoff-owner <user>]
+#   bash vps-apply.sh [--heartbeat] [--intake] [--source <id> --intents <a.b,c.d> [--businesses <b1,b2>]] [--handoff-dir <dir>] [--handoff-owner <user>]
+#   --businesses その bot が出せる business（2026-11-13・Mac の config と 2 重）。登録済みの bot は intents・businesses だけ替える（鍵は作り直さない）。
+#                省くと今の businesses のまま（制限を黙って外さない）。外す時だけ --businesses all
 #
 #   --heartbeat  生存信号の受け側（/opt/e-nexus-heartbeat/receiver.mjs）を同梱の版へ入れ替える。同じなら何もしない。
 #                前の版と state を /var/lib/e-nexus-maint/<時刻>/ へ写し、再起動の後に active・listening でなければ自動で前の版へ戻す。
@@ -16,13 +18,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$(cd "$HERE/../.." && pwd)"
 [ "$(id -u)" = 0 ] || { echo "NG root で実行してください" >&2; exit 2; }
 
-do_hb=0; do_intake=0; source_id=; intents=; handoff_dir=; handoff_owner="${SUDO_USER:-root}"
+do_hb=0; do_intake=0; source_id=; intents=; businesses=; handoff_dir=; handoff_owner="${SUDO_USER:-root}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --heartbeat) do_hb=1; shift ;;
     --intake) do_intake=1; shift ;;
     --source) source_id="${2:-}"; shift 2 ;;
     --intents) intents="${2:-}"; shift 2 ;;
+    --businesses) businesses="${2:-}"; shift 2 ;;
     --handoff-dir) handoff_dir="${2:-}"; shift 2 ;;
     --handoff-owner) handoff_owner="${2:-}"; shift 2 ;;
     *) echo "NG 知らない引数：$1" >&2; exit 2 ;;
@@ -31,6 +34,7 @@ done
 [ -z "$source_id" ] || [[ "$source_id" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "NG --source の形" >&2; exit 2; }
 [ -z "$source_id" ] || [ -n "$intents" ] || { echo "NG --source には --intents が要ります（無いと VPS 側で全部の intent を通す）" >&2; exit 2; }
 [ -z "$intents" ] || [[ "$intents" =~ ^[a-z0-9][a-z0-9.*-]*(,[a-z0-9][a-z0-9.*-]*){0,30}$ ]] || { echo "NG --intents の形" >&2; exit 2; }
+[ -z "$businesses" ] || [ "$businesses" = all ] || [[ "$businesses" =~ ^[a-z0-9][a-z0-9-]{0,62}(,[a-z0-9][a-z0-9-]{0,62}){0,19}$ ]] || { echo "NG --businesses の形" >&2; exit 2; }
 id "$handoff_owner" >/dev/null 2>&1 || { echo "NG --handoff-owner の user が無い" >&2; exit 2; }
 owner_home="$(getent passwd "$handoff_owner" | cut -d: -f6)"
 handoff_dir="${handoff_dir:-$owner_home/.e-nexus-handoff}"
@@ -112,10 +116,12 @@ if [ -n "$source_id" ]; then
   cmp -s "$SRC/deploy/vps-task-intake/intake.mjs" /opt/e-nexus-task-intake/deploy/vps-task-intake/intake.mjs || { echo "NG source：入っている受け口が古い版（--intake も付けて入れ直す。鍵は作っていません）" >&2; exit 1; }
   if /usr/bin/node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(Object.hasOwn(j,process.argv[2])?0:1)' "$SOURCES_FILE" "$source_id"; then
     echo "OK source：$source_id は登録済み（鍵は作り直さない。前の回の受け渡しの file があれば Mac が取る。替える時は install.sh remove-source $source_id の後にもう一度）"
+    # intents・businesses は今の指定に揃える（鍵は変えない・2026-11-13）
+    bash "$SRC/deploy/vps-task-intake/install.sh" set-scope "$source_id" "$intents" "${businesses:-keep}" | sed 's/^/OK source：/'
   else
     bot_out="$handoff_dir/bot-$source_id.key"
     rm -f "$bot_out"  # source が無い＝この file は無効（前の回の残り）
-    TASK_INTAKE_KEY_OUT="$bot_out" bash "$SRC/deploy/vps-task-intake/install.sh" add-source "$source_id" "$intents"
+    TASK_INTAKE_KEY_OUT="$bot_out" bash "$SRC/deploy/vps-task-intake/install.sh" add-source "$source_id" "$intents" "${businesses:-keep}"
     chown "$handoff_owner" "$bot_out" && chmod 0600 "$bot_out"
   fi
 fi

@@ -55,12 +55,12 @@ task → [承認待ち] →(Human が端末で承認)→ queued → run → succ
 
 | intent | class | 内容 |
 |---|---|---|
-| `status.query` | auto | runtime-brief を読み、水準・要確認の件数・生成時刻だけ返す（`brief_path` が未設定なら失敗） |
-| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running） |
+| `status.query` | auto | runtime-brief を読み、水準・要確認の件数・生成時刻だけ返す（`brief_path` が未設定なら失敗）。**`{ "detail": true }`（2026-11-13）**：区分ごとの水準（ok／warn／crit だけ・文も日数も値も無い＝runtime-brief の externalView と同じ範囲）・その business の Task Hub の件数（承認待ち・待ち・実行中・24 時間の失敗・止まった）・Hermes の業務の件数・定期の回のコード |
+| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running）。hermes.task は `hermes: { status, summary? }` も。**`{ "view": "recent"\|"awaiting_approval"\|"failed"\|"hermes", "limit": 1..20 }`（2026-11-13）**：自分の依頼の一覧（task_ref・intent・state・updated_at・code・Hermes の状態）を新しい順に。承認待ちは他の依頼元の分を件数だけ（`others_awaiting_approval`）。task_ref と view は片方だけ（両方・どちらも無い＝`params_task_ref_or_view` で failed） |
 | `mail.digest.ingest` | auto | Grok が作った要約を business の記録に残す（id で重複除去）。メールの操作はしない |
 | `calendar.digest.ingest` | auto | 同上＋重なり・重複の疑い（同題名＋同開始、または 90% 以上重なり題名が似ている）を検出 |
-| `report.morning` | auto | その business 自身の記録から決まった文面（3000 字まで）。**記録（`records/<business>/`）と `report.morning` の範囲は business 単位で、依頼元（source）単位ではない**：同じ business に複数の source が書けば 1 つの記録に混ざり、`承認待ちのタスク N 件` もその business の全 source の承認待ちを数える。予定の照合は最大 500 件・50,000 組まで（超えたら「一部だけ照合」と出す）。3000 件の保存でも 1 秒未満 |
-| `note.record` | ai_check | 短いメモ（500 字）を business のメモに追記 |
+| `report.morning` | auto | その business 自身の記録から決まった文面（3000 字まで）。2026-11-13：今日・明日の予定と同じ `case_ref` のメモ（`■ 予定に関係するメモ`）・Mac の稼働状況（水準と件数だけ）・Hermes の業務の件数を足す。**記録（`records/<business>/`）と `report.morning` の範囲は business 単位で、依頼元（source）単位ではない**：同じ business に複数の source が書けば 1 つの記録に混ざり、`承認待ちのタスク N 件` もその business の全 source の承認待ちを数える。予定の照合は最大 500 件・50,000 組まで（超えたら「一部だけ照合」と出す）。3000 件の保存でも 1 秒未満 |
+| `note.record` | ai_check | 短いメモ（500 字）を business のメモに追記。`case_ref`（任意・予定の case_ref と同じ値）で朝のまとめが予定と結ぶ |
 
 走らない：`hermes.task`（承認が要る。**休眠**：`hermes_inbox` に設定されたフォルダが既に在る時だけ 1 file 書く。作らない。無ければ `hermes_inbox_not_connected` で終わり再試行しない）。台帳にだけ在り handler が無いもの：`freeform.request`・`mail.reply.draft`・`mail.send`・`mail.label`・`mail.move`・`mail.mark-read`・`mail.delete`・`calendar.event.create|update|delete`・`docomo.rule.propose`・`dropbox.read`・`github.read`。これらは追跡のために受けるだけで、承認しても `blocked/no_handler`。
 
@@ -76,7 +76,7 @@ runner：`run` の呼び出しごとに 1 回回って終わる（常駐しな�
 
 ## 7. 保存先（`~/e-nexus-runtime/mac-runtime-state/task-hub`・dir 0700／file 0600・repo の外）
 
-`config.json`（local config・repo に置かない・他人が書ける権限だと読まない）／`tasks/`／`keys/`（(source, key) の重複の印）／`nonces/`（封の最大の古さ 8 日＋1 日残す。封が受け付けられる間は再送を replay として拒否できる）／`audit.jsonl`＋`audit.tip`（追記だけ・各行に前の行の sha256・params の値や Secret は書かない）／`outbox/`・`outbox-sent/`／`records/<business>/{mail,calendar,notes}.jsonl`／`breaker.json`（想定外の失敗の連続回数）／`run.lock/`・`locks/*.lock/`／`PAUSE`。
+`config.json`（local config・repo に置かない・他人が書ける権限だと読まない）／`tasks/`／`keys/`（(source, key) の重複の印）／`nonces/`（封の最大の古さ 8 日＋1 日残す。封が受け付けられる間は再送を replay として拒否できる）／`audit.jsonl`＋`audit.tip`（追記だけ・各行に前の行の sha256・params の値や Secret は書かない）／`outbox/`・`outbox-sent/`／`records/<business>/{mail,calendar,notes}.jsonl`／`breaker.json`（想定外の失敗の連続回数）／`hermes-jobs/`（Hermes の 1 件実行の記録・2026-11-13）／`hermes-work-logs/`（Hermes の出力の末尾・鍵の形を伏せる）／`run.lock/`・`locks/*.lock/`／`PAUSE`。
 
 - **記録の保持**：取り込みの最後に畳む（`prune` でも）。メールは受信から 30 日・予定は終わって 14 日／始まりが 120 日先までを残し、同じ id の古い版を落とし、件数は mail 5000・calendar 5000・notes 2000 を上限に新しい方から残す。file は有限
 - **lock**：owner.json を入れた一時フォルダを rename して取る（取れた瞬間に持ち主が書かれている）。**持ち主の pid が居ない時**か、起動時刻（`started_at`）から上限（audit・task の lock は 60 秒・run の lock は 30 分。本物の持ち主はそれ以上持たない）を超えた時（pid の再利用）だけ古いとして取り除く（上限内の生きた持ち主の lock は奪わない＝監査の鎖が分岐しない。待てば `lock_timeout`）。取り除く時は lock を一時の場所へ動かして持ち主を確かめ、違えば戻す（戻せなければ `lock_conflict`）。持ち主は監査の追記の直前に今も自分の lock か確かめ、違えば書かず `lock_lost`。owner.json の無い lock は 60 秒より古い時だけ
@@ -131,7 +131,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 | 通知 | 今 | 案 |
 |---|---|---|
 | 異常（Mac・Hermes・バックアップ・生存信号の途絶） | host-health と VPS の受け側が Discord へ（普段は静か・`docs/runtime-monitoring.md`） | 変えない |
-| Task Hub の承認待ち・止まった task・PAUSE・監査の鎖の破損・outbox の隔離 | `runtime-ops human` の一覧に件数だけ（Discord へは送らない） | 承認待ちを Discord へ出すなら、host-health の既存の回の WARN として「件数だけ」（本文・依頼元・params は出さない）。承認は Discord のボタンではなく Mac の端末だけ |
+| Task Hub の承認待ち・止まった task・PAUSE・監査の鎖の破損・outbox の隔離 | `runtime-ops human` の一覧に件数だけ。**2026-11-13 から承認待ちは host-health の既存の回の WARN（件数だけ・§15）** | 承認は Discord のボタンではなく Mac の端末だけ（変えない） |
 | task の完了 | 依頼元（Grok Bot）が `get_task_status` で見る | Discord へは送らない（Bot と Discord の二重を避ける。依頼した側へ返すのが 1 本の経路） |
 | 通知の失敗・再送 | host-health・受け側はそれぞれ失敗を数えて再送（受け側は 5 分ごと・未送信を消さない） | 変えない |
 
@@ -166,3 +166,20 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 - **見張り**：host-health は config.json がある時、`--task-hub` が無くても既定の保存先の監査の鎖（§13）と `cycle-last.json` を読む（読むだけ）。`task_hub_cycle`：ok／`paused`（Human の PAUSE の間は run を呼ばない＝失敗に数えない）／`paused_breaker`（runner の回路遮断＝warn）／`not_configured`（Keychain に VPS の URL か鍵が無い）／`problem <段>`／`stale`（30 分以上回っていない）。`not_configured`・`stale` は LaunchAgent の plist がある時だけ。warn で、45 分続いた時に 1 通
 - **Hermes の結果の返却**：`collect-hermes` は依頼元が人以外の時、結果の板へ同じ `task_ref` の新しい知らせ（`result.hermes = { status, summary }`）を書く（板は新しい `updated_at` が勝つ）。Grok Bot は `get_task_status` で Hermes の要約まで見える
 - **止める**：`connect-task-hub.sh --remove`、または保存先に `PAUSE`。VPS の入口を止める時は Cloudflare の hostname を消す（`deploy/cloudflare-task-intake/README.md`「戻す」）
+
+## 15. 仕事の見張り（2026-11-13・host-health の既存の回・読むだけ）
+
+新しい Webhook・LaunchAgent は足していない。host-health（:20・:50）が store の file を読むだけ（`lib/task-hub/audit-watch.mjs` の `taskHubWorkItems`・`lib/docomo-watch.mjs`）。値は件数かコードだけで、文は `lib/alert-policy.mjs` の固定文。
+
+| 項目 | warn の時 | 通知 |
+|---|---|---|
+| `task_hub_approval` | 承認待ちが 1 件以上（全 business・全依頼元の件数） | 次の回に 1 通（hold 0）。続いている間は重ねない。0 に戻って新しく来たらまた 1 通 |
+| `task_hub_queue` | `stalled`（queued・時刻の来た retry_wait が 30 分動かない＝定期の回が実行できていない）・`stopped`（Human の dismiss 待ち） | 2 回分続いたら 1 通。新しいコードが増えたら知らせ直す |
+| `hermes_jobs` | `stuck`（running のまま 20 分）・`not_run`（承認済みで 24 時間未実行）・`timeout`・`no_result`・`result_rejected`・`interrupted`（24 時間以内） | 次の回に 1 通。新しいコードで知らせ直す。Hermes 自身の failed（「できない」）は依頼元へ返る普通の結果なので知らせない |
+| `docomo_fetch` | docomo-mail-lab の `bin/dml-fetch.mjs` が 3 回続けて失敗（`fetch-last.json` が無い間は項目なし） | 次の回に 1 通 |
+
+`runtime-ops human` にも `task-hub:hermes`（Hermes の業務のコード）を足した。正常な回・完了の知らせは Discord へ送らない（完了は依頼元の Grok Bot へ返す 1 本の経路）。
+
+## 16. VPS の受け口の business の制限（2026-11-13）
+
+鍵（source）ごとに `businesses` を VPS でも絞れる（`deploy/vps-task-intake/intake.mjs`：`business_not_allowed`）。Mac の config の `businesses` と 2 重で、Grok Bot の説明文（コネクタはアカウント全体で共有されうる）だけに頼らない。適用は Human の 1 コマンド（`connect-from-mac.sh … --intake --source grok-commander --intents <今と同じ> --businesses e-nexus`。登録済みの bot は鍵を作り直さず intents・businesses だけ替える）。後の保守で `--businesses` を省いても制限は外れない（今のまま）。外すのは `--businesses all` を明示した時だけ。

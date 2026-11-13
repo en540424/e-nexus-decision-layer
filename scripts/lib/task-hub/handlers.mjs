@@ -6,10 +6,12 @@
  * 失敗は fail(code, { retryable, expected }) を throw する。expected: true は「想定内の終わり方」（休眠中・未設定）で、runner の連続失敗に数えない。
  */
 import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { readJsonSafe } from './safe-read.mjs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readBriefFile } from '../runtime-brief.mjs';
 import { analyzeEvents, keepEvent, keepMail, morningReport, parseTime } from './digest.mjs';
+import { jobStatus, RETRYABLE } from './hermes-jobs.mjs';
 
 export class HandlerError extends Error {
   constructor(code, { retryable = false, expected = false } = {}) {
@@ -44,19 +46,90 @@ function ingestRows({ store, business, kind, items, now, keep, offsetMin = 0 }) 
   return { added, updated, unchanged, pruned, merged: new Map([...prior, ...batch]) };
 }
 
-const statusQuery = ({ config, now }) => {
+const LEVELS = new Set(['ok', 'warn', 'crit', 'unknown']);
+const DAY_MS = 86_400_000;
+/** その business の Hermes の業務の件数（実行待ち・実行中・24 時間で完了・うまくいかなかった）。値は返さない */
+function hermesCounts(store, business, now) {
+  const c = { waiting: 0, running: 0, done_24h: 0, problem_24h: 0 };
+  for (const t of store.listTasks({ business })) {
+    if (t.intent !== 'hermes.task' || t.state !== 'succeeded') continue;
+    const s = jobStatus(store, t.task_id);
+    const j = s === 'waiting' ? null : store.readHermesJob(t.task_id);
+    const recent = j && now - Date.parse(j.updated_at) <= DAY_MS;
+    if (s === 'waiting') c.waiting += 1;
+    else if (s === 'running') c.running += 1;
+    else if (s === 'done' && recent) c.done_24h += 1;
+    else if ((s === 'failed' || RETRYABLE.has(s)) && recent) c.problem_24h += 1;
+  }
+  return c;
+}
+/** その business の Task Hub の件数（どの依頼元の分も件数だけ） */
+function hubCounts(store, business, now) {
+  const c = { awaiting_approval: 0, queued: 0, running: 0, failed_24h: 0, stopped: 0 };
+  for (const t of store.listTasks({ business })) {
+    if (t.state === 'awaiting_approval') c.awaiting_approval += 1;
+    else if (t.state === 'queued' || t.state === 'retry_wait') c.queued += 1;
+    else if (t.state === 'running') c.running += 1;
+    else if (t.state === 'stopped') c.stopped += 1;
+    else if (t.state === 'failed' && now - Date.parse(t.updated_at) <= DAY_MS) c.failed_24h += 1;
+  }
+  return c;
+}
+
+const statusQuery = ({ task, store, config, now }) => {
   if (!config.brief_path) throw fail('brief_not_configured', { expected: true });
   const r = readBriefFile(config.brief_path, { now: new Date(now) });
   // 値・項目名・文は返さない：水準・要確認の件数・生成時刻だけ
-  if (!r.ok) return { result: { available: false, reason: String(r.reason).slice(0, 40) } };
-  return { result: { available: true, overall: r.brief.overall, not_ok_count: r.brief.counts.open, generated_at: r.brief.generated_at } };
+  const base = r.ok ? { available: true, overall: r.brief.overall, not_ok_count: r.brief.counts.open, generated_at: r.brief.generated_at } : { available: false, reason: String(r.reason).slice(0, 40) };
+  if (task?.params?.detail !== true) return { result: base };
+  // detail（2026-11-13）：区分ごとの水準だけ（runtime-brief の externalView と同じく文・日数・値は渡さない）と、その business の件数
+  const sections = {};
+  if (r.ok) for (const [k, v] of Object.entries(r.brief.sections ?? {})) if (/^[a-z_]{1,20}$/.test(k) && LEVELS.has(v?.level)) sections[k] = v.level;
+  const cycle = readJsonSafe(store.path('cycle-last.json'), 4096);
+  return {
+    result: {
+      ...base, ...(r.ok ? { monitor: r.brief.monitor, counts: r.brief.counts, sections } : {}),
+      task_hub: hubCounts(store, task.business, now), hermes: hermesCounts(store, task.business, now),
+      cycle: cycle && typeof cycle.code === 'string' ? { code: cycle.code.slice(0, 40), at: typeof cycle.at === 'string' ? cycle.at.slice(0, 40) : null } : null,
+    },
+  };
 };
 
+const VIEWS = Object.freeze({
+  recent: () => true,
+  awaiting_approval: (t) => t.state === 'awaiting_approval',
+  failed: (t) => ['failed', 'blocked', 'stopped', 'expired', 'rejected'].includes(t.state),
+  hermes: (t) => t.intent === 'hermes.task',
+});
+/** hermes.task の Hermes の状態（と結果の要約：その依頼元へ板で返したものと同じ文） */
+function hermesOf(store, t) {
+  if (t.intent !== 'hermes.task' || t.state !== 'succeeded') return undefined;
+  const status = jobStatus(store, t.task_id);
+  const note = store.readRecords(t.business, 'notes').get(`hermes:${t.task_id}`);
+  return { status, ...(typeof note?.text === 'string' && (status === 'done' || status === 'failed') ? { summary: note.text } : {}) };
+}
+
 const taskStatus = ({ task, store }) => {
-  const other = store.findByKey(task.source, task.params.task_ref); // 同じ依頼元の中でしか探せない
+  const { task_ref: ref, view } = task.params;
+  // どちらか 1 つ。依頼元の形の誤りは想定内（runner の連続失敗に数えない＝Bot の誤った呼び方 3 回で queue 全体を PAUSE にしない・2026-11-13 監査 F3）
+  if ((ref === undefined) === (view === undefined)) throw fail('params_task_ref_or_view', { expected: true });
+  if (view !== undefined) {
+    // 自分（同じ依頼元・同じ business）の依頼だけ。他の依頼元の承認待ちは件数だけ（存在の詳細を教えない）
+    const limit = Number.isInteger(task.params.limit) ? Math.min(Math.max(task.params.limit, 1), 20) : 10;
+    const mine = store.listTasks({ business: task.business }).filter((t) => t.source === task.source && t.task_id !== task.task_id && VIEWS[view](t))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    const items = mine.slice(0, limit).map((t) => {
+      const h = hermesOf(store, t);
+      return { task_ref: t.idempotency_key, intent: t.intent, state: t.state, updated_at: t.updated_at, ...(t.error?.code && t.state !== 'succeeded' ? { code: t.error.code } : {}), ...(h ? { hermes: h.status } : {}) };
+    });
+    const others = view === 'awaiting_approval' ? store.listTasks({ state: 'awaiting_approval', business: task.business }).filter((t) => t.source !== task.source).length : undefined;
+    return { result: { view, total: mine.length, items, ...(others !== undefined ? { others_awaiting_approval: others } : {}) } };
+  }
+  const other = store.findByKey(task.source, ref); // 同じ依頼元の中でしか探せない
   // 無い・別の business は同じ答え not_found（存在を教えない）。自分自身の key を引けば found（state は running）
   if (!other || other.business !== task.business) return { result: { found: false, code: 'not_found' } };
-  return { result: { found: true, state: other.state, intent: other.intent, updated_at: other.updated_at, ...(other.error?.code ? { code: other.error.code } : {}) } };
+  const h = hermesOf(store, other);
+  return { result: { found: true, state: other.state, intent: other.intent, updated_at: other.updated_at, ...(other.error?.code ? { code: other.error.code } : {}), ...(h ? { hermes: h } : {}) } };
 };
 
 const mailIngest = ({ task, store, now, signal }) => {
@@ -82,12 +155,16 @@ const reportMorning = ({ task, store, config, now }) => {
   const mails = [...store.readRecords(task.business, 'mail').values()];
   const events = [...store.readRecords(task.business, 'calendar').values()];
   const awaiting = store.listTasks({ state: 'awaiting_approval', business: task.business }).length;
-  return { result: morningReport({ business: task.business, mails, events, awaiting, now, offsetMin: config.utc_offset_minutes ?? 0 }) };
+  const notes = [...store.readRecords(task.business, 'notes').values()];
+  // Mac の稼働状況（水準と件数だけ・2026-11-13）。brief_path が無ければ行を出さない
+  let system;
+  if (config.brief_path) { const r = readBriefFile(config.brief_path, { now: new Date(now) }); system = r.ok ? { overall: r.brief.overall, open: r.brief.counts.open } : null; }
+  return { result: morningReport({ business: task.business, mails, events, awaiting, now, offsetMin: config.utc_offset_minutes ?? 0, system, hermes: hermesCounts(store, task.business, now), notes }) };
 };
 
 const noteRecord = ({ task, store, now }) => {
   const have = store.readRecords(task.business, 'notes');
-  if (!have.has(task.task_id)) store.appendRecords(task.business, 'notes', [{ id: task.task_id, at: iso(now), text: task.params.text }]); // task_id が id：再実行しても 1 件
+  if (!have.has(task.task_id)) store.appendRecords(task.business, 'notes', [{ id: task.task_id, at: iso(now), text: task.params.text, ...(task.params.case_ref ? { case_ref: task.params.case_ref } : {}) }]); // task_id が id：再実行しても 1 件
   return { result: { recorded: true } };
 };
 
@@ -108,7 +185,7 @@ const hermesTask = ({ task, config }) => {
   // macOS で全員の group（staff＝gid 20）に読み・入る権限のあるフォルダには書かない（docs/hermes-work.md §4 の 3：専用の group にする）
   if (!inboxModeSafe(statSync(real))) throw fail('hermes_inbox_unsafe');
   const file = path.join(real, `${task.task_id}.json`);
-  if (existsSync(file)) return { result: { delivered: true, already: true } };
+  if (existsSync(file)) return { result: { delivered: true, already: true, hermes: { status: 'waiting' } } };
   const tmp = path.join(real, `.${task.task_id}.${randomBytes(4).toString('hex')}.tmp`);
   // 0640：inbox のフォルダの group（Human が hermes を入れた group にする。macOS は新しい file がフォルダの group を継ぐ）だけが読める。other は読めない
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o640);
@@ -118,7 +195,8 @@ const hermesTask = ({ task, config }) => {
     writeSync(fd, `${JSON.stringify({ v: 1, task_id: task.task_id, business: task.business, title: task.params.title, body: task.params.body, approval_record: task.approval ? { at: task.approval.at, digest: task.approval.digest } : null })}\n`);
   } finally { closeSync(fd); }
   try { renameSync(tmp, file); } catch (e) { try { unlinkSync(tmp); } catch { /* 済 */ } throw e; }
-  return { result: { delivered: true } };
+  // hermes.status：waiting＝渡した・まだ実行していない（実行・結果は hermes-jobs と結果の板の知らせで続きを返す。2026-11-13）
+  return { result: { delivered: true, hermes: { status: 'waiting' } } };
 };
 
 export const HANDLERS = Object.freeze({

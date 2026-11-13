@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { approve, confirmCodeOf, dismiss, reject } from './lib/task-hub/approval.mjs';
 import { keepEvent, keepMail } from './lib/task-hub/digest.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
+import { pgrepAlive, recoverInterrupted } from './lib/task-hub/hermes-jobs.mjs';
 import { collectHermesResults } from './lib/task-hub/hermes-results.mjs';
 import { ingestInbox, submitLocal } from './lib/task-hub/intake.mjs';
 import { createPolicy, loadCatalog, loadLocalConfig } from './lib/task-hub/policy.mjs';
@@ -212,7 +213,11 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
       try { release = store.acquireRunLock(now); } catch (e) { if (e?.code === 'lock_conflict') { err('lock の競合（lock_conflict）'); return 1; } throw e; }
       if (!release) { out('取り込まない（別の intake か run の最中。次の回に回す）'); return 0; }
       let r;
-      try { r = collectHermesResults({ store, config: cfg, now }); } finally { release(); }
+      try {
+        // Hermes の 1 件実行（scripts/hermes-work.mjs）が running のまま居なくなった記録を interrupted にする（強制終了・再起動の後。2026-11-13）
+        for (const id of recoverInterrupted(store, { at: now, alive: (j) => pgrepAlive(j) })) out(`途中で止まった Hermes の実行 ${id} → interrupted（やり直しは Human：hermes-work.mjs run --task ${id} --retry --paid-ok）`);
+        r = collectHermesResults({ store, config: cfg, now });
+      } finally { release(); }
       if (r.code === 'not_connected') { out('Hermes の結果の場所（hermes_outbox）は未接続（休眠）'); return 0; }
       for (const x of r.rejected) out(`NG  ${x.file} ${x.code}`);
       out(`Hermes の結果：記録 ${r.recorded} 件・取り込み済み ${r.already} 件・拒否 ${r.rejected.length} 件${r.overflow ? `・上限で次の回へ ${r.overflow} 件` : ''}`);
