@@ -69,7 +69,15 @@ export async function startDropboxMock({ role = 'read', appKey = 'appkey000test'
       try { j = JSON.parse(body.toString() || '{}'); } catch { return err(400, 'bad_json/'); }
       if (req.url === '/2/files/list_folder') return send(200, { entries: children(j.path), has_more: false, cursor: 'c1' });
       if (req.url === '/2/files/list_folder/continue') return send(200, { entries: [], has_more: false });
-      if (req.url === '/2/files/get_metadata') { const f = files.get(String(j.path).toLowerCase()); return f ? send(200, meta(f)) : err(409, 'path/not_found/'); }
+      if (req.url === '/2/files/get_metadata') {
+        const f = files.get(String(j.path).toLowerCase());
+        if (f) return send(200, meta(f));
+        // フォルダ（その下に file が在る）：実の Dropbox と同じに folder の metadata を返す（path_display は file の path の書き方から）
+        const under = [...files.values()].find((x) => x.path.toLowerCase().startsWith(`${String(j.path).toLowerCase()}/`));
+        if (!under || !String(j.path).startsWith('/')) return err(409, 'path/not_found/');
+        const disp = under.path.slice(0, String(j.path).length);
+        return send(200, { '.tag': 'folder', name: disp.split('/').pop(), path_display: disp, path_lower: disp.toLowerCase(), id: `id:dir-${role}-${disp.length}` });
+      }
       if (req.url === '/2/files/search_v2') {
         const root = String(j.options?.path ?? '').toLowerCase();
         const q = String(j.query).toLowerCase();

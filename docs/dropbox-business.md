@@ -22,6 +22,8 @@ Human → Grok Bot（EN司令塔）→ Task Hub / Decision Layer（認証・権�
 3. `node scripts/dropbox-auth.mjs --role write --app-key <EN-AI-Output の App key>`（App folder を選んだかを y で確かめる）。**read を先に**：read の資格情報が入っていれば、write の app が App folder の app であること（Dropbox の一番上の項目が書きの token から見えないこと）を自動でも確かめ、Dropbox 全体が見える app なら保存しない（`write_app_not_app_folder`・2026-11-16）
 4. 許可フォルダを決める（下の §2・**Human の承認**）→ Claude Code が config に書く
 
+2026-11-16：Human が 1〜3 を済ませた（2 つの app・認証・Keychain）。4 は案の file を作って Human の承認を待っている（§2-1）。
+
 追加の契約・課金は無い（Dropbox の API app は無料）。
 
 ## 2. 許可フォルダ（business ごと・Human の承認の後に config へ）
@@ -41,19 +43,52 @@ Human → Grok Bot（EN司令塔）→ Task Hub / Decision Layer（認証・権�
 - **承認なしの一覧・検索（`dropbox.list`・`dropbox.search`）に出るのは「`read_roots` の中」かつ「`estimate_roots`・`deny_roots` の外」だけ**（2026-11-16）：現場のフォルダの中に見積のフォルダがある並びでも、広い `read_roots` をそのまま書ける（見積のフォルダは名前も出ない・Dropbox が返した結果も 1 件ずつ絞る）
 - `deny_roots`（任意）：`read_roots` の中でも読ませない場所（給与・人事・個人）。どの読み方でも拒否。その中に工程表・見積の原本を置く設定は読み込まない
 - 書きは App folder の `<output_root>/{karte,estimates,reports,restore}/` だけ
+- **path は Dropbox の名前のとおりに書く**（§2-1）。断る側（`deny_roots`・一覧に出さない見積のフォルダ）は全角半角を畳んで比べる（広く断る）
 - 機密の段階（Vault のレビュー L）：見積・顧客・取引（L2）を AI が読むのは毎回 Human の承認＝`estimate.ai.*` は `human_required`。給与・個人・人事（L3）のフォルダは許可フォルダに入れない
+
+### 2-1. path の書き方と、書く前後の確かめ（2026-11-16・実の Dropbox で分かったこと）
+
+人が画面で読んだ名前と Dropbox の名前は 1 文字ずれることがある。実の接続では、Human が伝えた名前と実の名前が 2 か所で違った（かっこが全角か半角か・名前の中の全角の空白）。Dropbox の決まり：
+
+| ちがい | Dropbox の扱い |
+|---|---|
+| 大文字と小文字 | 同じ名前 |
+| NFC と NFD（macOS から貼った濁点） | 同じ名前（NFD で聞いても見つかる。実の名前はどれも NFC だった） |
+| 全角と半角（かっこ・英数字・＆）・名前の中の空白の有無・全角の空白と半角の空白 | **別の名前**（`path/not_found`） |
+
+- config の path は手で打たない：**API が返した名前を写す**。確かめは `node scripts/dropbox-preflight.mjs --config <案の file> --deep --show-paths`（読むだけ・書かない・file を保存しない）
+  - 在る・フォルダか file か・工程表は xlsx で上限の内か
+  - 無い path は「何番目の部分から無いか」と「全角半角・空白を畳むと同じ名前が在るか」（在れば Dropbox の名前を出す）
+  - **工程表と同じ名前の file が別の場所にも在るか**（在れば warning。古い写しを登録していないか人が見る。登録した側より新しい物の数も出す）
+  - 書きの app が App folder の app か・`--deep`：工程表が日付で読める形か（sheet の数と期間だけ）
+  - 既定の出力は business と項目の番号と code だけ（会社のフォルダ名を log に残さない）。`--show-paths` は手元の画面だけで使う
+- 本番の config に書いた後も同じ道具で確かめる（`--config` なし＝本番の config）
+- **同じ名前の木が 2 つ在ることがある**（フォルダを写して使い始めた後に、古い側が残る形）。どちらが今の木かは、名前ではなく中身の更新で決める（file の数・更新の時刻・片方にしか無い file）。古い側は登録しない
+- **依頼の path は実の名前に直してから読む**（`scripts/lib/dropbox/resolve.mjs`）：Task Hub の受け口は依頼の文字を NFKC に揃える（全角→半角）＝全角を含む名前は、依頼の文字のままでは Dropbox に無い。
+  許可フォルダの下かを畳んだ形で探し、許可フォルダの中の一覧から実の名前の子を選んで下りる。**下りる前に毎回、実の名前で読んでよいかを判定する**（読ませない場所の中の一覧は取らない）。
+  許可フォルダの外は見ない。Dropbox に聞く path はいつも実の名前の許可フォルダから始まる。結果の path は実の名前
+  - ぴったりの名前が先：依頼の文字のままの許可フォルダ・依頼の文字のままの子が在れば、それ（一覧の順・一覧の上限に左右されない）
+  - 黙って片方を選ばない（`dropbox_path_ambiguous`）：畳むと同じ名前の許可フォルダが 2 つ（入れ子でない）・畳むと同じ子が 2 つ・一覧が上限（2000 件）で切れていて「他に同じ子が無い」と言えない
+  - 見積の原本（毎回 Human が承認）も同じ決まり＝承認した file と別の file を読まない
+- 小文字にすると長さが変わる文字（点つきの大文字 I など）を含む path は扱わない（`dropbox_path_invalid`・config なら読み込まない）：JS の小文字と Dropbox の比べ方が同じとは限らない文字で許可フォルダの外を指させない
 
 ## 3. 依頼（Task Hub の intent・AI を使わない）
 
 | intent | class | 内容 |
 |---|---|---|
-| `dropbox.search`・`dropbox.list` | auto | 許可フォルダの中の検索・一覧（名前・path・大きさ・更新時刻） |
-| `schedule.read` | auto | 工程表を読むだけ（query を含む行・sheet）。**工程表に書く道は無い**（読みの資格情報・書く handler なし） |
+| `dropbox.search`・`dropbox.list` | auto | 許可フォルダの中の検索・一覧（名前・path・大きさ・更新時刻。一覧は名前だけ＝path は結果の `path`＋名前）。検索は file の中身にも当たる（返すのは名前と path だけ） |
+| `schedule.read` | auto | 工程表を読むだけ（§4-1：日付で抜き出す）。**工程表に書く道は無い**（読みの資格情報・書く handler なし） |
 | `schedule.backup`・`schedule.backup.list`・`schedule.restore` | auto | §4 |
 | `karte.create`・`karte.get`・`karte.append`・`karte.search`・`karte.report` | auto | §5 |
 | `estimate.ai.create`・`estimate.ai.edit` | human_required | §6 |
 
 EN司令塔（grok-commander）へ出すのは Human の承認の後（config の `grok-commander.intents` と VPS の `--intents`）。今は Mac の Human（human-cli）からだけ。
+EN司令塔の business は今 e-nexus だけ＝E-STEP の Dropbox を EN司令塔から使うには、intent のほかに**その source の business に e-step を足す**（Mac の config と VPS の `--businesses`）か、E-STEP 用の Bot を別の source にするかを Human が決める。
+
+**結果の大きさ**（2026-11-16）：Task Hub の結果は 16 KiB まで。日本語は 1 文字 3 bytes＝名前の長い一覧・長いカルテ・工程表の行はすぐ越え、越えた結果は runner が想定外の失敗（続けば PAUSE）にしていた。
+読む handler は bytes で数えて手前で切る（`truncated: true`。工程表は `next_from` から聞き直す・カルテは `section` を指定する）。それでも越えた結果は想定内の `result_too_large`（依頼 1 つで Task Hub 全体を止めない）。
+**書く handler は、書いた後に失敗と言わない**：結果が越えたら小さな値だけ残して成功を返す（`result_trimmed: true`＝やり直しで二重に書かせない）。見積の結果の tab の名前は 40 まで（数は `sheets_count`）。
+検索（`dropbox.search`）は 30 件まで：Dropbox が 30 件を返した時は `truncated: true`（もっと在るかもしれない）。無ければ「これで全部」。
 
 ## 4. 工程表：読むだけ＋バックアップ（自動は週 1 回・臨時は依頼で）
 
@@ -67,12 +102,37 @@ EN司令塔（grok-commander）へ出すのは Human の承認の後（config �
 - 見張り：host-health の `business_backup`（失敗した file がある・8 日以上成功していない・**工程表は設定済みなのに読みの資格情報が無くて取れていない＝`no_credentials`**〈2026-11-16：前は ok と出た〉）。結果は business ごとに持つ（別の business の成功で、時刻の来ていない business の失敗を消さない）。Mac が止まっていた週は、次に動いた回で取る
 - 世代の入れ替えは数だけ（臨時のバックアップも同じ 10 枠）。短い間に何度も中身が変わると古い世代から消える＝長く残したい版は Human が `restore` で別の file にするか、Dropbox の版の履歴を使う
 
+### 4-1. 工程表の読み方（2026-11-16・実の工程表の形に合わせた）
+
+実の工程表は「1 行目に日付が横に並び（1 日が 2 列・見出しは結合）、2 行目が曜日、左の 2 列が行の名前（2 行を結合）、交わる所が予定」の表で、4 か月半ごとの sheet が新しい順に並ぶ。
+前の読み方（query を含む**行**を返す）では 1 行が 4 か月半ぶんになり、結果の上限も越えた。今は日付で抜き出す：
+
+| params | 返す物 |
+|---|---|
+| `{}` | 今日から 7 日（「今日」は config の `utc_offset_minutes` の時刻） |
+| `{"date":"YYYY-MM-DD"}` | その日 |
+| `{"from":"…","to":"…"}` | 期間（31 日まで。越えたぶん・bytes の上限で切ったぶんは `truncated` と `next_from`） |
+| `{"query":"…"}` | 今日以後で、その文字を含む予定か行の名前（`from`・`to` をつければ過去も）。`matched` は全部の数 |
+| `sheet`・`file` | sheet・2 つ目以降の工程表の指定（任意） |
+
+- 返す形：`days: [{ date, weekday, items: [{ r, label, text }] }]`（query は `hits: [{ date, r, label, text }]`）。`label` は左の列の名前（結合された名前は下の行にも付く・名前の無い行には付けない＝上の行の名前を借りない）。`r` は Excel の行の番号
+- 切る所は日の境：`next_from` は「まだ 1 つも返していない最初の日」＝`next_from` から聞き直して集めれば、落ちも重なりも無い。1 日ぶんだけで上限を越える時だけ、その日を途中まで返す（`partial: true`／query は `partial_date`。落とした数は `omitted`＝query で絞る）。`next_from` は頼まれた期間を越えない
+- sheet は**日ごとに**、その日を含む最初の sheet（並びの順）。期間が 2 つの sheet にまたがれば両方から読む（`sheets_used`）。`sheet` を指定した時はその sheet だけ。`range` は全部の sheet を合わせた期間。在る期間より前後にはみ出した期間は在る側へ寄せる。どの sheet にも無い期間は `out_of_range: true` と各 sheet の期間（`ranges`）
+- **隣の sheet と重なる 2 週間ほどは、sheet によって中身が違う**（実の工程表で確かめた：重なる日の 8 割で違う）。既定は並びの先（新しい sheet）を読む＝古い sheet の側を見たい時は `sheet` を指定する。どちらを正とするかは Human の決まり（台帳 `schedule-overlap-rule`）
+- 何日かにまたがって結合された予定は、またがる日のすべてに出す。縦に結合された予定は上の行にだけ出す。非表示の行も返す
+- 中身の無い行（`<row …/>`）・数式の文字の結果（`t="str"`）・真偽・エラーの cell で行の番号や日付の判定がずれない（2026-11-16 監査）
+- **ふりがなを足さない**：日本語の Excel は共有の文字にふりがな（`rPh`）を持つ（実の工程表では共有の文字の 7 割）。前はふりがなが文字の後ろに付き、検索にも当たっていた
+- 日付の見出しの無い表（行が予定の普通の表）は、前のとおり query を含む行（`mode: "rows"`）。日付の指定は `schedule_not_calendar`
+- 日付の判定は「35000〜60000 の整数」（書式は見ない）＝日付の見出しの行は「中身のある最初の 12 行のうち、日付らしい数が 5 つ以上・1 日ずつ進む並びが 8 割以上」の行。1904 年から数える workbook（古い Mac の Excel）は 1462 日ずらす
+- 見出しのすぐ下の行を曜日の行と見るのは「日付の列の 8 割以上に 4 字までの文字・文字の種類が 10 まで・ほかの cell が無い」時だけ（2 行目から予定の表で、予定を曜日と取り違えて落とさない）
+- cell のコメント（メモ）・色・罫線は読まない（色で意味を持たせた予定は文字に出ない）
+
 ## 5. 現場カルテ（AI が書式を作り、Human が追記・編集）
 
 - 置き場所：App folder の `<output_root>/karte/<案件ID>.md`（Dropbox で Human がそのまま開いて書ける）
 - 書式：現場名・案件ID・所在地・現地調査日・作業予定・工事内容・建物形状・階数・高さ・外周寸法・足場面積の概算・使用材料・カーポート・下屋・妻面・寄棟などの特殊条件・搬入経路・近隣・道路条件・安全上の注意事項・写真・図面への参照・見積書への参照・工程表への参照・現調履歴・Humanの追記・修正履歴・AIによる整理・提案・未確認事項
 - 無い値は「未確認」（AI は渡された値だけを書く＝事実を作らない。値の出所は依頼＝Task Hub の task に残り、囲みの `task=<id>` でたどれる。**依頼する側〈Bot〉が作った値かどうかは code では分からない**＝Human がカルテを読んで直す）。書式の「未確認」の行は印つき（`未確認 <!-- placeholder -->`・表示には出ない）：その節に AI が値を差し込む時、**書式の位置（見出しの下の最初の行）にある、印つきのまま 1 文字も変わっていない 1 行だけ**を外す（値が入ったのに「未確認」が残らない）。Human が自分で書いた「未確認」・書き換えた行・項目の下に写した同じ行は Human の文＝触らない（2026-11-16。CRLF で保存された file でも同じ）
-- 文字：書くのは依頼の文字のまま（NFC。NFKC にしない＝「㎡」「①」「㈱」「Ａ邸」を別の文字に変えない）。file は UTF-8 だけ：Human が Shift_JIS・UTF-16 で保存し直した file は読まない・書かない（`karte_not_utf8`＝化けた文を上げ直さない。UTF-8 で保存し直せば続けられる）
+- 文字：カルテの部品は渡された文字のまま書く（NFC。NFKC にしない）。**ただし Task Hub の受け口（envelope）が依頼の文字を NFKC に揃える**＝Bot・CLI からの依頼では「㎡」→「m2」・「①」→「1」・「㈱」→「(株)」・「Ａ邸」→「A邸」になって届く（2026-11-16 に確かめた。Human が承認する全文もその形＝承認した文と書く文は同じ。全角のまま残すには受け口の決まりを変える＝§7）。file は UTF-8 だけ：Human が Shift_JIS・UTF-16 で保存し直した file は読まない・書かない（`karte_not_utf8`＝化けた文を上げ直さない。UTF-8 で保存し直せば続けられる）
 - 出所：AI が書いた所は `<!-- ai:<日時> task=<id> -->` 〜 `<!-- /ai -->`。囲みの外は Human
 - Human の追記を消さない：AI は既存の文字を 1 文字も変えず、節の末尾に囲みを差し込むだけ。上げる時は rev つき（Human が同時に直していたら読み直して差し込み直す）。同じ依頼のやり直しは二重にしない
 - 履歴：上げる前の版を `business-backups/<business>/karte-history/` に残す（Dropbox の版の履歴とあわせて戻せる）
@@ -88,7 +148,8 @@ EN司令塔（grok-commander）へ出すのは Human の承認の後（config �
 - **保存の前の確かめ**：Human の tab の部品・画像・マクロ（vbaProject.bin）・styles・定義名・印刷設定・外部リンクは圧縮された bytes のまま 1 byte も同じ・workbook.xml 等は足した 1 行を除けば同じ。違えば保存しない（`xlsx_preserve_failed`）
 - 上げる時は rev つき（Excel で開いて保存した直後などの同時の変更は conflict＝上書きしない）。上げる前の版は `business-backups/<business>/estimates/history/` に残す
 - **保存の前後の差分**（2026-11-16）：結果の `diff` に、何から作ったか（原本／AI 作業版）・tab の一覧の前後・明細の行数と合計（直しは前後）・圧縮された bytes のまま同じだった部品の数・前の版の hash（Mac の履歴に残した版）。前の形が読めない時（Human がその tab を作り変えた）は数を作らず null。台帳には写した原本の版（rev・content_hash）を残す
-- 文字：依頼の文字のまま書く（NFKC にしない＝Human が承認した全文と違う文字にならない）
+- 文字：渡された文字のまま書く（NFKC にしない＝Human が承認した全文と違う文字にならない。受け口が NFKC に揃えた後の文字＝§5 の「文字」）
+- 全角を含む名前（2026-11-16）：原本の path は実の名前に直してから読む（§2-1）。AI 作業版の名前は実の原本の名前から作る＝`estimate.ai.edit` の `working_name` は、受け口が半角にした名前でも台帳から畳んで探す（同じに畳まれる写しが 2 つなら `estimate_copy_ambiguous`）
 - **Human が参照している AI の tab は作り直さない**（`estimate_ai_sheet_referenced`）：作り直すと合計の cell の位置が動き、Human の tab・定義名・グラフの数式が（1 byte も変わらないまま）別の値を指す。探す形は「名前!」「'名前'!」・ピボットの元・複数の tab にまたがる範囲（どの tab の範囲でも止まる側）。AI の tab 自身の印刷範囲・フィルターは参照に数えない。Human が決める：新しい AI の tab を足す（`estimate.ai.create`）か、参照を外す
 - Human が「ブックの構成を保護」した見積には tab を足さない（`estimate_workbook_structure_locked`）
 - 扱えない file：古い `.xls`・パスワードつき・zip64 は止める（上書きしない）
@@ -99,13 +160,25 @@ EN司令塔（grok-commander）へ出すのは Human の承認の後（config �
 - 読みの app は Full Dropbox の読み取り（Dropbox の scope はフォルダで絞れない）＝許可フォルダは code（scope.mjs）が強制。書けないことは資格情報が強制
 - Dropbox の Smart Sync・オンラインのみの file は API で取るので関係しない。大きな file（64 MiB 超）は取らない
 - AI 作業版・カルテは原本と別の場所（App folder）にある
-- path は NFC にそろえて Dropbox へ送る（macOS から貼った NFD の名前も同じに比べる）。Dropbox が NFD のままの名前を別に扱う場合は `path_not_found`（止まる側）＝最初の実の読み取りで確かめる
+- path は NFC にそろえて Dropbox へ送る（macOS から貼った NFD の名前も同じに比べる）。実の Dropbox は NFD で聞いても同じ file を返した（2026-11-16）＝NFC／NFD は問題にならない。全角と半角は別の名前（§2-1）
 - 見積の AI 作業版：台帳に書いた直後・上げる前に process が止まると、台帳に在って file に無い tab が残る（次の作成で名前の重複は拒否されるので、別の名前で作る）
 - 独立監査（2026-11-13）：should-fix 11・nit 11 を直し、再検証で出た 4 件（閉じていない ai の印・# の値・calcChain の tag・sheetId の台帳）も直した
+- 独立監査（2026-11-16 夜・実の接続の後の差分。権限の境 1 本＋工程表の読み方 1 本）：必ず直す物は権限の境に無し・読み方に 1 件（中身の無い行 `<row …/>` が次の行を飲み込み、行の番号と班の名前がずれる）。
+  直した物＝畳むと同じ名前の許可フォルダの取り違え・一覧の上限で切れた時の取り違え・書いた後の `result_too_large`・検索の上限が「全部」に見える・断る側が前より狭い 1 組の文字・期間が sheet をまたぐ時の古い sheet・進まない `next_from`・曜日の行の判定。試験は `tests/dropbox-live-prep-20261116.test.mjs`
 - 独立監査（2026-11-16・本番接続の前。権限の境と仕様の照合の 2 本＋直した差分の再検品 1 本）：直した物＝UTF-8 でないカルテを化けさせて上げ直す・時間切れの後の古い試行が後から書く（client の時間切れと中止が本文の読み込みに効いていなかった）・同じ task の二重の差し込み・広い read_roots の中の見積〈L2〉が承認なしの一覧に出る・資格情報が無いままのバックアップが ok と出る・書式の「未確認」が値の後も残る・NFKC が文字を変える・Human が参照している AI の tab の作り直し・保存の前後の差分が無い・書きの app が App folder かを人の答えだけで決めていた・書ける config を週の回が使う。試験は `tests/dropbox-audit-20261116.test.mjs`
 - **許可フォルダが絞るのは Task Hub の handler だけ**（2026-11-16 監査）：読みの資格情報（Full Dropbox の読み取り）は Keychain に在り、handler と同じ OS ユーザーで動く他の process は Keychain から読める＝その process は許可フォルダの外も読める（書けはしない＝読みの app は書く scope を持たない）。Hermes は別のユーザー＋sandbox で Keychain を読めない。強くするなら業務の handler を専用の OS ユーザーと専用の Keychain で動かす（**Human の判断**）。それまでは「読みの資格情報を入れる＝handler を動かす OS ユーザーに Dropbox 全体の読み取りを預ける」として扱う
 - 手元の写しの保持：カルテの履歴（`karte-history/`）と見積の前の版（`estimates/history/`・L2）は Mac の `business-backups/`（0700・GitHub のバックアップの外）に上限なしで残る＝定期の整理は未実装（Human が保持の期間を決めた後）
 - 工程表の世代の index（`index.json`）が壊れると世代の一覧は空から始まる（file は消さない＝残った世代は手で戻せる）
 - Task Hub の source に複数の business を許すと、その source の channel はどの business も名乗れる（EN司令塔は e-nexus だけ＝今は該当しない。E-STEP を別の Bot に開く時は source を分ける）
-- 実の Dropbox でしか確かめられない物（最初の接続の検収で見る）：NFD の名前の一致・rev の不一致と file なしの error の語（`path/conflict`・`path/not_found`）・token の応答の scope・全角や見えない文字の扱い・`search_v2` が中身も探すか・Excel が AI の tab を修復なしで開くか
+- **実の Dropbox で確かめた物**（2026-11-16・読むだけ。書いていない・保存していない）：
+  - 読みの client：metadata・一覧・検索・取得（`content_hash` の照らし・日本語の path の header）・file なしの error の語（`path/not_found` → `dropbox_path_not_found`）
+  - NFD で聞いても見つかる・全角と半角は別の名前・`search_v2` は中身も探す・refresh の応答に scope は無い
+  - 書きの資格情報は Dropbox の一番上・許可フォルダ・工程表のどれも見えない（App folder の app）。App folder は空
+  - 読む handler（一覧・検索・工程表の読み取り・世代の一覧・無いカルテ）は、受け口と同じ正規化を通した依頼で動いた。工程表は日付で読める形
+  - 見積の AI 作業版の作り（zip の編集）は、実の Excel が保存した workbook（48 部品・コメント・印刷の設定つき）でも「元の部品は 1 byte も同じ」の確かめを通り、出来た zip は別の読み手（Python の zipfile と XML の parser）でも壊れていない（手元の memory の中だけ・上げていない）
+- **まだ確かめていない物**（書く・保存するので Human の承認の後。最初の検収で見る）：rev の不一致の error の語（`path/conflict`）・App folder へ上げた後の `content_hash`・カルテの作成と追記・復元の別 file・工程表のバックアップの保存と世代・**Excel が AI の tab を修復なしで開くか**（Human が Excel で開く）
+- Task Hub の受け口（envelope）は依頼の文字を NFKC に揃える（2026-11-16 に確かめた）：カルテ・見積に書く文字は全角の記号が半角になって届く（§5）。全角のまま書きたいなら受け口の決まりを変える（Task Hub の関所の変更＝**Human の判断**。承認の指紋・鍵の形の検査と一緒に見直す）
+- 依頼の path を実の名前に直す時、1 段の一覧は 2000 件まで（それより多いフォルダの全角の名前は `path_not_found` か `path_ambiguous`＝止まる側）。名前の前後が空白の部分・全角の逆斜線「＼」を含む名前は依頼では指せない（`dropbox_path_invalid`）。選んだ後は戻らない＝全角の斜線「／」を含む名前は、同じ始まりの別の名前が在ると指せないことがある
+- `dropbox-preflight` は確かめのために許可フォルダの外も読む（無い path の親の一覧・同じ名前の file の検索＝Dropbox 全体）。出すのは数だけ・`--show-paths` の時も読ませない場所の中の path は出さない
+- 工程表の読み方（§4-1）は実の工程表 1 つの形で確かめた。形を変えると（日付の行を 13 行目より下へ・日付を文字で書く）日付で読めなくなり、行の読み方に戻る（`dropbox-preflight --deep` で分かる）
 

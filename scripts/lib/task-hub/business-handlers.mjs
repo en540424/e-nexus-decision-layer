@@ -9,17 +9,27 @@
  *
  * services（CLI が作って config.services に入れる。test は模擬を入れる）：{ dropbox(role) → client, backupDir, historyDir }
  * 書く handler は task_id で冪等（同じ task をもう一度動かしても二重に書かない）＝resumable
+ *
+ * 結果の大きさ（2026-11-16・実の Dropbox での確かめ）：Task Hub の結果は 16 KiB まで（wire.MAX_BODY_BYTES）で、越えると runner が result_invalid＝想定外（続けば PAUSE）にする。
+ *   日本語の名前は 1 文字 3 bytes＝一覧 100 件・カルテ 6000 字・工程表の 30 行はどれも越える。読む handler は bytes で数えて手前で切り（truncated）、
+ *   それでも越えた結果は想定内の result_too_large で終える（依頼 1 つの大きさで Task Hub 全体を止めない）
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { browsable, loadScopes, outputPath, scopeOf, searchRoot, assertReadable, ScopeError, withinRoot } from '../dropbox/scope.mjs';
+import { resolveReal } from '../dropbox/resolve.mjs';
+import { browsable, foldPath, loadScopes, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
 import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, decodeKarte, KarteError, newKarte, provenance, sectionText, unknownSections } from '../business/karte.mjs';
 import { backupSchedule, BackupError, listGenerations, restoreGeneration } from '../business/schedule-backup.mjs';
-import { addAiSheet, estimateSheetXml, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
+import { addAiSheet, estimateSheetXml, readCalendar, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
 import { fail } from './handler-error.mjs';
+import { MAX_BODY_BYTES } from './wire.mjs';
 
 const RESULT_TEXT_MAX = 6000;
+/** 文の結果の上限（bytes）。日本語 3,600 字ほど。結果の他の項目と JSON の escape（改行・引用符は 2 bytes）のぶんを残す */
+const RESULT_TEXT_BYTES = 11_000;
+/** 一覧の結果の上限（bytes）。超える手前で切る */
+export const RESULT_LIST_BYTES = 12_000;
 const iso = (ms) => new Date(ms).toISOString();
 
 /**
@@ -43,7 +53,25 @@ function services(config) {
   return s;
 }
 const scopesOf = (config) => loadScopes(config.dropbox);
-const clip = (s) => (s.length > RESULT_TEXT_MAX ? `${s.slice(0, RESULT_TEXT_MAX)}\n…(省略)` : s);
+const jsonBytes = (x) => Buffer.byteLength(JSON.stringify(x), 'utf8');
+/** 文を字数と bytes（JSON にした時の大きさ）の両方で切る。切る所は code point の境（サロゲートの対の途中で切らない。結合文字の列の途中では切れうる） */
+export function clip(s) {
+  // 長い文は先頭だけを見る（6000 字は UTF-16 で 12000 単位まで＝それより長ければ必ず切る）
+  const long = s.length > RESULT_TEXT_MAX * 2;
+  const chars = [...(long ? s.slice(0, RESULT_TEXT_MAX * 2) : s)];
+  if (!long && chars.length <= RESULT_TEXT_MAX && jsonBytes(s) <= RESULT_TEXT_BYTES) return s;
+  let used = 2;
+  let n = 0;
+  for (; n < chars.length && n < RESULT_TEXT_MAX; n += 1) { const b = jsonBytes(chars[n]) - 2; if (used + b > RESULT_TEXT_BYTES) break; used += b; }
+  return `${chars.slice(0, n).join('')}\n…(省略)`;
+}
+/** 一覧を bytes の上限の手前まで取る：{ kept, cut }（cut＝上限で落とした件数） */
+export function fitList(items, budget = RESULT_LIST_BYTES) {
+  const kept = [];
+  let used = 2;
+  for (const x of items) { const b = jsonBytes(x) + 1; if (used + b > budget) break; used += b; kept.push(x); }
+  return { kept, cut: items.length - kept.length };
+}
 
 function karteHistory(svc, business, caseId) {
   return (text, rev) => {
@@ -55,20 +83,27 @@ function karteHistory(svc, business, caseId) {
 }
 
 // ─── 資料（読むだけ）───
+const SEARCH_MAX = 30;
 const dropboxSearch = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
-  const root = searchRoot(scope, task.params.path ?? null);
-  const hits = (await svc.dropbox('read').search(task.params.query, { path: root, max: 30, signal })).filter((h) => withinRoot(root, h.path) && browsable(scope, h.path)); // 範囲の中だけ（見積・読ませない場所の file は名前も返さない）
-  return { result: { count: hits.length, files: hits.slice(0, 30).map((h) => ({ name: h.name, path: h.path, size: h.size, server_modified: h.server_modified })) } };
+  // path の指定は実の名前に直す（依頼の文字は受け口で NFKC に揃っている＝全角を含む名前はそのままでは Dropbox に無い）
+  const root = task.params.path ? await resolveReal(svc.dropbox('read'), scope, task.params.path, 'browse', { signal }) : searchRoot(scope, null);
+  const raw = await svc.dropbox('read').search(task.params.query, { path: root, max: SEARCH_MAX, signal });
+  const hits = raw.filter((h) => withinRoot(root, h.path) && browsable(scope, h.path)); // 範囲の中だけ（見積・読ませない場所の file は名前も返さない）
+  const { kept, cut } = fitList(hits.slice(0, SEARCH_MAX).map((h) => ({ name: h.name, path: h.path, size: h.size, server_modified: h.server_modified })));
+  // truncated：Dropbox が上限の件数を返した（もっと在るかもしれない）か、bytes の上限で切った。無ければ「これで全部」
+  return { result: { count: hits.length, files: kept, ...(cut || raw.length >= SEARCH_MAX ? { truncated: true } : {}) } };
 });
 const dropboxList = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
-  const p = assertReadable(scope, task.params.path, 'browse'); // 見積（L2）のフォルダは承認なしの一覧に出さない
+  const p = await resolveReal(svc.dropbox('read'), scope, task.params.path, 'browse', { signal }); // 実の名前に直す。見積（L2）のフォルダは承認なしの一覧に出さない
   const r = await svc.dropbox('read').list(p, { limit: 200, signal });
   r.entries = r.entries.filter((e) => browsable(scope, e.path)); // 一覧の中の見積のフォルダ・読ませない場所は名前も出さない（2026-11-16 監査）
-  return { result: { count: r.entries.length, truncated: r.truncated, entries: r.entries.slice(0, 100).map((e) => ({ tag: e.tag, name: e.name, path: e.path, ...(e.tag === 'file' ? { size: e.size, server_modified: e.server_modified } : {}) })) } };
+  // 名前だけ返す（path は依頼の path＋名前＝同じ文字を 100 回返さない）。bytes の上限の手前で切る（切ったら truncated）
+  const { kept, cut } = fitList(r.entries.slice(0, 100).map((e) => ({ tag: e.tag, name: e.name, ...(e.tag === 'file' ? { size: e.size, server_modified: e.server_modified } : {}) })));
+  return { result: { path: p, count: r.entries.length, truncated: r.truncated || r.entries.length > kept.length, entries: kept, ...(r.entries.length > kept.length ? { returned: kept.length } : {}) } };
 });
 
 // ─── 工程表（読むだけ・バックアップ・別の file への復元）───
@@ -78,13 +113,32 @@ function scheduleFile(scope, n) {
   if (!f) throw new ScopeError('schedule_not_configured');
   return f;
 }
-const scheduleRead = ({ task, config, signal }) => guarded(async () => {
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const validDay = (d) => typeof d === 'string' && DAY_RE.test(d) && d >= '1995-01-01' && d <= '2064-12-31' && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+/**
+ * 工程表を読む（読むだけ）。日付が横に並ぶ表（実の工程表の形）なら日付で抜き出す（2026-11-16）：
+ *   {}＝今日から 7 日／{date}＝その日／{from,to}＝期間（31 日まで）／{query}＝今日以後でその文字を含む項目／sheet で sheet を指定
+ * 日付の見出しが無い表は、前のとおり query を含む行（bytes の上限の手前まで）。「今日」は config の utc_offset_minutes の時刻
+ */
+const scheduleRead = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   const file = scheduleFile(scope, task.params.file);
+  const p = task.params;
+  for (const k of ['date', 'from', 'to']) if (p[k] !== undefined && !validDay(p[k])) throw new XlsxError('schedule_date_invalid');
+  if ((p.date && (p.from || p.to)) || (p.to && !p.from) || (p.from && p.to && p.to < p.from)) throw new XlsxError('schedule_date_invalid');
+  const from = p.date ?? p.from ?? null;
+  const to = p.date ?? p.to ?? null;
   const { bytes, meta } = await svc.dropbox('read').download(file, { signal });
-  const r = readSheetRows(bytes, { sheet: task.params.sheet ?? null, query: task.params.query ?? null, maxRows: 30 });
-  return { result: { server_modified: meta.server_modified, rev: meta.rev, ...r } };
+  const head = { server_modified: meta.server_modified, rev: meta.rev };
+  const today = iso(now + (config.utc_offset_minutes ?? 0) * 60_000).slice(0, 10);
+  const cal = readCalendar(bytes, { sheet: p.sheet ?? null, from, to, query: p.query ?? null, today });
+  if (cal) return { result: { ...head, today, ...cal } };
+  if (from) throw new XlsxError('schedule_not_calendar'); // 日付の見出しが無い表に日付の指定は使えない
+  const r = readSheetRows(bytes, { sheet: p.sheet ?? null, query: p.query ?? null, maxRows: 30 });
+  const sheets = r.sheets.slice(0, 40);
+  const { kept, cut } = fitList(r.rows, RESULT_LIST_BYTES - jsonBytes(sheets));
+  return { result: { ...head, mode: 'rows', ...r, sheets, rows: kept, truncated: r.truncated || cut > 0 } };
 });
 const scheduleBackup = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
@@ -141,9 +195,10 @@ const karteGet = ({ task, config, signal }) => guarded(async () => {
   if (task.params.section) {
     const t = sectionText(text, task.params.section);
     if (t === null) throw new KarteError('karte_field_unknown');
-    return { result: { case_id: task.params.case_id, section: task.params.section, text: clip(t), rev: meta.rev, server_modified: meta.server_modified } };
+    return { result: { case_id: task.params.case_id, section: task.params.section, text: clip(t), ...(clip(t) !== t ? { truncated: true } : {}), rev: meta.rev, server_modified: meta.server_modified } };
   }
-  return { result: { case_id: task.params.case_id, text: clip(text), rev: meta.rev, server_modified: meta.server_modified, ...provenance(text) } };
+  // 長いカルテは途中まで（truncated）。続きは section を指定して読む
+  return { result: { case_id: task.params.case_id, text: clip(text), ...(clip(text) !== text ? { truncated: true } : {}), rev: meta.rev, server_modified: meta.server_modified, ...provenance(text) } };
 });
 const karteAppend = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
@@ -171,7 +226,7 @@ const karteReport = ({ task, config, signal }) => guarded(async () => {
   const part = (k, label) => `■ ${label}\n${sectionText(t, k) || '（記載なし）'}`;
   const blank = unknownSections(t);
   const text = [`【現場カルテの要点】${task.params.case_id}`, part('schedule', '作業予定'), part('safety', '安全上の注意事項'), part('unknowns', '未確認事項'), part('survey_log', '現調履歴'), `■ まだ「未確認」のままの項目（${blank.length} 件）\n${blank.join('・') || '（なし）'}`].join('\n');
-  return { result: { case_id: task.params.case_id, text: clip(text) } };
+  return { result: { case_id: task.params.case_id, text: clip(text), ...(clip(text) !== text ? { truncated: true } : {}) } };
 });
 
 // ─── 見積書の AI 作業版（App folder の estimates/）───
@@ -193,10 +248,11 @@ function keepPrevious(svc, business, bytes, rev) {
 export const workingName = (original) => { const b = path.posix.basename(original); const ext = path.posix.extname(b); const h = createHash('sha256').update(original.normalize('NFC').toLowerCase()).digest('hex').slice(0, 6); return `${[...b.slice(0, b.length - ext.length)].slice(0, 80).join('')}_AI作業版_${h}${ext}`; };
 const stampOf = (task, now) => `AI 作成 ${iso(now).slice(0, 16)}Z task ${task.task_id}`;
 
+const NAMES_MAX = 40;
 const estimateAiCreate = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
-  const original = assertReadable(scope, task.params.original_path, 'estimate');
+  const original = await resolveReal(svc.dropbox('read'), scope, task.params.original_path, 'estimate', { signal }); // 実の名前に直す（全角を含む file 名）
   if (!/\.(xlsx|xlsm)$/i.test(original)) throw new XlsxError('estimate_not_xlsx');
   const w = svc.dropbox('write');
   const target = outputPath(scope, 'estimates', workingName(original));
@@ -233,18 +289,24 @@ const estimateAiCreate = ({ task, config, now, signal }) => guarded(async () => 
   let up;
   try { up = await w.upload(target, bytes, { rev, signal }); } catch (e) { ledger.copies[key] = JSON.parse(before); if (!ledger.copies[key].ai_sheets.length) delete ledger.copies[key]; writeLedger(svc, task.business, ledger); throw e; }
   rec.tasks = [...rec.tasks, task.task_id].slice(-200);
+  rec.path = up.path; // Dropbox の名前（直す時はこの path を使う＝小文字にした台帳の鍵を path にしない）
   writeLedger(svc, task.business, ledger);
   // 保存の前後の差分（2026-11-16）：何から作り・どの tab が増え・元の部品が何個そのままだったか。前の版は Mac の履歴に残した（previous_sha256）
-  const diff = { base: from, sheets_before: sheetsBefore, sheets_after: [...sheetsBefore, sheet.name], added_sheet: sheet.name, ...(summarizeAiSheet(xml) ?? {}), preserved_parts: preserved, previous_sha256: rev ? createHash('sha256').update(base).digest('hex').slice(0, 16) : null };
-  return { result: { created: true, path: up.path, rev: up.rev, sheet: sheet.name, ai_sheets: rec.ai_sheets, diff, note: '原本は変えていない。Human の tab は 1 byte も変えていない（保存の前に確かめた）' } };
+  // tab の名前の一覧は 40 までを返す（tab の多いブックで結果の上限を越えない。数は sheets_count）
+  const diff = { base: from, sheets_before: sheetsBefore.slice(0, NAMES_MAX), sheets_after: [...sheetsBefore.slice(0, NAMES_MAX - 1), sheet.name], sheets_count: sheetsBefore.length + 1, added_sheet: sheet.name, ...(summarizeAiSheet(xml) ?? {}), preserved_parts: preserved, previous_sha256: rev ? createHash('sha256').update(base).digest('hex').slice(0, 16) : null };
+  return { result: { created: true, path: up.path, rev: up.rev, sheet: sheet.name, ai_sheets: rec.ai_sheets.slice(-NAMES_MAX), diff, note: '原本は変えていない。Human の tab は 1 byte も変えていない（保存の前に確かめた）' } };
 });
 const estimateAiEdit = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
-  const target = outputPath(scope, 'estimates', task.params.working_name);
+  const asked = outputPath(scope, 'estimates', task.params.working_name);
   const ledger = readLedger(svc, task.business);
-  const rec = ledger.copies[target.toLowerCase()];
+  // 台帳の名前は実の名前（全角を含む）。依頼の名前は受け口で NFKC に揃っている＝畳んで同じ名前の写しを探す（2 つ在れば決められない）
+  const keys = ledger.copies[asked.toLowerCase()] ? [asked.toLowerCase()] : Object.keys(ledger.copies).filter((k) => foldPath(k) === foldPath(asked));
+  if (keys.length > 1) throw new XlsxError('estimate_copy_ambiguous');
+  const rec = keys.length ? ledger.copies[keys[0]] : null;
   if (!rec) throw new XlsxError('estimate_not_ai_copy');
+  const target = rec.path ?? keys[0]; // 作った時に Dropbox が返した名前（古い台帳には無い＝鍵の path）
   if (rec.tasks.includes(task.task_id)) return { result: { edited: true, already: true } };
   const w = svc.dropbox('write');
   const cur = await w.download(target, { signal });
@@ -260,18 +322,34 @@ const estimateAiEdit = ({ task, config, now, signal }) => guarded(async () => {
   return { result: { edited: true, path: up.path, rev: up.rev, sheet: sheet.name, diff, note: 'AI の tab を作り直した（その tab に Human が書いた物は Mac の履歴に残した版から戻せる）' } };
 });
 
+/**
+ * 最後の確かめ：結果が Task Hub の上限（16 KiB）を越えたら、
+ *   読む handler：想定内の result_too_large で終える（runner の result_invalid＝想定外にしない）
+ *   書く handler：**書いた後に失敗と言わない**（やり直しで二重に書かせない・2026-11-16 監査）＝小さな値だけを残した結果（result_trimmed: true）で成功を返す
+ * 読む handler は上の fitList・clip・readCalendar の budget で手前に収めている＝ここに来るのは見落としだけ
+ */
+export const bounded = (run, { writes = false } = {}) => async (ctx) => {
+  const out = await run(ctx);
+  if (out?.result === undefined || jsonBytes(out.result) <= MAX_BODY_BYTES) return out;
+  if (!writes) throw fail('result_too_large', { expected: true });
+  const small = Object.fromEntries(Object.entries(out.result).filter(([, v]) => (v === null || typeof v !== 'object') && jsonBytes(v) <= 1500).slice(0, 8));
+  return { ...out, result: { ...small, result_trimmed: true } };
+};
+const entry = (run, opts) => ({ resumable: true, run: bounded(run, opts) });
+const W = { writes: true };
+
 export const BUSINESS_HANDLERS = Object.freeze({
-  'dropbox.search': { resumable: true, run: dropboxSearch },
-  'dropbox.list': { resumable: true, run: dropboxList },
-  'schedule.read': { resumable: true, run: scheduleRead },
-  'schedule.backup': { resumable: true, run: scheduleBackup },
-  'schedule.backup.list': { resumable: true, run: scheduleBackupList },
-  'schedule.restore': { resumable: true, run: scheduleRestore },
-  'karte.create': { resumable: true, run: karteCreate },
-  'karte.get': { resumable: true, run: karteGet },
-  'karte.append': { resumable: true, run: karteAppend },
-  'karte.search': { resumable: true, run: karteSearch },
-  'karte.report': { resumable: true, run: karteReport },
-  'estimate.ai.create': { resumable: true, run: estimateAiCreate },
-  'estimate.ai.edit': { resumable: true, run: estimateAiEdit },
+  'dropbox.search': entry(dropboxSearch),
+  'dropbox.list': entry(dropboxList),
+  'schedule.read': entry(scheduleRead),
+  'schedule.backup': entry(scheduleBackup, W),
+  'schedule.backup.list': entry(scheduleBackupList),
+  'schedule.restore': entry(scheduleRestore, W),
+  'karte.create': entry(karteCreate, W),
+  'karte.get': entry(karteGet),
+  'karte.append': entry(karteAppend, W),
+  'karte.search': entry(karteSearch),
+  'karte.report': entry(karteReport),
+  'estimate.ai.create': entry(estimateAiCreate, W),
+  'estimate.ai.edit': entry(estimateAiEdit, W),
 });

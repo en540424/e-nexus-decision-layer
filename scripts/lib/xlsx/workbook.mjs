@@ -246,41 +246,256 @@ export function verifyPreserved(before, after, { added = null, replaced = null, 
 export { listSheets as sheetsOf };
 
 /**
+ * 文字の部品（<si>・<is> の中）を文字にする。**ふりがな（<rPh>）は捨てる**（2026-11-16：日本語の Excel は共有の文字にふりがなを持つ＝そのまま足すと
+ * 「現場ゲンバ」のように読みが後ろに付く。実の工程表では共有の文字の 7 割がふりがなつきだった）
+ */
+const charRef = (s) => s.replace(/&#(x[0-9A-Fa-f]{1,6}|\d{1,7});/g, (m, n) => { const c = n[0] === 'x' ? parseInt(n.slice(1), 16) : Number(n); return c > 0 && c <= 0x10ffff && !(c >= 0xd800 && c <= 0xdfff) ? String.fromCodePoint(c) : m; }).replace(/_x([0-9A-Fa-f]{4})_/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
+const plainText = (inner) => [...String(inner).replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/<t\b[^>]*?(?:\/>|>([\s\S]*?)<\/t>)/g)].map((t) => unesc(charRef(t[1] ?? ''))).join('');
+/** 共有の文字（番号の順）。空の項目（<si/>）も 1 つに数える＝後ろの番号がずれない */
+function sharedStrings(entries) {
+  if (!entries.some((e) => e.name === 'xl/sharedStrings.xml')) return [];
+  return [...text(entries, 'xl/sharedStrings.xml').matchAll(/<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g)].map((m) => plainText(m[1] ?? ''));
+}
+/** sheet を名前で選ぶ：ぴったりの名前、無ければ NFKC で畳むと同じ名前（1 つだけの時。依頼の文字は Task Hub の受け口で NFKC に揃う＝全角を含む sheet 名） */
+function findSheet(sheets, name) {
+  const exact = sheets.find((s) => s.name === name);
+  if (exact) return exact;
+  const fold = (x) => String(x).normalize('NFKC').toLowerCase();
+  const same = sheets.filter((s) => fold(s.name) === fold(name));
+  return same.length === 1 ? same[0] : undefined;
+}
+const colNumber = (letters) => [...letters].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+const refOf = (ref) => { const m = /^([A-Z]{1,3})(\d{1,7})$/.exec(ref ?? ''); return m ? { col: colNumber(m[1]), row: Number(m[2]) } : null; };
+/** シリアル値 → 日付。base1904：古い Mac の Excel の数え方（1904 年から＝1462 日ずれる）の workbook */
+const serialDate = (n, base1904 = false) => new Date(Date.UTC(1899, 11, 30) + (n + (base1904 ? 1462 : 0)) * 86_400_000).toISOString().slice(0, 10);
+const is1904 = (entries) => /<(?:\w+:)?workbookPr\b[^>]*\bdate1904\s*=\s*["'](?:1|true)["']/.test(text(entries, WB));
+/** Excel の日付らしい数（シリアル値 35000〜60000 の整数＝1995〜2064 年。書式は見ない＝推定） */
+const dateSerial = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 35000 && n <= 60000 ? n : null; };
+
+/** sheet の cell を行ごとに：[{ r, cells: [{ ref, col, text（切らない）, serial（日付らしい数か null） }] }]。空の cell は入れない */
+function sheetCells(xml, shared) {
+  const rows = [];
+  // 中身の無い行は <row …/> と書かれる（高さだけ決めた空の行）。閉じの無い形も 1 行として読む＝次の行を飲み込んで行の番号をずらさない（2026-11-16 監査）
+  for (const rm of xml.matchAll(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)) {
+    const r = Number(attrs(`<x ${rm[1]}>`).r);
+    const cells = [];
+    for (const cm of (rm[2] ?? '').matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const a = attrs(`<x ${cm[1]}>`);
+      const body = cm[2] ?? '';
+      let v = null;
+      const isText = a.t !== undefined && a.t !== 'n';
+      if (a.t === 's') { const i = Number(body.match(/<v>([^<]*)<\/v>/)?.[1]); v = shared[i] ?? null; } else if (a.t === 'inlineStr') v = plainText(body);
+      else { const m = body.match(/<v>([^<]*)<\/v>/); v = m ? unesc(m[1]) : null; }
+      if (v === null || v === '') continue;
+      cells.push({ ref: a.r, col: refOf(a.r)?.col ?? 0, text: String(v), serial: isText ? null : dateSerial(v) });
+    }
+    if (cells.length) rows.push({ r, cells });
+  }
+  return rows;
+}
+
+/**
  * 読むだけ：sheet の行を文字にする（工程表の予定の確かめ用）。sharedStrings と inlineStr と数値。query があればその文字を含む行だけ。
  * Excel の日付（シリアル値 35000〜60000）には date（YYYY-MM-DD）も添える（書式は見ない＝推定の印 date_guess）
  */
 export function readSheetRows(buf, { sheet = null, query = null, maxRows = 40, maxCell = 60 } = {}) {
   const entries = readZip(buf);
   const sheets = listSheets(entries).filter((s) => s.isWorksheet);
-  const target = sheet === null ? sheets[0] : sheets.find((s) => s.name === sheet);
+  const target = sheet === null ? sheets[0] : findSheet(sheets, sheet);
   if (!target) throw new XlsxError('xlsx_sheet_not_found');
-  let shared = [];
-  if (entries.some((e) => e.name === 'xl/sharedStrings.xml')) {
-    shared = [...text(entries, 'xl/sharedStrings.xml').matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => [...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => unesc(t[1])).join(''));
-  }
-  const xml = text(entries, target.part);
   const q = query ? String(query).normalize('NFKC').toLowerCase() : null;
+  const base1904 = is1904(entries);
   const rows = [];
   let matched = 0;
-  for (const rm of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)) {
-    const r = Number(attrs(`<x ${rm[1]}>`).r);
-    const cells = [];
-    for (const cm of rm[2].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-      const a = attrs(`<x ${cm[1]}>`);
-      const body = cm[2] ?? '';
-      let v = null;
-      if (a.t === 's') { const i = Number(body.match(/<v>([^<]*)<\/v>/)?.[1]); v = shared[i] ?? null; } else if (a.t === 'inlineStr') v = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => unesc(t[1])).join('');
-      else { const m = body.match(/<v>([^<]*)<\/v>/); v = m ? unesc(m[1]) : null; }
-      if (v === null || v === '') continue;
-      const cell = { ref: a.r, text: String(v).slice(0, maxCell) };
-      const n = Number(v);
-      if (a.t !== 's' && a.t !== 'inlineStr' && Number.isFinite(n) && n >= 35000 && n <= 60000 && Number.isInteger(n)) cell.date_guess = new Date(Date.UTC(1899, 11, 30) + n * 86_400_000).toISOString().slice(0, 10);
-      cells.push(cell);
-    }
-    if (!cells.length) continue;
+  for (const row of sheetCells(text(entries, target.part), sharedStrings(entries))) {
+    const cells = row.cells.map((c) => ({ ref: c.ref, text: c.text.slice(0, maxCell), ...(c.serial !== null ? { date_guess: serialDate(c.serial, base1904) } : {}) }));
     if (q && !cells.some((c) => c.text.normalize('NFKC').toLowerCase().includes(q))) continue;
     matched += 1;
-    if (rows.length < maxRows) rows.push({ r, cells });
+    if (rows.length < maxRows) rows.push({ r: row.r, cells });
   }
   return { sheet: target.name, sheets: sheets.map((s) => s.name), rows, matched, truncated: matched > rows.length };
+}
+
+// ─── 工程表の「日付が横に並ぶ表」（2026-11-16）───
+const mergesOf = (xml) => [...xml.matchAll(/<mergeCell\b[^>]*\bref="([A-Z]{1,3})(\d{1,7}):([A-Z]{1,3})(\d{1,7})"/g)].map((m) => ({ c1: colNumber(m[1]), r1: Number(m[2]), c2: colNumber(m[3]), r2: Number(m[4]) }));
+const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+
+/**
+ * 日付の見出しの行を探す：中身のある最初の 12 行のうち、日付らしい数が 5 つ以上・左から右へ 1 日ずつ進む並びが 8 割以上の行（いちばん日付の多い行）。
+ * 見つかれば { headerRow, cols: [{ date, c1, c2 }]（その日の列の幅＝見出しの結合か、次の日付の手前まで）, labelMax（日付より左の列＝行の名前）, from, to, sub }。無ければ null
+ */
+function calendarLayout(rows, merges, base1904 = false) {
+  let best = null;
+  for (const row of rows.slice(0, 12)) {
+    const ds = row.cells.filter((c) => c.serial !== null && c.col > 0);
+    if (ds.length < 5) continue;
+    let step = 0;
+    for (let i = 1; i < ds.length; i += 1) if (ds[i].serial - ds[i - 1].serial === 1) step += 1;
+    if (step < (ds.length - 1) * 0.8) continue;
+    if (!best || ds.length > best.ds.length) best = { row, ds };
+  }
+  if (!best) return null;
+  const { row, ds } = best;
+  const span = new Map(merges.filter((m) => m.r1 <= row.r && row.r <= m.r2).map((m) => [m.c1, m.c2]));
+  const width = Math.max(1, median(ds.slice(1).map((d, i) => d.col - ds[i].col)));
+  const cols = ds.map((d, i) => {
+    const next = i + 1 < ds.length ? ds[i + 1].col - 1 : d.col + width - 1;
+    return { date: serialDate(d.serial, base1904), c1: d.col, c2: Math.max(d.col, Math.min(span.get(d.col) ?? next, next)) };
+  });
+  // 見出しのすぐ下の行が曜日の行か：日付の列の 8 割以上に 4 字までの文字があり、文字の種類が 10 まで・ほかの cell は日付の数の 2 割までの時だけ（予定の行を曜日と取り違えて落とさない）
+  const below = rows.find((x) => x.r === row.r + 1);
+  const starts = new Set(cols.map((c) => c.c1));
+  const subCells = below ? below.cells.filter((c) => starts.has(c.col) && c.serial === null && [...c.text].length <= 4) : [];
+  const others = below ? below.cells.filter((c) => c.col >= cols[0].c1).length - subCells.length : 0;
+  const isSub = subCells.length >= cols.length * 0.8 && new Set(subCells.map((c) => c.text)).size <= 10 && others <= cols.length * 0.2;
+  const sub = isSub ? new Map(subCells.map((c) => [c.col, c.text])) : null;
+  const dates = cols.map((c) => c.date).sort();
+  return { headerRow: row.r, bodyFrom: row.r + (sub ? 2 : 1), cols, labelMax: cols[0].c1 - 1, from: dates[0], to: dates.at(-1), sub };
+}
+
+/** 1 つの sheet を「日 × 行」の項目にする：[{ date, r, label, text }]（日付の順・行の順）。label は日付より左の列の文字（結合された名前は下の行にも付く） */
+function calendarItems(rows, merges, lay, maxCell) {
+  const colIdx = new Map();
+  lay.cols.forEach((c, i) => { for (let k = c.c1; k <= c.c2; k += 1) if (!colIdx.has(k)) colIdx.set(k, i); });
+  const at = new Map(rows.flatMap((x) => x.cells.map((c) => [`${x.r}:${c.col}`, c])));
+  const labelMerges = merges.filter((m) => m.c1 <= lay.labelMax && m.r2 > m.r1);
+  const bodyMerge = new Map(merges.filter((m) => m.c1 > lay.labelMax && m.r1 >= lay.bodyFrom).map((m) => [`${m.r1}:${m.c1}`, m]));
+  const labelOf = (r) => {
+    const parts = [];
+    for (let c = 1; c <= lay.labelMax; c += 1) {
+      let cell = at.get(`${r}:${c}`);
+      if (!cell) { const m = labelMerges.find((x) => x.c1 <= c && c <= x.c2 && x.r1 < r && r <= x.r2); if (m) cell = at.get(`${m.r1}:${m.c1}`); }
+      if (cell && !parts.includes(cell.text)) parts.push(cell.text);
+    }
+    return parts.join(' ').slice(0, maxCell);
+  };
+  const byKey = new Map();
+  for (const row of rows) {
+    if (row.r < lay.bodyFrom) continue;
+    let label = null;
+    for (const c of row.cells) {
+      if (c.col <= lay.labelMax) continue;
+      const first = colIdx.get(c.col);
+      if (first === undefined) continue;
+      // 何日かにまたがって結合された cell は、またがる日のすべてに出す
+      const m = bodyMerge.get(`${row.r}:${c.col}`);
+      let last = first;
+      if (m) while (last + 1 < lay.cols.length && lay.cols[last + 1].c1 <= m.c2) last += 1;
+      if (label === null) label = labelOf(row.r);
+      for (let i = first; i <= last; i += 1) {
+        const key = `${lay.cols[i].date}|${row.r}`;
+        if (!byKey.has(key)) byKey.set(key, { date: lay.cols[i].date, r: row.r, label, parts: [] });
+        byKey.get(key).parts.push(c.text.slice(0, maxCell));
+      }
+    }
+  }
+  return [...byKey.values()].map((x) => ({ date: x.date, r: x.r, ...(x.label ? { label: x.label } : {}), text: x.parts.join(' ') })).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.r - b.r));
+}
+
+const addDays = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const jsonBytes = (x) => Buffer.byteLength(JSON.stringify(x), 'utf8');
+
+/**
+ * 工程表を「日付で」読む（2026-11-16・読むだけ）。日付が横に並び、行が班・人、交わる所が現場の表（実の工程表の形）から、日ごとの項目を抜き出す。
+ *   期間：from〜to（無ければ today から 7 日。from だけなら from から 7 日）。長さは maxDays まで＝越えたら truncated と next_from
+ *   query：その文字を含む項目（現場の文字か行の名前）だけ。期間の指定が無ければ today 以後（today がどの sheet にも無ければ全部）
+ *   sheet：指定が無ければ**日ごとに**、その日を含む最初の sheet（並びの順＝期間が重なる日は先に並ぶ sheet。新しい sheet を先に置く形に合う）。指定すればその sheet だけ
+ *   大きさ：結果は budget bytes まで（Task Hub の結果の上限 16 KiB の内側）。日の境で切って truncated と next_from（まだ 1 つも返していない最初の日）を返す。
+ *           1 日ぶんだけで越える時は、その日を途中まで返す（partial・omitted＝落とした数）
+ * 戻り値：日付の見出しを持つ sheet が 1 つも無ければ null（呼ぶ側は行の読み方へ）。どの sheet にも無い期間は out_of_range: true と ranges（sheet ごとの期間）
+ */
+export function readCalendar(buf, { sheet = null, from = null, to = null, query = null, today = new Date().toISOString().slice(0, 10), maxDays = 31, budget = 10_000, maxCell = 60 } = {}) {
+  const entries = readZip(buf);
+  const sheets = listSheets(entries).filter((s) => s.isWorksheet);
+  const shared = sharedStrings(entries);
+  const base1904 = is1904(entries);
+  const open = (s) => { const xml = text(entries, s.part); const rows = sheetCells(xml, shared); const merges = mergesOf(xml); const lay = calendarLayout(rows, merges, base1904); return lay ? { name: s.name, rows, merges, lay, items: null } : null; };
+  let cals;
+  if (sheet !== null) {
+    const t = findSheet(sheets, sheet);
+    if (!t) throw new XlsxError('xlsx_sheet_not_found');
+    const c = open(t);
+    if (!c) return null;
+    cals = [c];
+  } else {
+    cals = sheets.map(open).filter(Boolean);
+    if (!cals.length) return null;
+  }
+  const names = sheets.map((s) => s.name).slice(0, 40);
+  const gFrom = cals.map((c) => c.lay.from).sort()[0];
+  const gTo = cals.map((c) => c.lay.to).sort().at(-1);
+  /** その日を読む sheet（並びの順で最初にその日を含む物）。どの sheet にも無い日は null */
+  const owner = (d) => cals.find((c) => c.lay.from <= d && d <= c.lay.to) ?? null;
+  const q = query ? String(query).normalize('NFKC').toLowerCase() : null;
+  let lo = from ?? (q ? (gFrom <= today && today <= gTo ? today : gFrom) : today);
+  let hi = to ?? (q ? gTo : addDays(lo, 6));
+  const head = { mode: 'calendar', sheets: names, ...(sheets.length > names.length ? { sheet_count: sheets.length } : {}), range: { from: gFrom, to: gTo } };
+  const outOfRange = () => ({ ...head, out_of_range: true, from: lo, to: hi, ranges: cals.slice(0, 12).map((c) => ({ sheet: c.name, from: c.lay.from, to: c.lay.to })) });
+  if (hi < gFrom || lo > gTo) return outOfRange();
+  // 先に在る期間へ寄せてから、長さの上限をかける（遠い過去からの期間で、空の結果と進まない next_from を返さない）
+  if (lo < gFrom) lo = gFrom;
+  if (hi > gTo) hi = gTo;
+  const last = hi; // 頼まれた期間の終わり（在る期間に寄せた後）。next_from はこれを越えない
+  let nextFrom = null;
+  let truncated = false;
+  const dayMs = (d) => Date.parse(`${d}T00:00:00Z`);
+  if (!q && dayMs(hi) - dayMs(lo) > (maxDays - 1) * 86_400_000) { hi = addDays(lo, maxDays - 1); nextFrom = addDays(hi, 1); truncated = true; }
+  const has = (x) => String(x ?? '').normalize('NFKC').toLowerCase().includes(q);
+  const items = [];
+  const usedSheets = [];
+  for (const c of cals) {
+    if (c.lay.to < lo || c.lay.from > hi) continue;
+    c.items ??= calendarItems(c.rows, c.merges, c.lay, maxCell);
+    const mine = c.items.filter((x) => lo <= x.date && x.date <= hi && owner(x.date) === c && (!q || has(x.text) || has(x.label)));
+    for (let d = c.lay.from > lo ? c.lay.from : lo; d <= hi && d <= c.lay.to; d = addDays(d, 1)) if (owner(d) === c) { usedSheets.push(c.name); break; }
+    items.push(...mine);
+  }
+  if (!usedSheets.length) return outOfRange(); // 期間の全部が sheet と sheet のすき間
+  items.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : x.r - y.r));
+  head.sheet = owner(lo)?.name ?? usedSheets[0]; // 期間の最初の日を読んだ sheet
+  if (usedSheets.length > 1) head.sheets_used = usedSheets;
+  const after = (d) => { const n = addDays(d, 1); return n <= last ? n : null; }; // 続きの日（頼まれた期間の中に残りが在る時だけ）
+  let used = jsonBytes(head) + 260;
+  if (q) {
+    let hits = [];
+    let partial = null;
+    for (const x of items) {
+      const n = jsonBytes(x) + 1;
+      if (used + n > budget) {
+        truncated = true;
+        // 日の境で切る（その日の途中まで返すと、next_from から聞き直した時に同じ項目が 2 度出る）。1 日ぶんだけで上限を越える時は、その日は途中まで（partial_date）で次の日から
+        const whole = hits.filter((h) => h.date !== x.date);
+        if (whole.length) { hits = whole; nextFrom = x.date; } else { partial = x.date; nextFrom = after(x.date); }
+        break;
+      }
+      used += n;
+      hits.push(x);
+    }
+    const omitted = partial ? items.filter((x) => x.date === partial).length - hits.length : 0;
+    return { ...head, from: lo, to: hi, query: String(query).slice(0, 100), matched: items.length, hits, truncated, ...(partial ? { partial_date: partial, omitted } : {}), ...(nextFrom ? { next_from: nextFrom } : {}) };
+  }
+  const days = [];
+  for (let d = lo; d <= hi; d = addDays(d, 1)) {
+    const c = owner(d);
+    const col = c?.lay.sub ? c.lay.cols.find((x) => x.date === d) : null;
+    const sub = col ? c.lay.sub.get(col.c1) : undefined;
+    const day = { date: d, ...(sub ? { weekday: [...sub].slice(0, 4).join('') } : {}), items: items.filter((x) => x.date === d).map(({ date, ...rest }) => rest), ...(c ? {} : { no_sheet: true }) };
+    const n = jsonBytes(day) + 1;
+    if (used + n > budget) {
+      truncated = true;
+      nextFrom = d;
+      // 最初の 1 日だけで上限を越える：その日を途中まで返して次の日へ進める（同じ日を聞き直し続けない）。落とした数は omitted
+      if (!days.length) {
+        const kept = [];
+        let room = budget - used - jsonBytes({ ...day, items: [], partial: true, omitted: 9999 });
+        for (const it of day.items) { const b = jsonBytes(it) + 1; if (b > room) break; room -= b; kept.push(it); }
+        days.push({ ...day, items: kept, partial: true, omitted: day.items.length - kept.length });
+        nextFrom = after(d);
+      }
+      break;
+    }
+    used += n;
+    days.push(day);
+  }
+  return { ...head, from: lo, to: days.length ? days.at(-1).date : lo, days, truncated, ...(nextFrom ? { next_from: nextFrom } : {}) };
 }

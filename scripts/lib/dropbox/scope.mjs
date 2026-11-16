@@ -13,6 +13,12 @@
  * フォルダがあっても、承認なしの一覧・検索に名前も中身も出さない）。読みの資格情報は Full Dropbox なので、この表が読みの範囲を決める唯一の場所。
  * business が無い＝その business の Dropbox は閉じている（dropbox_business_not_enabled）。E-STEP を e-nexus の権限から広げない（business ごとに別の表）。
  * Dropbox の path は大文字小文字を区別しない＝比べる時は小文字にする。
+ *
+ * 全角と半角（2026-11-16・実の Dropbox での確かめ）：Dropbox は「（仮称）」と「(仮称)」、「工　事」と「工 事」を**別の名前**として扱う。一方 Task Hub の受け口（envelope）は
+ * 依頼の文字を NFKC に揃える＝全角の名前のフォルダは、依頼の文字のままでは Dropbox に無い。そこで：
+ *   許す側（read_roots・estimate_roots・schedule_files）は**実の名前**で比べる（config は Dropbox の名前のとおりに書く＝dropbox-preflight が確かめる）。
+ *     依頼の path は matchRoot が NFKC で畳んで「どの許可フォルダの下か」を探し、resolve.mjs が許可フォルダの中の一覧から実の名前に直してから、実の名前で判定する
+ *   断る側（deny_roots・一覧に出さない見積のフォルダ）は NFKC で畳んで比べる（広く断る＝config の書き方が全角半角だけ違っていても読ませない）
  */
 export class ScopeError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -32,20 +38,49 @@ export function normPath(p0) {
   if (INVISIBLE.test(p)) return null;
   // 小文字にすると ASCII に変わる非 ASCII（ケルビンの K など）は拒否（大文字小文字を畳んだ比較で別のフォルダに化けさせない）
   if ([...p].some((c) => c.charCodeAt(0) > 127 && /^[\x00-\x7f]+$/.test(c.toLowerCase()))) return null;
+  // 小文字にすると長さが変わる文字（点つきの大文字 I など）も拒否：JS の小文字と Dropbox の比べ方が同じとは限らない文字で、許可フォルダの外を指させない（2026-11-16 監査）
+  if ([...p].some((c) => c.toLowerCase().length !== c.length)) return null;
   if (p === '/') return null; // Dropbox 全体は範囲にしない
   const parts = p.slice(1).split('/');
   if (parts.some((x) => x === '' || x === '.' || x === '..' || x.trim() !== x)) return null;
   return `/${parts.join('/')}`;
 }
 const under = (path, root) => { const a = path.toLowerCase(); const b = root.toLowerCase(); return a === b || a.startsWith(`${b}/`); };
-const denied = (scope, p) => (scope.deny_roots ?? []).some((r) => under(p, r));
+/** 見た目の同じ文字を同じにする比べ方（NFKC・小文字）。全角と半角・「㈱」と「(株)」を同じに見る */
+export const foldPath = (p) => String(p).normalize('NFKC').toLowerCase();
+const underFold = (path, root) => { const a = foldPath(path); const b = foldPath(root); return a === b || a.startsWith(`${b}/`); };
+// 断る側は、前からの比べ方（小文字）と畳んだ比べ方（NFKC・小文字）のどちらかに当たれば断る（前より狭くならない）
+const underWide = (path, root) => under(path, root) || underFold(path, root);
+const denied = (scope, p) => (scope.deny_roots ?? []).some((r) => underWide(p, r));
 /**
  * 承認なしの一覧・検索に出してよい path か（正規化できる・read_roots の中・見積と読ませない場所の外）。Dropbox が返した一覧・検索の結果も 1 件ずつこれで絞る
  * （広いフォルダを検索した時に、その下の見積〈L2〉・読ませない場所の file の名前を返さない）
  */
 export function browsable(scope, path) {
   const p = normPath(path);
-  return Boolean(p) && scope.read_roots.some((r) => under(p, r)) && !scope.estimate_roots.some((r) => under(p, r)) && !denied(scope, p);
+  return Boolean(p) && scope.read_roots.some((r) => under(p, r)) && !scope.estimate_roots.some((r) => underWide(p, r)) && !denied(scope, p);
+}
+
+/**
+ * 依頼の path が、どの許可フォルダの下かを探す：{ root（config の書き方＝実の名前）, rest（その下の部分） }／null（どの下でもない）／{ ambiguous: true }（決められない）。
+ * kind：'browse'（read_roots）・'estimate'（estimate_roots）・'any'（両方）。ここは「どこから実の名前を探し始めるか」を決めるだけ＝読んでよいかは実の名前で assertReadable が決める
+ *   1. 依頼の文字のまま（大文字小文字だけのちがい）で下に在る許可フォルダがあれば、そのいちばん深い物（ぴったりが先。rest は依頼の文字のまま）
+ *   2. 無ければ NFKC で畳んで下になる許可フォルダ。いちばん深い物を選ぶが、他の候補がその上の階層（実の名前で）でなければ決めない
+ *      （畳むと同じ名前になる別々の許可フォルダのどちらかを、黙って選ばない・2026-11-16 監査）
+ */
+export function matchRoot(scope, path, kind = 'any') {
+  const p = normPath(path);
+  if (!p) return null;
+  const roots = kind === 'browse' ? scope.read_roots : kind === 'estimate' ? scope.estimate_roots : [...scope.read_roots, ...scope.estimate_roots];
+  const literal = roots.filter((r) => under(p, r)).sort((x, y) => y.length - x.length)[0];
+  if (literal) return { root: literal, rest: p.split('/').slice(literal.split('/').length) };
+  const f = foldPath(p);
+  const cands = roots.filter((r) => { const fr = foldPath(r); return f === fr || f.startsWith(`${fr}/`); }).sort((x, y) => foldPath(y).length - foldPath(x).length);
+  if (!cands.length) return null;
+  const best = cands[0];
+  if (cands.slice(1).some((c) => c.toLowerCase() !== best.toLowerCase() && !under(best, c))) return { ambiguous: true };
+  // 残りは畳んだ形の部分の数で数える（全角の斜線「／」を含む名前は、畳むと部分が増える）
+  return { root: best, rest: f === foldPath(best) ? [] : p.normalize('NFKC').split('/').slice(foldPath(best).split('/').length) };
 }
 
 /** config の dropbox の節を検査して Map(business → scope) にする。形の誤りは投げる（config を読めない＝Dropbox は閉じたまま） */
@@ -64,7 +99,7 @@ export function loadScopes(cfg) {
     if (!out_) throw new ScopeError('dropbox_config_invalid');
     const scope = { business: b, read_roots: list('read_roots'), schedule_files: list('schedule_files'), estimate_roots: list('estimate_roots'), deny_roots: list('deny_roots'), output_root: out_ };
     // 読ませない場所の中に工程表・見積の原本を置く設定は矛盾（どちらを意図したか決められない）＝読み込まない
-    if ([...scope.schedule_files, ...scope.estimate_roots].some((p) => scope.deny_roots.some((d) => under(p, d)))) throw new ScopeError('dropbox_config_invalid');
+    if ([...scope.schedule_files, ...scope.estimate_roots].some((p) => scope.deny_roots.some((d) => underWide(p, d)))) throw new ScopeError('dropbox_config_invalid');
     out.set(b, Object.freeze(scope));
   }
   // 出力の場所は business ごとに分ける（重なれば他の business の karte を書き換えうる）

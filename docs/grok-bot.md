@@ -86,7 +86,8 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 | 現場カルテへの追記 | 「C-001 の搬入経路に、西側から入れると追記して」 | `karte.append` | 承認の後 |
 | 見積の AI タブの作成 | 「現場A の見積を見て、AI_案2 に新しい見積を作って」 | `estimate.ai.create`（毎回 Mac で承認） | 承認の後 |
 | AI タブの修正 | 「AI_案2 の足場の数量を 300 にして」 | `estimate.ai.edit`（毎回 Mac で承認） | 承認の後 |
-| 工程表の予定 | 「工程表で現場A の予定は？」 | `schedule.read {query}` | 承認の後 |
+| 今週の予定 | 「今週の工程表は？」「明日の予定は？」 | `schedule.read {}`（今日から 7 日）・`{date}`・`{from,to}`（31 日まで。`next_from` が在れば続きを聞く） | 承認の後 |
+| 工程表の予定 | 「工程表で現場A の予定は？」 | `schedule.read {query}`（今日以後。過去は `from`・`to` をつける） | 承認の後 |
 | 工程表の臨時バックアップ | 「今の工程表をバックアップして」 | `schedule.backup`（完了は保存と検証の後だけ） | 承認の後 |
 | バックアップの履歴 | 「工程表のバックアップの一覧」 | `schedule.backup.list` | 承認の後 |
 | 昨日の工程表 | 「昨日の工程表を出して」 | `schedule.restore {at}`（別の file） | 承認の後 |

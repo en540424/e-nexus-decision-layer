@@ -92,8 +92,9 @@
     "schedule.read": {
       "class": "auto", "handler": "schedule.read", "timeout_ms": 45000, "max_params_bytes": 14000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "sheet": { "type": "string", "minLength": 1, "maxLength": 31 }, "query": { "type": "string", "minLength": 1, "maxLength": 100 } } },
-      "note": "工程表（config の schedule_files）を読むだけ。query を含む行（現場名など）を返す。工程表に書く道は無い"
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "sheet": { "type": "string", "minLength": 1, "maxLength": 31 }, "query": { "type": "string", "minLength": 1, "maxLength": 100 }, "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }, "from": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }, "to": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } } },
+      "usage": "params: {} (7 days from today) | {\"date\":\"YYYY-MM-DD\"} | {\"from\":\"YYYY-MM-DD\",\"to\":\"YYYY-MM-DD\"} (max 31 days) | {\"query\":\"<1-100 chars>\"} (from today on; add from and to for other dates). If the result has next_from, call again with from=next_from. Optional: \"sheet\", \"file\". No other keys.",
+      "note": "工程表（config の schedule_files）を読むだけ。日付が横に並ぶ表は日付で抜き出す（既定は今日から 7 日・date・from〜to・query。2026-11-16）。日付の見出しが無い表は query を含む行。結果は bytes の上限の手前で切る（truncated・next_from）。工程表に書く道は無い"
     },
     "schedule.backup": {
       "class": "auto", "handler": "schedule.backup", "timeout_ms": 60000, "max_params_bytes": 14000,
@@ -123,7 +124,7 @@
       "class": "auto", "handler": "karte.get", "timeout_ms": 30000, "max_params_bytes": 14000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
       "params_schema": { "type": "object", "required": ["case_id"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "section": { "type": "string", "enum": ["site_name", "case_id", "address", "survey_date", "schedule", "work", "building", "floors_height", "perimeter", "scaffold_area", "materials", "carport", "special", "access", "neighborhood", "safety", "photos", "estimates", "process", "survey_log", "human_log", "ai_notes", "unknowns"] } } },
-      "note": "現場カルテを読む（全文は 6000 字まで・節を指定できる）"
+      "note": "現場カルテを読む（全文は 6000 字かつ約 11 KB〈日本語で 3,600 字ほど〉まで＝越えたら truncated・節を指定できる）"
     },
     "karte.append": {
       "class": "auto", "handler": "karte.append", "timeout_ms": 30000, "max_params_bytes": 14000,
