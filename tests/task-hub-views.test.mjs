@@ -59,7 +59,7 @@ test('status.query：detail が無ければ今までと同じ形。detail は区
   cleanup(env);
 });
 
-test('task.status：view は自分の依頼だけ（他の依頼元・他の business は数えない）・承認待ちは他の依頼元を件数だけ・task_ref と view は 1 つだけ', async () => {
+test('task.status：view は自分の依頼だけ（他の依頼元・他の business は数えない）・承認待ちは他の依頼元を件数だけ・task_ref と view の両方は受けない・空は recent', async () => {
   const { env, policy, fromBot, run, resultOf } = await setup();
   const mine1 = await fromBot(envelope({ intent: 'note.record', params: { text: 'a' } }));
   const mine2 = await fromBot(envelope({ intent: 'hermes.task', params: { title: 't', body: 'b' } }));
@@ -78,7 +78,8 @@ test('task.status：view は自分の依頼だけ（他の依頼元・他の bus
   assert.deepEqual([p.total, p.items[0].intent, p.others_awaiting_approval], [1, 'hermes.task', 1], '人の承認待ちは件数だけ');
   assert.equal(env.store.readTask(both.task_id).state, 'failed');
   assert.equal(env.store.readTask(both.task_id).error.code, 'params_task_ref_or_view');
-  assert.equal(env.store.readTask(none.task_id).error.code, 'params_task_ref_or_view');
+  // 2026-11-16：params が空＝recent（本番で Bot が {} で呼んで failed になった）
+  assert.deepEqual([env.store.readTask(none.task_id).state, resultOf(none.task_id).view], ['succeeded', 'recent']);
   cleanup(env);
 });
 

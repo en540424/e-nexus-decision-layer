@@ -150,6 +150,9 @@ export function contentDigest({ source, business, intent, params }) {
 const ISO_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 export const isIso = (s) => typeof s === 'string' && ISO_RE.test(s) && Number.isFinite(Date.parse(s.length === 10 ? `${s}T00:00:00Z` : /(Z|[+-]\d{2}:\d{2})$/.test(s) ? s : `${s}Z`));
 
+/** 依頼元へ返す呼び方の文（台帳の usage）として通す形：1 行・300 字まで・制御文字なし。台帳の読み込みと store の両方がこの形だけを通す（2026-11-16） */
+export const isHint = (s) => typeof s === 'string' && s.length >= 1 && s.length <= 300 && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(s);
+
 /** 違えば 'パス:規則' を返す。合っていれば null */
 export function checkSpec(spec, v, at = '$') {
   if (!spec) return null;

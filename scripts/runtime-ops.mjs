@@ -196,6 +196,8 @@ export function humanRequired({ ledger = [], last = null, state = null, receipt 
   for (const it of last?.items ?? []) {
     if (it.level !== 'warn' && it.level !== 'crit') continue;
     const rule = classify(it.id);
+    // 下の Task Hub の行（件数つき・手順つき）が同じことを言う項目は 2 回出さない
+    if ((it.id === 'task_hub_approval' && taskHub?.awaiting) || (it.id === 'hermes_jobs' && taskHub?.hermes && taskHub.hermes !== 'ok')) continue;
     if (rule.class === 'human') rows.push({ id: `item:${it.id}`, priority: it.level === 'crit' ? 1 : 2, title: `${rule.cause} → ${rule.next}`, due: null, source: 'monitor' });
   }
   // Task Hub（docs/task-hub.md）：承認待ち・止まった task・PAUSE。件数だけ（中身は task-hub.mjs human／show で見る）

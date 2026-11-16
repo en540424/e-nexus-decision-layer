@@ -13,10 +13,10 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { loadScopes, outputPath, scopeOf, searchRoot, assertReadable, ScopeError, withinRoot } from '../dropbox/scope.mjs';
-import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, KarteError, newKarte, provenance, sectionText } from '../business/karte.mjs';
+import { browsable, loadScopes, outputPath, scopeOf, searchRoot, assertReadable, ScopeError, withinRoot } from '../dropbox/scope.mjs';
+import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, decodeKarte, KarteError, newKarte, provenance, sectionText, unknownSections } from '../business/karte.mjs';
 import { backupSchedule, BackupError, listGenerations, restoreGeneration } from '../business/schedule-backup.mjs';
-import { addAiSheet, estimateSheetXml, readSheetRows, replaceAiSheet, XlsxError } from '../xlsx/workbook.mjs';
+import { addAiSheet, estimateSheetXml, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
 import { fail } from './handler-error.mjs';
 
 const RESULT_TEXT_MAX = 6000;
@@ -50,7 +50,7 @@ function karteHistory(svc, business, caseId) {
     if (!svc.historyDir) return;
     const d = path.join(svc.historyDir, business, 'karte-history', caseId);
     mkdirSync(d, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(d, `${String(rev).replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}.md`), text, { mode: 0o600 });
+    writeFileSync(path.join(d, `${String(rev).replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}.md`), text, { mode: 0o600 }); // text：Dropbox から取った bytes のまま
   };
 }
 
@@ -59,7 +59,7 @@ const dropboxSearch = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   const root = searchRoot(scope, task.params.path ?? null);
-  const hits = (await svc.dropbox('read').search(task.params.query, { path: root, max: 30, signal })).filter((h) => withinRoot(root, h.path));
+  const hits = (await svc.dropbox('read').search(task.params.query, { path: root, max: 30, signal })).filter((h) => withinRoot(root, h.path) && browsable(scope, h.path)); // 範囲の中だけ（見積・読ませない場所の file は名前も返さない）
   return { result: { count: hits.length, files: hits.slice(0, 30).map((h) => ({ name: h.name, path: h.path, size: h.size, server_modified: h.server_modified })) } };
 });
 const dropboxList = ({ task, config, signal }) => guarded(async () => {
@@ -67,6 +67,7 @@ const dropboxList = ({ task, config, signal }) => guarded(async () => {
   const scope = scopeOf(scopesOf(config), task.business);
   const p = assertReadable(scope, task.params.path, 'browse'); // 見積（L2）のフォルダは承認なしの一覧に出さない
   const r = await svc.dropbox('read').list(p, { limit: 200, signal });
+  r.entries = r.entries.filter((e) => browsable(scope, e.path)); // 一覧の中の見積のフォルダ・読ませない場所は名前も出さない（2026-11-16 監査）
   return { result: { count: r.entries.length, truncated: r.truncated, entries: r.entries.slice(0, 100).map((e) => ({ tag: e.tag, name: e.name, path: e.path, ...(e.tag === 'file' ? { size: e.size, server_modified: e.server_modified } : {}) })) } };
 });
 
@@ -128,7 +129,7 @@ const karteCreate = ({ task, config, now, signal }) => guarded(async () => {
     if (e?.code !== 'dropbox_path_conflict') throw e;
     // 既にある：この task が作った物なら済み（冪等）、違えば作らない（上書きしない）
     const { bytes } = await svc.dropbox('write').download(p, { signal });
-    if (bytes.toString('utf8').includes(`task=${task.task_id} -->`)) return { result: { created: true, already: true, path: p } };
+    if (decodeKarte(bytes).includes(`task=${task.task_id} -->`)) return { result: { created: true, already: true, path: p } };
     throw new KarteError('karte_exists');
   }
 });
@@ -136,7 +137,7 @@ const karteGet = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   const { bytes, meta } = await svc.dropbox('write').download(kartePath(scope, task.params.case_id), { signal });
-  const text = bytes.toString('utf8');
+  const text = decodeKarte(bytes);
   if (task.params.section) {
     const t = sectionText(text, task.params.section);
     if (t === null) throw new KarteError('karte_field_unknown');
@@ -150,9 +151,9 @@ const karteAppend = ({ task, config, now, signal }) => guarded(async () => {
   const p = kartePath(scope, task.params.case_id);
   const w = svc.dropbox('write');
   const { bytes } = await w.download(p, { signal });
-  if (bytes.toString('utf8').includes(`task=${task.task_id} -->`)) return { result: { appended: true, already: true } }; // 冪等
+  if (decodeKarte(bytes).includes(`task=${task.task_id} -->`)) return { result: { appended: true, already: true } }; // 冪等
   const r = await appendToKarte({ writer: w, path: p, section: task.params.section, value: task.params.text, at: iso(now), taskId: task.task_id, dated: task.params.date ?? null, history: karteHistory(svc, task.business, task.params.case_id), signal });
-  return { result: { appended: true, rev: r.rev, ai_blocks: r.ai_blocks } };
+  return { result: { appended: true, ...(r.already ? { already: true } : {}), rev: r.rev, ai_blocks: r.ai_blocks } };
 });
 const karteSearch = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
@@ -166,9 +167,10 @@ const karteReport = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   const { bytes } = await svc.dropbox('write').download(kartePath(scope, task.params.case_id), { signal });
-  const t = bytes.toString('utf8');
+  const t = decodeKarte(bytes);
   const part = (k, label) => `■ ${label}\n${sectionText(t, k) || '（記載なし）'}`;
-  const text = [`【現場カルテの要点】${task.params.case_id}`, part('schedule', '作業予定'), part('safety', '安全上の注意事項'), part('unknowns', '未確認事項'), part('survey_log', '現調履歴')].join('\n');
+  const blank = unknownSections(t);
+  const text = [`【現場カルテの要点】${task.params.case_id}`, part('schedule', '作業予定'), part('safety', '安全上の注意事項'), part('unknowns', '未確認事項'), part('survey_log', '現調履歴'), `■ まだ「未確認」のままの項目（${blank.length} 件）\n${blank.join('・') || '（なし）'}`].join('\n');
   return { result: { case_id: task.params.case_id, text: clip(text) } };
 });
 
@@ -206,6 +208,7 @@ const estimateAiCreate = ({ task, config, now, signal }) => guarded(async () => 
   const xml = estimateSheetXml({ title: task.params.title, rows: task.params.rows, stamp: stampOf(task, now) });
   let base;
   let rev = null;
+  let from = 'working_copy';
   try {
     const cur = await w.download(target, { signal }); // AI 作業版が既にある：その版に足す（Human がその写しに足した物も残る）
     base = cur.bytes;
@@ -213,9 +216,14 @@ const estimateAiCreate = ({ task, config, now, signal }) => guarded(async () => 
     keepPrevious(svc, task.business, base, rev);
   } catch (e) {
     if (e?.code !== 'dropbox_path_not_found') throw e; // AI 作業版がまだ無い時だけ原本から作る
-    base = (await svc.dropbox('read').download(original, { signal })).bytes; // 原本は読むだけ（読みの資格情報は書けない）
+    const o = await svc.dropbox('read').download(original, { signal }); // 原本は読むだけ（読みの資格情報は書けない）
+    base = o.bytes;
+    from = 'original';
+    // どの版の原本から写したか（後で原本が変わったことに気づける・2026-11-16）
+    rec.original_rev = o.meta.rev;
+    rec.original_hash = o.meta.content_hash;
   }
-  const { bytes, sheet } = addAiSheet(base, { name: task.params.sheet_name, xml });
+  const { bytes, sheet, preserved, sheets_before: sheetsBefore } = addAiSheet(base, { name: task.params.sheet_name, xml });
   // 台帳を先に（上げた後に止まっても、AI が作った tab として直せる＝監査 nit 11）。上げられなければ戻す
   const before = JSON.stringify(rec);
   rec.ai_sheets = [...rec.ai_sheets, sheet.name];
@@ -226,7 +234,9 @@ const estimateAiCreate = ({ task, config, now, signal }) => guarded(async () => 
   try { up = await w.upload(target, bytes, { rev, signal }); } catch (e) { ledger.copies[key] = JSON.parse(before); if (!ledger.copies[key].ai_sheets.length) delete ledger.copies[key]; writeLedger(svc, task.business, ledger); throw e; }
   rec.tasks = [...rec.tasks, task.task_id].slice(-200);
   writeLedger(svc, task.business, ledger);
-  return { result: { created: true, path: up.path, rev: up.rev, sheet: sheet.name, ai_sheets: rec.ai_sheets, note: '原本は変えていない。Human の tab は 1 byte も変えていない（保存の前に確かめた）' } };
+  // 保存の前後の差分（2026-11-16）：何から作り・どの tab が増え・元の部品が何個そのままだったか。前の版は Mac の履歴に残した（previous_sha256）
+  const diff = { base: from, sheets_before: sheetsBefore, sheets_after: [...sheetsBefore, sheet.name], added_sheet: sheet.name, ...(summarizeAiSheet(xml) ?? {}), preserved_parts: preserved, previous_sha256: rev ? createHash('sha256').update(base).digest('hex').slice(0, 16) : null };
+  return { result: { created: true, path: up.path, rev: up.rev, sheet: sheet.name, ai_sheets: rec.ai_sheets, diff, note: '原本は変えていない。Human の tab は 1 byte も変えていない（保存の前に確かめた）' } };
 });
 const estimateAiEdit = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
@@ -240,11 +250,14 @@ const estimateAiEdit = ({ task, config, now, signal }) => guarded(async () => {
   const cur = await w.download(target, { signal });
   keepPrevious(svc, task.business, cur.bytes, cur.meta.rev);
   const xml = estimateSheetXml({ title: task.params.title, rows: task.params.rows, stamp: stampOf(task, now) });
-  const { bytes, sheet } = replaceAiSheet(cur.bytes, { name: task.params.sheet_name, xml, aiSheets: rec.ai_sheets, aiIds: rec.ai_ids ?? {} });
+  const { bytes, sheet, preserved, before } = replaceAiSheet(cur.bytes, { name: task.params.sheet_name, xml, aiSheets: rec.ai_sheets, aiIds: rec.ai_ids ?? {} });
   const up = await w.upload(target, bytes, { rev: cur.meta.rev, signal });
   rec.tasks = [...rec.tasks, task.task_id].slice(-200);
   writeLedger(svc, task.business, ledger);
-  return { result: { edited: true, path: up.path, rev: up.rev, sheet: sheet.name, note: 'AI の tab を作り直した（その tab に Human が書いた物は Mac の履歴に残した版から戻せる）' } };
+  // 保存の前後の差分（2026-11-16）：その tab の明細の行数と合計の前後。前が読めない形（Human がその tab を作り変えた）なら null（数を作らない）
+  const after = summarizeAiSheet(xml);
+  const diff = { sheet: sheet.name, rows_before: before?.rows ?? null, rows_after: after?.rows ?? null, total_before: before?.total ?? null, total_after: after?.total ?? null, preserved_parts: preserved, previous_sha256: createHash('sha256').update(cur.bytes).digest('hex').slice(0, 16) };
+  return { result: { edited: true, path: up.path, rev: up.rev, sheet: sheet.name, diff, note: 'AI の tab を作り直した（その tab に Human が書いた物は Mac の履歴に残した版から戻せる）' } };
 });
 
 export const BUSINESS_HANDLERS = Object.freeze({

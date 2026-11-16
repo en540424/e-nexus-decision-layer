@@ -5,10 +5,11 @@
  *
  *   node scripts/business-cycle.mjs [--store <dir>]
  *
- * 休眠：config.json に dropbox が無い・schedule_files が無い＝not_configured（exit 0）。Keychain に読みの資格情報が無い＝not_configured。
+ * 休眠：config.json に dropbox が無い・schedule_files が無い＝not_configured（exit 0・何も書かない）。
+ * 工程表は設定済みなのに Keychain に読みの資格情報が無い＝not_configured を business-last.json に書く（host-health が no_credentials で知らせる・2026-11-16）。
  * 結果は <store>/business-last.json（件数とコードだけ・path は出さない）。host-health の business_backup が読む。
  */
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,8 @@ function readJson(f) { try { return JSON.parse(readFileSync(f, 'utf8')); } catch
 export async function businessCycle({ store = DEFAULT_STORE, now = Date.now(), services = businessServices } = {}) {
   const raw = readJson(path.join(store, 'config.json'));
   if (!raw) return { code: 'not_configured', exit: 0 };
+  // 他のユーザーが書ける config は使わない（Task Hub の loadLocalConfig と同じ決まり：書ける人が工程表の file と保存先を足せる・2026-11-16 監査）。知らせは Task Hub の側
+  try { if (statSync(path.join(store, 'config.json')).mode & 0o022) return { code: 'not_configured', exit: 0 }; } catch { return { code: 'not_configured', exit: 0 }; }
   let cfg;
   // dropbox の節が壊れている＝config_invalid（休眠と区別して見張りに出す・監査 nit 8）。他の誤りは Task Hub の側が知らせる
   try { cfg = validateConfig(raw); } catch (e) { return /dropbox/.test(String(e?.message)) ? write(store, { code: 'config_invalid', exit: 1 }, now) : { code: 'not_configured', exit: 0 }; }
@@ -35,16 +38,24 @@ export async function businessCycle({ store = DEFAULT_STORE, now = Date.now(), s
   const prev = readJson(path.join(store, BUSINESS_LAST)) ?? {};
   const weekly = [];
   let ran = false;
+  // business ごとの最後の結果（2026-11-16）：今回は時刻が来ていない business の失敗を、別の business の成功で消さない
+  // 前の版の記録（status が無い・code が problem）からの引き継ぎ：どの business の失敗か分からないので、全部を problem から始める（次に取れた business から ok に戻る・再検品）
+  const legacyBad = !prev.status && prev.code === 'problem';
+  const status = Object.fromEntries(targets.map((s) => [s.business, legacyBad || prev.status?.[s.business] === 'problem' ? 'problem' : prev.status?.[s.business] === 'ok' ? 'ok' : null]));
   for (const s of targets) {
     if (!weeklyDue(svc.backupDir, s.business, now)) continue;
     ran = true;
     let reader;
-    try { reader = svc.dropbox('read'); } catch { return write(store, { code: 'not_configured', exit: 0, last_weekly_ok_at: prev.last_weekly_ok_at ?? null }, now); }
-    for (const r of await weeklyBackup({ reader, scopes, business: s.business, dir: svc.backupDir, now })) weekly.push({ business: s.business, ...r });
+    // 工程表は設定済みで時刻も来たのに、読みの資格情報が無い（Keychain）＝取れていない。host-health の business_backup が no_credentials で知らせる
+    try { reader = svc.dropbox('read'); } catch { return write(store, { code: 'not_configured', exit: 0, status, last_weekly_ok_at: prev.last_weekly_ok_at ?? null }, now); }
+    const rows = await weeklyBackup({ reader, scopes, business: s.business, dir: svc.backupDir, now });
+    for (const r of rows) weekly.push({ business: s.business, ...r });
+    status[s.business] = rows.some((x) => x.code) ? 'problem' : 'ok';
   }
   if (!ran) return { code: 'not_due', exit: 0 };
   const bad = weekly.some((x) => x.code);
-  return write(store, { code: bad ? 'problem' : 'ok', exit: bad ? 1 : 0, weekly, last_weekly_ok_at: bad ? (prev.last_weekly_ok_at ?? null) : new Date(now).toISOString() }, now);
+  const anyBad = Object.values(status).includes('problem');
+  return write(store, { code: anyBad ? 'problem' : 'ok', exit: bad ? 1 : 0, weekly, status, last_weekly_ok_at: anyBad ? (prev.last_weekly_ok_at ?? null) : new Date(now).toISOString() }, now);
 }
 
 function write(store, r, now) {

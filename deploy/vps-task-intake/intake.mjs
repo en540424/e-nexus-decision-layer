@@ -64,13 +64,20 @@ export const CAPABILITIES_TEXT = [
   'Anything that needs approval is approved on that machine by the human operator, not through this interface.',
   'Tools: submit_task (propose a task with a stable idempotency_key), get_task_status (look up your own task by task_ref), list_capabilities.',
   'Do not put secrets, passwords or personal data in params or summary. You can only see tasks submitted with your own key.',
+  'If a task comes back with state "rejected" or "failed", read result.code; when result.hint is present it states the params that intent expects. Fix the params and submit again with a NEW idempotency_key.',
 ].join('\n');
+
+/** list_capabilities の本文：決まった説明＋その鍵（source）に許された intent・business（自分の範囲だけ。params の形は VPS は知らない＝Mac が result.hint で返す・2026-11-16） */
+export function capabilitiesText(scope) {
+  const list = (a) => (Array.isArray(a) ? (a.length ? a.join(', ') : '(none)') : '(not restricted here; the private machine still applies its own policy)');
+  return scope ? `${CAPABILITIES_TEXT}\nIntents your key may submit: ${list(scope.intents)}\nBusinesses your key may use: ${list(scope.businesses)}` : CAPABILITIES_TEXT;
+}
 
 export const TOOLS = Object.freeze([
   {
     name: 'submit_task',
     title: 'Submit a task proposal',
-    description: 'Propose a task. It is stored for review and is never executed automatically. Resubmitting the same idempotency_key returns the existing task_ref.',
+    description: 'Propose a task. It is stored for review and is never executed automatically. Resubmitting the same idempotency_key returns the existing task_ref. Call list_capabilities to see which intents and businesses your key may use. The result arrives later: poll get_task_status with the task_ref.',
     inputSchema: {
       type: 'object',
       required: ['idempotency_key', 'business', 'intent'],
@@ -78,7 +85,7 @@ export const TOOLS = Object.freeze([
         idempotency_key: { type: 'string', description: 'Stable id for this request, 8-128 chars of A-Z a-z 0-9 . _ : - . It becomes the task_ref.' },
         business: { type: 'string', description: 'Lowercase business id, e.g. biz-a.' },
         intent: { type: 'string', description: 'Dotted lowercase intent name, e.g. report.summarize.' },
-        params: { type: 'object', description: 'Intent specific parameters (JSON object). No secrets.' },
+        params: { type: 'object', description: 'Intent specific parameters (JSON object). No secrets. If the task comes back rejected with code params_invalid, get_task_status returns result.hint with the expected params.' },
         summary: { type: 'string', description: 'Short human readable summary (max 200 chars).' },
       },
     },
@@ -87,14 +94,14 @@ export const TOOLS = Object.freeze([
   {
     name: 'get_task_status',
     title: 'Get task status',
-    description: 'Look up the status of a task you submitted, by task_ref. Returns state "unknown" if there is none.',
+    description: 'Look up the status of a task you submitted, by task_ref. Returns state "unknown" if there is none. On state "rejected" or "failed", result.code is the reason and result.hint (when present) states the expected params.',
     inputSchema: { type: 'object', required: ['task_ref'], properties: { task_ref: { type: 'string' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: 'list_capabilities',
     title: 'List capabilities',
-    description: 'Explains what this intake does and does not do.',
+    description: 'Explains what this intake does and does not do, and lists the intents and businesses your key may use.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -324,7 +331,7 @@ export function startIntake({ channelKey, channel, sources, stateDir, port = 879
       if (typeof ref !== 'string' || !TASK_REF_RE.test(ref)) return toolError('invalid_task_ref');
       return toolResult(statusOf(source, ref));
     }
-    if (name === 'list_capabilities') return { content: [{ type: 'text', text: CAPABILITIES_TEXT }] };
+    if (name === 'list_capabilities') return { content: [{ type: 'text', text: capabilitiesText(srcMap.get(source)) }] };
     return null;
   }
 

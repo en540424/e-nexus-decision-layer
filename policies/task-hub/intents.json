@@ -9,13 +9,15 @@
       "class": "auto", "handler": "status.query", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
       "params_schema": { "type": "object", "additionalProperties": false, "properties": { "detail": { "type": "boolean" } } },
+      "usage": "params: {} or {\"detail\":true} (true is a JSON boolean, not a string). No other keys.",
       "note": "runtime-brief を読み、全体の水準・要確認の件数・生成時刻だけを返す。値・項目名は返さない。detail: true（2026-11-13）は区分ごとの水準（ok/warn/crit だけ・文も日数も無い）・その business の Task Hub の件数・Hermes の実行の件数・定期の回のコードを足す"
     },
     "task.status": {
       "class": "auto", "handler": "task.status", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "task_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" }, "view": { "type": "string", "enum": ["recent", "awaiting_approval", "failed", "hermes"] }, "limit": { "type": "integer" } } },
-      "note": "同じ依頼元・同じ business の依頼の状態だけ。それ以外は not_found（存在を教えない）。task_ref か view のどちらか 1 つ（2026-11-13）：view は自分の依頼の一覧（recent・承認待ち・失敗・Hermes）を新しい順に limit 件（既定 10・最大 20）。承認待ちは他の依頼元の分を件数だけ。hermes.task の task_ref は Hermes の状態と結果の要約も返す"
+      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "task_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" }, "view": { "type": "string", "enum": ["recent", "awaiting_approval", "failed", "succeeded", "hermes", "pending", "approval", "awaiting", "failure", "failures", "error", "errors", "success", "done", "completed", "all", "latest"] }, "limit": { "type": "integer" } } },
+      "usage": "params: {} (your recent tasks) | {\"view\":\"recent|awaiting_approval|failed|succeeded|hermes\",\"limit\":1-20} | {\"task_ref\":\"<idempotency_key of an earlier task>\"}. Use view OR task_ref, not both. No other keys.",
+      "note": "同じ依頼元・同じ business の依頼の状態だけ。それ以外は not_found（存在を教えない）。task_ref か view のどちらか 1 つ（2026-11-13）：view は自分の依頼の一覧（recent・承認待ち・失敗・成功・Hermes）を新しい順に limit 件（既定 10・最大 20）。承認待ちは他の依頼元の分を件数だけ。hermes.task の task_ref は Hermes の状態と結果の要約も返す。2026-11-16（本番で {} と view: pending が失敗した）：params が空なら recent。view の別名（pending・approval・awaiting → awaiting_approval、failure(s)・error(s) → failed、success・done・completed → succeeded、all・latest → recent）を受ける＝enum は handlers.mjs の VIEWS と VIEW_ALIASES の和。usage は形の誤りで断った時に依頼元へ返す呼び方の 1 行（hint）"
     },
     "mail.digest.ingest": {
       "class": "auto", "handler": "mail.digest.ingest", "timeout_ms": 15000, "max_params_bytes": 14000,
@@ -58,18 +60,21 @@
       "class": "auto", "handler": "report.morning", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
       "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "usage": "params: {} (no keys).",
       "note": "その business 自身の記録だけから作る決まった文面（3000 字まで）。他の business の記録は読まない"
     },
     "note.record": {
       "class": "ai_check", "handler": "note.record", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
       "params_schema": { "type": "object", "required": ["text"], "additionalProperties": false, "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 500 }, "case_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" } } },
+      "usage": "params: {\"text\":\"<1-500 chars>\",\"case_ref\":\"<optional: 1-64 chars of A-Z a-z 0-9 . _ : ->\"}. No other keys.",
       "note": "短いメモ（500 字まで）を business のローカルのメモに追記する。case_ref（任意・2026-11-13）は予定の case_ref と同じ値で、朝のまとめが予定とメモを結ぶ"
     },
     "hermes.task": {
       "class": "human_required", "handler": "hermes.task", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
       "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 } } },
+      "usage": "params: {\"title\":\"<1-120 chars>\",\"body\":\"<1-2000 chars>\"}. No other keys. It runs only after a human approves it on the Mac.",
       "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
     },
     "dropbox.search": {

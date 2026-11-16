@@ -118,7 +118,9 @@ export async function runOnce({ store, policy, handlers, config = policy?.config
         const wait = Math.min(backoffBaseMs * 2 ** (t.attempts - 1), BACKOFF_MAX_MS);
         t = store.transition(t.task_id, 'retry_wait', { event: 'retry_scheduled', code: err.code, patch: { next_try_at: iso(at + wait), lease_until: null }, at });
       } else {
-        t = store.transition(t.task_id, 'failed', { event: 'failed', code: err.code, patch: { lease_until: null }, at });
+        // params の形の誤りで終わった時は、台帳の呼び方の 1 行を添える（依頼元の Bot が自分で直せる・2026-11-16）
+        const hint = /^params_/.test(err.code) ? policy?.entry?.(t.intent)?.usage : undefined;
+        t = store.transition(t.task_id, 'failed', { event: 'failed', code: err.code, hint, patch: { lease_until: null }, at });
       }
       push(t, err.code);
       if (consecutive >= failureLimit) {

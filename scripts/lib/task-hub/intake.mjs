@@ -35,6 +35,7 @@ async function admit({ source, channel, envelope, store, policy, now }) {
   const made = store.createTask({
     source, channel, business: envelope.business, intent: envelope.intent, idempotency_key: envelope.idempotency_key, params: envelope.params, summary: envelope.summary,
     class: c.class, handler: c.handler, decision: { reasons: c.reasons, catalog_class: c.catalog_class, gateway: c.gateway }, state, code,
+    hint: c.invalid === 'params_invalid' ? c.entry?.usage : undefined, // 形の誤りで断った時だけ、台帳の呼び方の 1 行を添える（2026-11-16）
     content_digest: contentDigest({ source, business: envelope.business, intent: envelope.intent, params: envelope.params }),
     timeout_ms: c.entry?.timeout_ms ?? 10_000,
   }, now);

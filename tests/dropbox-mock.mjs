@@ -21,7 +21,7 @@ export async function startDropboxMock({ role = 'read', appKey = 'appkey000test'
       const rest = f.path.slice(base === '' ? 1 : base.length + 1);
       const i = rest.indexOf('/');
       if (i < 0) out.set(l, meta(f));
-      else { const fp = `${f.path.slice(0, f.path.length - rest.length)}${rest.slice(0, i)}`; out.set(fp.toLowerCase(), { '.tag': 'folder', name: rest.slice(0, i), path_display: fp }); }
+      else { const fp = `${f.path.slice(0, f.path.length - rest.length)}${rest.slice(0, i)}`; out.set(fp.toLowerCase(), { '.tag': 'folder', name: rest.slice(0, i), path_display: fp, id: `id:dir-${role}-${fp.length}` }); }
     }
     return [...out.values()];
   };

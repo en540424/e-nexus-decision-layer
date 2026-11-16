@@ -124,11 +124,11 @@ test('工程表のバックアップ：保存して読み直して確かめる�
 
 test('現場カルテ：未確認の項目・AI の囲み・Human の追記を 1 文字も変えずに差し込む・見出しが消えていても末尾に足す', () => {
   const k = newKarte({ caseId: 'C-001', siteName: '現場A', fields: { address: '東京都（作り物）', safety: '電線が近い' }, at: '2026-11-13T09:00:00Z', taskId: 't-1' });
-  assert.match(k, /## カーポート\n\n未確認\n/);
+  assert.match(k, /## カーポート\n\n未確認 <!-- placeholder -->\n/, '書式の「未確認」は印つき（2026-11-16）');
   assert.equal(provenance(k).ai_blocks, 4);
-  const human = k.replace('## 搬入経路\n\n未確認', '## 搬入経路\n\n未確認\n北側の道は 4t 車が入らない（Human が書いた）');
+  const human = k.replace('## 搬入経路\n\n未確認 <!-- placeholder -->', '## 搬入経路\n\n未確認\n北側の道は 4t 車が入らない（Human が書いた）'); // Human が印を消して自分の「未確認」にした＝Human の文
   const after = insertIntoSection(human, { section: 'access', value: '西側の駐車場から搬入できる', at: '2026-11-14T00:00:00Z', taskId: 't-2', dated: '2026-11-14' });
-  assert.ok(after.includes('北側の道は 4t 車が入らない（Human が書いた）'));
+  assert.ok(after.includes('## 搬入経路\n\n未確認\n北側の道は 4t 車が入らない（Human が書いた）\n<!-- ai:'), 'Human が書いた「未確認」は残す');
   assert.match(sectionText(after, 'access'), /北側の道は 4t 車が入らない[\s\S]*- 2026-11-14：西側の駐車場から搬入できる/);
   const noHeading = human.replace('## 未確認事項', '## （Human が名前を変えた）');
   assert.match(insertIntoSection(noHeading, { section: 'unknowns', value: '高さ', at: 'x', taskId: 't-3' }), /\n## 未確認事項\n\n<!-- ai:x task=t-3 -->\n高さ\n<!-- \/ai -->\n$/);

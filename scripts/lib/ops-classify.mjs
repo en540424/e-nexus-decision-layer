@@ -35,6 +35,12 @@ const TABLE = Object.freeze([
   [/^notify_channel$/, { class: 'human', cause: '通知の Webhook の失効か削除', next: 'Human が Webhook を作り直す', checks: ['bash deploy/macos/connect-discord-alerts.sh'] }],
   [/^status_summary$/, { class: 'ai', cause: '要約を書けない。フォルダの権限か入力境界の検査', next: 'Claude Code が記録のコードを確かめる', checks: ['ls -ld /Users/Shared/e-nexus-hermes/status'] }],
   [/^task_hub_cycle$/, { class: 'ai', cause: 'Task Hub の回（VPS からの取得・取り込み・実行・結果の返却）の失敗か停止', next: 'Claude Code が手で 1 回回して段ごとの code を見る（VPS が止まっていても依頼は VPS に 7 日残る）', checks: ['node scripts/task-hub-cycle.mjs'] }],
+  // 2026-11-16：11-13 に足した見張り（承認待ち・queue・Hermes の業務・工程表のバックアップ・ドコモの読み取り）に仕分けが無く、Human の一覧に「分類の無い項目」とだけ出ていた
+  [/^task_hub_approval$/, { class: 'human', cause: 'Task Hub に承認待ちの依頼がある', next: 'Human が端末で全文を読んで承認か却下（AI は承認しない）', checks: ['node scripts/task-hub.mjs human'] }],
+  [/^task_hub_queue$/, { class: 'ai', cause: 'Task Hub の queue に実行されない依頼か途中で止まった依頼がある', next: 'Claude Code が一覧で確かめる。止まった依頼を閉じるのは Human（dismiss）', checks: ['node scripts/task-hub.mjs list', 'node scripts/task-hub.mjs list --state stopped'] }],
+  [/^hermes_jobs$/, { class: 'human', cause: 'Hermes の業務が実行されていないか、時間切れ・結果なし・中断で終わった', next: 'Human が実行かやり直しを決める（有料・AI は実行しない）', checks: ['node scripts/hermes-work.mjs status'] }],
+  [/^business_backup$/, { class: 'ai', cause: '工程表の週 1 回のバックアップの失敗か未実行。Dropbox の資格情報・設定・file の取得のどれか', next: 'Claude Code が記録のコードを確かめる。資格情報の登録・更新は Human', checks: ['node scripts/business-cycle.mjs'] }],
+  [/^docomo_fetch$/, { class: 'ai', cause: 'ドコモメールの読み取りの失敗が続いている。資格情報の期限・パスワードの変更・回線のどれか', next: 'Claude Code が出力のコードを確かめる。資格情報の更新は Human', checks: ['node bin/dml-fetch.mjs --allow-live（docomo-mail-lab）'] }],
   [/^task_hub_audit$/, { class: 'human', cause: 'Task Hub の監査の鎖の異常（2 つの書き手の分岐・消えた行・改ざんのどれか）', next: 'Human が verify-audit で確かめるまで承認しない（docs/task-hub.md §13）', checks: ['node scripts/task-hub.mjs verify-audit'] }],
   [/^monitor_/, { class: 'human', cause: '監視そのものの異常か定義の変更', next: '心当たりがなければ Human が確かめる', checks: ['node scripts/runtime-ops.mjs acceptance'] }],
   [/^hermes_isolation$/, { class: 'human', cause: 'Hermes の隔離の崩れ', next: 'Human がすぐ確かめる', checks: ['node scripts/runtime-ops.mjs why hermes_isolation'] }],

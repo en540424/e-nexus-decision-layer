@@ -46,45 +46,53 @@ export function createDropbox({ role, credentials, fetchImpl = fetch, api = API,
   let token = null;
   let tokenUntil = 0;
 
-  async function call(url, init, signal) {
+  /**
+   * 1 回の要求。consume(res) が本文を読み終えるまでが 1 回（2026-11-16 監査）：前は header が届いた所で時間切れと中止を外していたので、
+   * 本文の読み込みが止まると終わらず、runner が時間切れにした後の古い試行が後から書きに行けた。中止済みの signal では要求を出さない
+   */
+  async function call(url, init, signal, consume = (res) => res, ms = timeoutMs) {
+    if (signal?.aborted) throw new DropboxError('aborted', { retryable: true });
     const ac = new AbortController();
     const onAbort = () => ac.abort();
     signal?.addEventListener?.('abort', onAbort);
-    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    const timer = setTimeout(() => ac.abort(), ms);
+    const headTimer = setTimeout(() => ac.abort(), Math.min(ms, timeoutMs)); // 応答の先頭（header）までは 1 回ぶんの上限のまま。長いのは本文だけ
+    // fetch の実装が本文の読み込みで中止に従わなくても待たない
+    const stopped = new Promise((_, reject) => { ac.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); });
+    stopped.catch(() => {});
     try {
-      return await fetchImpl(url, { ...init, signal: ac.signal });
+      return await Promise.race([(async () => { const res = await fetchImpl(url, { ...init, signal: ac.signal }); clearTimeout(headTimer); return consume(res); })(), stopped]);
     } catch (e) {
+      if (e instanceof DropboxError) throw e;
       throw new DropboxError(signal?.aborted ? 'aborted' : ac.signal.aborted ? 'dropbox_timeout' : 'dropbox_network', { retryable: true });
-    } finally { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); }
+    } finally { clearTimeout(timer); clearTimeout(headTimer); signal?.removeEventListener?.('abort', onAbort); }
   }
+  const withJson = async (res) => { let j = null; try { j = await res.json(); } catch { /* 空・形が違う */ } return { res, j }; };
+  const TRANSFER_MS = timeoutMs * 4; // file の上げ下ろしは本文が大きい
   async function accessToken(signal) {
     if (token && now() < tokenUntil) return token;
     const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: credentials.refreshToken, client_id: credentials.appKey });
-    const res = await call(`${api}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }, signal);
-    let j = null;
-    try { j = await res.json(); } catch { /* 形が違う */ }
+    const { res, j } = await call(`${api}/oauth2/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }, signal, withJson);
     if (!res.ok || typeof j?.access_token !== 'string') throw new DropboxError(res.status === 400 || res.status === 401 ? 'dropbox_auth' : errorCode(res.status, j), { status: res.status, retryable: res.status >= 500 });
     token = j.access_token;
     tokenUntil = now() + Math.max(60, Number(j.expires_in) || 3600) * 1000 - 120_000;
     return token;
   }
   async function rpc(endpoint, args, signal) {
-    const res = await call(`${api}/2/${endpoint}`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'content-type': 'application/json' }, body: JSON.stringify(args) }, signal);
-    let j = null;
-    try { j = await res.json(); } catch { /* 空 */ }
+    const { res, j } = await call(`${api}/2/${endpoint}`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'content-type': 'application/json' }, body: JSON.stringify(args) }, signal, withJson);
     if (!res.ok) throw new DropboxError(errorCode(res.status, j), { status: res.status, retryable: res.status === 429 || res.status >= 500 });
     return j;
   }
 
   const api_ = {
     role,
-    /** フォルダの一覧（名前・path・種類・大きさ・rev・更新時刻だけ）。recursive は既定 false。上限 limit 件 */
-    async list(path, { recursive = false, limit = 500, signal } = {}) {
+    /** フォルダの一覧（名前・path・種類・大きさ・rev・更新時刻だけ）。recursive は既定 false。上限 limit 件。ids：Dropbox の id も返す（dropbox-auth の App folder の確かめだけが使う） */
+    async list(path, { recursive = false, limit = 500, ids = false, signal } = {}) {
       const entries = [];
       let j = await rpc('files/list_folder', { path, recursive, limit: Math.min(limit, 2000), include_deleted: false }, signal);
       for (;;) {
         for (const e of j.entries ?? []) {
-          entries.push({ tag: e['.tag'], name: e.name, path: e.path_display, ...(e['.tag'] === 'file' ? { size: e.size, rev: e.rev, server_modified: e.server_modified, content_hash: e.content_hash } : {}) });
+          entries.push({ tag: e['.tag'], name: e.name, path: e.path_display, ...(ids ? { id: e.id } : {}), ...(e['.tag'] === 'file' ? { size: e.size, rev: e.rev, server_modified: e.server_modified, content_hash: e.content_hash } : {}) });
           if (entries.length >= limit) return { entries, truncated: true };
         }
         if (!j.has_more) return { entries, truncated: false };
@@ -96,20 +104,22 @@ export function createDropbox({ role, credentials, fetchImpl = fetch, api = API,
       const j = await rpc('files/search_v2', { query: String(query).slice(0, 200), options: { path, max_results: Math.min(max, 100), file_status: 'active', filename_only: filenameOnly } }, signal);
       return (j.matches ?? []).map((m) => m.metadata?.metadata).filter((x) => x && x['.tag'] === 'file').map((e) => ({ name: e.name, path: e.path_display, size: e.size, rev: e.rev, server_modified: e.server_modified }));
     },
-    async metadata(path, { signal } = {}) {
+    async metadata(path, { ids = false, signal } = {}) {
       const e = await rpc('files/get_metadata', { path }, signal);
-      return { tag: e['.tag'], name: e.name, path: e.path_display, ...(e['.tag'] === 'file' ? { size: e.size, rev: e.rev, server_modified: e.server_modified, content_hash: e.content_hash } : {}) };
+      return { tag: e['.tag'], name: e.name, path: e.path_display, ...(ids ? { id: e.id } : {}), ...(e['.tag'] === 'file' ? { size: e.size, rev: e.rev, server_modified: e.server_modified, content_hash: e.content_hash } : {}) };
     },
     /** 1 file を取る。Dropbox の content_hash と照らして壊れていないことを確かめる（違えば dropbox_hash_mismatch） */
     async download(path, { signal, maxBytes = MAX_DOWNLOAD_BYTES } = {}) {
-      const res = await call(`${content}/2/files/download`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'dropbox-api-arg': headerJson({ path }) } }, signal);
-      if (!res.ok) { let j = null; try { j = await res.json(); } catch { /* 空 */ } throw new DropboxError(errorCode(res.status, j), { status: res.status, retryable: res.status === 429 || res.status >= 500 }); }
-      let meta;
-      try { meta = JSON.parse(res.headers.get('dropbox-api-result')); } catch { throw new DropboxError('dropbox_bad_response'); }
-      const len = Number(res.headers.get('content-length'));
-      if (Number.isFinite(len) && len > maxBytes) throw new DropboxError('dropbox_too_large');
-      const bytes = Buffer.from(await res.arrayBuffer());
-      if (bytes.length > maxBytes) throw new DropboxError('dropbox_too_large');
+      const { meta, bytes } = await call(`${content}/2/files/download`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'dropbox-api-arg': headerJson({ path }) } }, signal, async (res) => {
+        if (!res.ok) { let j = null; try { j = await res.json(); } catch { /* 空 */ } throw new DropboxError(errorCode(res.status, j), { status: res.status, retryable: res.status === 429 || res.status >= 500 }); }
+        let m;
+        try { m = JSON.parse(res.headers.get('dropbox-api-result')); } catch { throw new DropboxError('dropbox_bad_response'); }
+        const len = Number(res.headers.get('content-length'));
+        if (Number.isFinite(len) && len > maxBytes) throw new DropboxError('dropbox_too_large');
+        const b = Buffer.from(await res.arrayBuffer());
+        if (b.length > maxBytes) throw new DropboxError('dropbox_too_large');
+        return { meta: m, bytes: b };
+      }, TRANSFER_MS);
       if (typeof meta?.content_hash !== 'string' || contentHash(bytes) !== meta.content_hash) throw new DropboxError('dropbox_hash_mismatch', { retryable: true });
       return { bytes, meta: { name: meta.name, path: meta.path_display, rev: meta.rev, size: meta.size, server_modified: meta.server_modified, content_hash: meta.content_hash } };
     },
@@ -121,9 +131,7 @@ export function createDropbox({ role, credentials, fetchImpl = fetch, api = API,
      */
     api_.upload = async (path, bytes, { rev = null, signal } = {}) => {
       const mode = rev ? { '.tag': 'update', update: rev } : { '.tag': 'add' };
-      const res = await call(`${content}/2/files/upload`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'content-type': 'application/octet-stream', 'dropbox-api-arg': headerJson({ path, mode, autorename: false, mute: true, strict_conflict: true }) }, body: bytes }, signal);
-      let j = null;
-      try { j = await res.json(); } catch { /* 空 */ }
+      const { res, j } = await call(`${content}/2/files/upload`, { method: 'POST', headers: { authorization: `Bearer ${await accessToken(signal)}`, 'content-type': 'application/octet-stream', 'dropbox-api-arg': headerJson({ path, mode, autorename: false, mute: true, strict_conflict: true }) }, body: bytes }, signal, withJson, TRANSFER_MS);
       if (!res.ok) throw new DropboxError(errorCode(res.status, j), { status: res.status, retryable: res.status === 429 || res.status >= 500 });
       if (j?.content_hash !== contentHash(bytes)) throw new DropboxError('dropbox_hash_mismatch');
       return { path: j.path_display, rev: j.rev, size: j.size, content_hash: j.content_hash, server_modified: j.server_modified };

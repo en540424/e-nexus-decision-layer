@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { addSource, normalizeSources, setSourceScope, startIntake } from '../deploy/vps-task-intake/intake.mjs';
+import { CAPABILITIES_TEXT, addSource, normalizeSources, setSourceScope, startIntake } from '../deploy/vps-task-intake/intake.mjs';
 
 const KEY = Buffer.from('ab'.repeat(32), 'hex');
 const BOT = `etk_${'1'.repeat(64)}`;
@@ -61,4 +61,36 @@ test('setSourceScope：鍵の hash は変えずに intents・businesses を替�
     assert.throws(() => setSourceScope(file, 'nobody', ['status.query'], null), /not found/);
     assert.throws(() => setSourceScope(file, 'grok-commander', ['status.query'], ['Bad']), /invalid/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('list_capabilities：その鍵に許された intent・business だけを添える（他の source の範囲は出さない）・道具の説明は result.hint を案内する（2026-11-16）', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'edl-ti-caps-'));
+  const OTHER = `etk_${'2'.repeat(64)}`;
+  const OPEN = `etk_${'3'.repeat(64)}`;
+  const sources = {
+    'grok-commander': { key_sha256: sha(BOT), intents: ['status.query', 'task.status'], businesses: ['e-nexus'] },
+    'bot-other': { key_sha256: sha(OTHER), intents: ['secret-intent.x'], businesses: ['biz-other'] },
+    'bot-open': { key_sha256: sha(OPEN) },
+  };
+  const r = await startIntake({ channelKey: KEY, channel: 'vps-intake', sources, stateDir: path.join(root, 'state'), port: 0, clock: () => Date.parse('2026-11-16T00:00:00Z'), log: () => {} });
+  const rpc = async (bearer, method, params) => (await (await fetch(`http://127.0.0.1:${r.port}/mcp`, { method: 'POST', signal: AbortSignal.timeout(10_000), headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${bearer}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json()).result;
+  try {
+    const mine = (await rpc(BOT, 'tools/call', { name: 'list_capabilities', arguments: {} })).content[0].text;
+    assert.ok(mine.startsWith(CAPABILITIES_TEXT));
+    assert.match(mine, /Intents your key may submit: status\.query, task\.status\n/);
+    assert.match(mine, /Businesses your key may use: e-nexus$/);
+    assert.ok(!mine.includes('secret-intent') && !mine.includes('biz-other') && !mine.includes('bot-other'), '他の source の範囲・名前は出さない');
+    assert.match(mine, /result\.hint/);
+    const open = (await rpc(OPEN, 'tools/call', { name: 'list_capabilities', arguments: {} })).content[0].text;
+    assert.match(open, /Intents your key may submit: \(not restricted here/);
+    const tools = (await rpc(BOT, 'tools/list', {})).tools;
+    assert.match(tools.find((t) => t.name === 'submit_task').inputSchema.properties.params.description, /result\.hint/);
+    assert.match(tools.find((t) => t.name === 'get_task_status').description, /result\.hint/);
+    assert.match(tools.find((t) => t.name === 'submit_task').description, /list_capabilities/);
+    // 説明に実在の business・intent の名前を書かない（公開 repo・Bot ごとに範囲が違う）
+    assert.ok(!JSON.stringify(tools).includes('e-nexus') && !JSON.stringify(tools).includes('task.status'));
+  } finally {
+    await new Promise((res) => { r.server.close(res); });
+    rmSync(root, { recursive: true, force: true });
+  }
 });

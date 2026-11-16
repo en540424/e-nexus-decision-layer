@@ -530,7 +530,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^status_summary$/, /^(?:written|not_configured|dir_unsafe|write_failed|boundary_blocked)$/],
   [/^heartbeat$/, /^(?:sent|failed|rejected|config_invalid)$/],
   [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push|business)(?:,(?:pull|intake|run|collect_hermes|push|business)){0,5})?)$/],
-  [/^business_backup$/, /^(?:ok|problem|stale|config_invalid)$/],
+  [/^business_backup$/, /^(?:ok|problem|stale|config_invalid|no_credentials)$/],
   [/^task_hub_approval$/, /^\d{1,3}$/],
   [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'check_failed')],
   [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],

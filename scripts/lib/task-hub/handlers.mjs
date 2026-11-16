@@ -95,8 +95,20 @@ const VIEWS = Object.freeze({
   recent: () => true,
   awaiting_approval: (t) => t.state === 'awaiting_approval',
   failed: (t) => ['failed', 'blocked', 'stopped', 'expired', 'rejected'].includes(t.state),
+  succeeded: (t) => t.state === 'succeeded',
   hermes: (t) => t.intent === 'hermes.task',
 });
+/**
+ * view の別名（2026-11-16）。依頼元は LLM の Bot で、台帳の語を知らないまま普通の語で呼ぶ：本番で `{}` と `{"view":"pending"}` が失敗した。
+ * 意味が 1 つに決まる語だけを正式な view へ寄せる（結果の view は正式な語で返す）。台帳（intents.json）の enum は VIEWS と別名の和（test が照合する）
+ */
+export const VIEW_ALIASES = Object.freeze({
+  pending: 'awaiting_approval', approval: 'awaiting_approval', awaiting: 'awaiting_approval',
+  failure: 'failed', failures: 'failed', error: 'failed', errors: 'failed',
+  success: 'succeeded', done: 'succeeded', completed: 'succeeded',
+  all: 'recent', latest: 'recent',
+});
+export const VIEW_NAMES = Object.freeze(Object.keys(VIEWS));
 /** hermes.task の Hermes の状態（と結果の要約：その依頼元へ板で返したものと同じ文） */
 function hermesOf(store, t) {
   if (t.intent !== 'hermes.task' || t.state !== 'succeeded') return undefined;
@@ -106,9 +118,13 @@ function hermesOf(store, t) {
 }
 
 const taskStatus = ({ task, store }) => {
-  const { task_ref: ref, view } = task.params;
-  // どちらか 1 つ。依頼元の形の誤りは想定内（runner の連続失敗に数えない＝Bot の誤った呼び方 3 回で queue 全体を PAUSE にしない・2026-11-13 監査 F3）
-  if ((ref === undefined) === (view === undefined)) throw fail('params_task_ref_or_view', { expected: true });
+  const { task_ref: ref } = task.params;
+  // 何も無い＝自分の依頼の新しい順（recent）。「さっきの仕事は？」を params なしで聞けるようにする（2026-11-16）
+  const asked = task.params.view ?? (ref === undefined ? 'recent' : undefined);
+  const view = asked === undefined ? undefined : (Object.hasOwn(VIEW_ALIASES, asked) ? VIEW_ALIASES[asked] : asked);
+  // task_ref と view の両方は受けない（どちらを聞いたのか決められない）。依頼元の形の誤りは想定内（runner の連続失敗に数えない＝Bot の誤った呼び方 3 回で queue 全体を PAUSE にしない・2026-11-13 監査 F3）
+  if (ref !== undefined && view !== undefined) throw fail('params_task_ref_or_view', { expected: true });
+  if (view !== undefined && !Object.hasOwn(VIEWS, view)) throw fail('params_view_unknown', { expected: true }); // 台帳の enum が先に止める。台帳と食い違った時の 2 重
   if (view !== undefined) {
     // 自分（同じ依頼元・同じ business）の依頼だけ。他の依頼元の承認待ちは件数だけ（存在の詳細を教えない）
     const limit = Number.isInteger(task.params.limit) ? Math.min(Math.max(task.params.limit, 1), 20) : 10;

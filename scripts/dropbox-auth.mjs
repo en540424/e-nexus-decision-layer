@@ -7,7 +7,9 @@
  *
  * PKCE（client secret を使わない）・offline（refresh token）。許された scope を確かめる：
  *   read  ＝ files.content.write を持っていたら保存しない（read_app_can_write）＝読みの資格情報で書けないことを保証する
- *   write ＝ files.content.write が要る。App folder の app であることは App Console で Human が選ぶ（この script は最後に y で確かめる）
+ *   write ＝ files.content.write が要る。App folder の app であることは App Console で Human が選ぶ（この script は y で確かめる）。
+ *           読みの資格情報が先に入っていれば、自動でも確かめる（2026-11-16 監査）：Dropbox の一番上の項目を書きの token で引き、同じ id が見えたら
+ *           Full Dropbox の app＝保存しない（write_app_not_app_folder）。**read を先に、write を後に**登録する
  * 保存：Keychain（E-NEXUS/edl/dropbox-<role>-app-key・-refresh-token・account e-nexus）。値は画面・引数に出さない（security -i の標準入力）
  * 確かめ：read は Dropbox の一番上の一覧の件数、write は App folder の一覧の件数だけを出す（名前は出さない）
  */
@@ -17,6 +19,7 @@ import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDropbox, KEYCHAIN_NAMES } from './lib/dropbox/client.mjs';
+import { dropboxCredentials } from './lib/dropbox/keychain.mjs';
 
 const b64url = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 export function pkce(rand = randomBytes) {
@@ -40,6 +43,27 @@ export function checkScopes(role, scopeText) {
   if ([...s].some((x) => !ALLOWED_SCOPES[role].has(x))) return role === 'read' ? 'read_app_too_broad' : 'write_app_too_broad';
   return null;
 }
+/**
+ * 書きの app が App folder の app か（Dropbox 全体を見られないか）を確かめる。reader：読みの client（Full Dropbox）・writer：書きの client。
+ * Dropbox の id は名前空間が違っても同じ物には同じ値：一番上の項目と同じ path を書きの token で引いて同じ id が返れば、書きの app も Dropbox 全体を見ている。
+ * 'full_dropbox'（保存しない）／'app_folder'（1 件以上を引いて、どれも見えないか別の物）／'unverified'（一番上が空・引けなかった）。名前・id は返さない
+ */
+export async function writeAppNamespace(reader, writer, { max = 5 } = {}) {
+  let top;
+  try { top = await reader.list('', { limit: 20, ids: true }); } catch { return 'unverified'; }
+  let checked = 0;
+  for (const e of top.entries.filter((x) => typeof x.id === 'string' && typeof x.path === 'string').slice(0, max)) {
+    let m;
+    try { m = await writer.metadata(e.path, { ids: true }); } catch (err) {
+      if (/_not_found$/.test(String(err?.code ?? ''))) { checked += 1; continue; }
+      return 'unverified';
+    }
+    if (m.id === e.id) return 'full_dropbox';
+    checked += 1;
+  }
+  return checked ? 'app_folder' : 'unverified';
+}
+
 /** Keychain に入れる（値は security -i の標準入力・引数に置かない） */
 export function storeKeychain(name, value, run = spawnSync) {
   if (!/^[A-Za-z0-9._~+/=-]{8,512}$/.test(value)) return false;
@@ -70,6 +94,17 @@ if (isMain) {
   if (!res.ok || typeof j?.refresh_token !== 'string') { console.log(`止めました：token を受け取れなかった（HTTP ${res.status}）`); process.exit(1); }
   const bad = checkScopes(role, j.scope);
   if (bad) { console.log(`止めました：${bad}（App Console の Permissions を docs/dropbox-business.md §1 のとおりにして Submit → もう一度）`); process.exit(1); }
+  if (role === 'write') {
+    // 保存の前に：App folder の app であることを、読みの資格情報があれば自動で確かめる
+    const readCreds = dropboxCredentials('read');
+    if (!readCreds) console.log('注意：読みの資格情報がまだ無いので、App folder の app であることを自動では確かめられない（上の y の答えだけ）。--role read を先に登録してから、もう一度 --role write を実行すると確かめられる');
+    else {
+      const v = await writeAppNamespace(createDropbox({ role: 'read', credentials: readCreds }), createDropbox({ role: 'write', credentials: { appKey, refreshToken: j.refresh_token } }));
+      if (v === 'full_dropbox') { console.log('止めました：write_app_not_app_folder（この app は Dropbox 全体が見える。App Console で Access type が「App folder」の app を作り直す。docs/dropbox-business.md §1）'); process.exit(1); }
+      if (v === 'unverified') { console.log('止めました：App folder の app であることを確かめられなかった（通信・Dropbox の一番上が空）。もう一度実行する（続くなら Claude Code に伝える）'); process.exit(1); }
+      console.log('確かめ：書きの app からは Dropbox の一番上の項目が見えない（App folder の app）');
+    }
+  }
   const n = KEYCHAIN_NAMES[role];
   if (!storeKeychain(n.appKey, appKey) || !storeKeychain(n.refreshToken, j.refresh_token)) { console.log('止めました：Keychain に入れられなかった'); process.exit(1); }
   try {

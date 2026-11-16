@@ -118,7 +118,8 @@ export function taskHubWorkItems(dir, now = Date.now()) {
 
 /**
  * 工程表の週 1 回のバックアップ（2026-11-13・scripts/business-cycle.mjs の business-last.json）。無ければ項目なし（休眠）。
- * problem：最後の週の回で失敗した file がある／stale：成功した週の回が 8 日より前（Mac が止まっていた・取れない状態が続いた）。値はコードだけ
+ * problem：最後の週の回で失敗した file がある／stale：成功した週の回が 8 日より前（Mac が止まっていた・取れない状態が続いた）／
+ * no_credentials（2026-11-16）：工程表は設定済みで週の時刻も来たのに、読みの資格情報が無くて 1 度も取れていない（前は ok と出て、誰も気づけなかった）。値はコードだけ
  */
 export const BUSINESS_WATCH_ID = 'business_backup';
 export function businessBackupItem(dir, now = Date.now()) {
@@ -129,6 +130,7 @@ export function businessBackupItem(dir, now = Date.now()) {
     if (!j) return item('warn', 'problem');
     if (j.code === 'config_invalid') return item('warn', 'config_invalid');
     if (j.code === 'problem') return item('warn', 'problem');
+    if (j.code === 'not_configured') return item('warn', 'no_credentials'); // この code を file に書くのは「工程表は設定済み・資格情報が無い」時だけ（business-cycle.mjs）
     const okAt = Date.parse(j.last_weekly_ok_at);
     if (Number.isFinite(okAt) && now - okAt > 8 * 86_400_000) return item('warn', 'stale');
     return item('ok', 'ok');

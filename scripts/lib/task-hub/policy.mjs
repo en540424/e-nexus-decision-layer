@@ -9,7 +9,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { loadScopes } from '../dropbox/scope.mjs';
 import { createDecisionLayerEngine, createGateway, createMemoryMeter } from '../../../src/index.mjs';
 import { interpretEnvelope } from '../../../consumer-kit/node/interpret.mjs';
-import { DEFAULT_MAX_PARAMS_BYTES, INTENT_RE, checkSpec } from './envelope.mjs';
+import { DEFAULT_MAX_PARAMS_BYTES, INTENT_RE, checkSpec, isHint } from './envelope.mjs';
 import { ID_RE } from './wire.mjs';
 
 export const CLASSES = Object.freeze(['auto', 'ai_check', 'human_required', 'forbidden']);
@@ -42,6 +42,8 @@ export function loadCatalog(file = DEFAULT_CATALOG) {
     if (!WORK_CENTERS.includes(f.work_center) || !MODES.includes(f.execution_mode) || !ENVS.includes(f.environment) || FLAG_BOOLS.some((k) => typeof f[k] !== 'boolean')) bad(`${name}.flags`);
     if ((i.class === 'auto' || i.class === 'ai_check') && FLAG_BOOLS.some((k) => f[k])) bad(`${name}: ${i.class} must have all risk flags false`);
     if (i.max_params_bytes !== undefined && !(Number.isInteger(i.max_params_bytes) && i.max_params_bytes <= 14_000)) bad(`${name}.max_params_bytes`);
+    // usage（2026-11-16）：params の形の誤りで断った時に依頼元へ返す、呼び方の 1 行（台帳に書いた決まった文だけ＝依頼の中身は混ざらない）
+    if (i.usage !== undefined && !isHint(i.usage)) bad(`${name}.usage`);
   }
   return c;
 }

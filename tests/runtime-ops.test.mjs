@@ -415,3 +415,15 @@ test('Task Hub の件数：tasks/ の FIFO で止まらず・symlink をたど�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('humanRequired：11-13 に足した見張りにも仕分けがある（「分類の無い項目」と出さない）・Task Hub の行と同じ項目は 2 回出さない（2026-11-16）', async () => {
+  const { classify } = await import('../scripts/lib/ops-classify.mjs');
+  for (const id of ['task_hub_approval', 'task_hub_queue', 'hermes_jobs', 'business_backup', 'docomo_fetch']) assert.notEqual(classify(id).cause, '分類の無い項目', id);
+  assert.deepEqual(['task_hub_approval', 'hermes_jobs'].map((id) => classify(id).class), ['human', 'human'], '承認と有料の実行は Human');
+  const last = { items: [{ id: 'task_hub_approval', level: 'warn', value: '1' }, { id: 'hermes_jobs', level: 'warn', value: 'not_run' }, { id: 'business_backup', level: 'warn', value: 'no_credentials' }] };
+  const both = humanRequired({ last, taskHub: { awaiting: 1, hermes: 'not_run' }, now: NOW }).map((r) => r.id);
+  assert.deepEqual(both.sort(), ['task-hub:awaiting', 'task-hub:hermes'], 'Task Hub の行だけ（business_backup は Claude Code の範囲）');
+  const alone = humanRequired({ last, taskHub: null, now: NOW });
+  assert.deepEqual(alone.map((r) => r.id).sort(), ['item:hermes_jobs', 'item:task_hub_approval']);
+  assert.ok(alone.every((r) => !r.title.includes('分類の無い項目')));
+});

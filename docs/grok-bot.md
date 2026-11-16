@@ -11,7 +11,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 | intent | 実装 | 本番 | 外への副作用 | AI 課金 | Human 承認 | 範囲 | 返し方 |
 |---|---|---|---|---|---|---|---|
 | `status.query` | 済 | 稼働（11-13 に往復検収） | なし（読むだけ） | なし | 不要（auto） | Mac の監視の要約の水準と件数。`detail: true` で区分の水準・Task Hub と Hermes の件数 | `get_task_status` の `result` |
-| `task.status` | 済 | 稼働 | なし | なし | 不要（auto） | 自分（EN司令塔）が出した e-nexus の依頼だけ。`view` で一覧（recent・承認待ち・失敗・Hermes） | 同上 |
+| `task.status` | 済 | **EN司令塔からの一覧は再検収待ち**（11-15 に本番で 2 回失敗 → 11-16 に直し、Mac の本番の store で検収済み。§7） | なし | なし | 不要（auto） | 自分（EN司令塔）が出した e-nexus の依頼だけ。`view` で一覧（recent・承認待ち・失敗・成功・Hermes）。params なしは recent | 同上 |
 | `report.morning` | 済 | 稼働 | なし | なし | 不要（auto） | e-nexus の記録（メール・予定の要約・メモ）と稼働状況・承認待ち・Hermes の件数から決まった文面 | 同上（`result.text`） |
 | `note.record` | 済 | 稼働 | Mac の手元のメモに 1 件 | なし | 不要（ai_check＝Decision Layer が candidate の時だけ無人） | e-nexus のメモ（500 字・`case_ref` 任意） | 同上（`recorded: true`） |
 | `hermes.task` | 済 | 稼働（承認の後に Human が 1 件ずつ実行） | Hermes が 1 回動く（Mac の中だけ・sandbox） | **あり**（Haiku・1 件で API 2〜4 回） | **毎回必要**（Mac の端末で全文を読んで確認コード） | 依頼の本文の範囲だけ。Hermes が読めるのは依頼の file と状態の要約だけ | 同上の `result.hermes`（waiting → running → done／failed＋summary） |
@@ -21,7 +21,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 ## 2. 呼び方の例（submit_task の arguments）
 
 - 状況：`{ "idempotency_key": "grok-status-20261113-0900", "business": "e-nexus", "intent": "status.query", "params": { "detail": true } }`
-- 自分の依頼の一覧：`{ …, "intent": "task.status", "params": { "view": "recent", "limit": 10 } }`（承認待ちは `"view": "awaiting_approval"`、Hermes の結果は `"view": "hermes"`）
+- 自分の依頼の一覧：`{ …, "intent": "task.status", "params": { "view": "recent", "limit": 10 } }`（承認待ちは `"view": "awaiting_approval"`、失敗は `"view": "failed"`、終わった依頼は `"view": "succeeded"`、Hermes の結果は `"view": "hermes"`。`"params": {}` は recent と同じ。`limit` は 1〜20 の数）
 - 1 件の状態：`{ …, "intent": "task.status", "params": { "task_ref": "<前に出した idempotency_key>" } }`
 - 朝のまとめ：`{ …, "intent": "report.morning", "params": {} }`
 - メモ：`{ …, "intent": "note.record", "params": { "text": "現場 A は来週の金曜に図面の最新版", "case_ref": "case-a" } }`
@@ -29,12 +29,23 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 
 決まり：`idempotency_key` は毎回新しい（同じ key の出し直しは前の結果を返すだけ）。結果は 1〜5 分後に `get_task_status`（`task_ref`＝idempotency_key）。`params`・`summary` に秘密・パスワード・鍵を入れない（鍵の形の値は依頼ごと拒否される）。
 
+**断られた時（2026-11-16）**：`get_task_status` の `result` が `state: "rejected"`／`"failed"` で `code` が `params_…` の時は、`result.hint` にその intent の正しい params の形が 1 行で入る（台帳に書いた決まった文＝依頼の中身は混ざらない）。Bot は hint の形に直して、**新しい** idempotency_key で出し直す。params に台帳に無い key（例：`status`・`filter`）を足すと `params_invalid`。
+
 ## 3. Grok Bot の側の設定（Human）
 
 - **Ask First の候補**：`submit_task`＝Ask First を推奨（`hermes.task` は Mac で承認されるまで動かないが、課金の依頼を Bot が勝手に積まないため。読むだけの依頼を Bot に自由に出させたい時は Auto でもよい＝VPS と Mac が intent・business を絞っている）。`get_task_status`・`list_capabilities`＝Auto（読むだけ・自分の依頼だけ）
 - コネクタ（MCP）はアカウントの他の Bot からも見える場合がある：使えるのは EN司令塔の鍵に許した intent・business だけ（VPS と Mac の 2 重）。他の Bot に使わせない時は、その Bot の Computer & Apps で MCP を外す
 - EN司令塔の指示文に足す候補（Grok の画面で Human が貼る）：
   > E-NEXUS Task Intake（MCP）を使う時は business を必ず "e-nexus" にする。idempotency_key は「grok-<用途>-<日時>」のように毎回新しく作る。submit_task の後は 1〜5 分待って get_task_status で結果を読み、state と result をそのまま報告する（推測で補わない）。hermes.task は Human の承認が要り、承認されるまで実行されないことを伝える。秘密・パスワード・個人のメールアドレスを params に入れない。メールの送信・削除・予定の変更は依頼しない（受け付けない）。
+  >
+  > 質問と呼び方（params はこの形だけ。他の key を足さない）：
+  > ・「承認待ちは？」→ intent "task.status"、params {"view":"awaiting_approval"}。items が自分の依頼、others_awaiting_approval は他の経路の承認待ちの件数。承認は Mac の端末で人が行うと伝える。
+  > ・「最近失敗した仕事は？」→ intent "task.status"、params {"view":"failed"}。
+  > ・「さっきの仕事は終わった？」→ 直前の task_ref が分かれば get_task_status。分からなければ intent "task.status"、params {"view":"recent"}。
+  > ・「終わった仕事の一覧」→ intent "task.status"、params {"view":"succeeded"}。
+  > ・「Hermes は正常？」→ intent "status.query"、params {"detail":true}（result.hermes と result.sections.hermes を読む）。Hermes に出した依頼の結果は intent "task.status"、params {"view":"hermes"}。
+  > ・「Mac の状況は？」→ intent "status.query"、params {"detail":true}。
+  > state が "rejected" か "failed" で result.hint がある時は、hint の形に params を直し、新しい idempotency_key で 1 回だけ出し直す。
 
 ## 4. Gmail・カレンダーの要約を渡す（**未接続**・Human の承認が要る）
 
@@ -64,7 +75,10 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 |---|---|---|---|
 | Mac mini の状態 | 「Mac の状況を詳しく教えて」 | `status.query {detail:true}` | 今使える |
 | Hermes の状態 | 「Hermes の業務はどうなってる？」 | `status.query {detail:true}` の hermes・`task.status {view:"hermes"}` | 今使える |
-| 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | 今使える（承認は Mac の端末） |
+| 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | Mac で検収済み・EN司令塔から再検収待ち（§7。承認は Mac の端末） |
+| 失敗した仕事 | 「最近失敗した仕事は？」 | `task.status {view:"failed"}` | 同上 |
+| さっきの仕事 | 「さっきの仕事は終わった？」 | `get_task_status`（task_ref）・`task.status {}`（recent） | 同上 |
+| 終わった仕事 | 「終わった仕事の一覧」 | `task.status {view:"succeeded"}` | 同上 |
 | 朝のまとめ | 「朝のまとめを出して」 | `report.morning` | 今使える |
 | メモ | 「現場A のメモ：図面は来週」 | `note.record {text, case_ref}` | 今使える |
 | 現場資料の検索 | 「現場A の平面図を探して」 | `dropbox.search` | 承認の後（Dropbox の設定・許可フォルダ・公開） |
@@ -79,3 +93,25 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 | ドコモメール | 「ドコモの新着は？」 | （読み取りの取得は実装済み・資格情報と取り込みの決定の後） | 承認の後 |
 
 Human が「人間が作ったタブ 1 と 2 は触らないで」と言わなくても、AI が直せるのは AI が作った `AI_` のタブだけ（docs/dropbox-business.md §6）。
+
+## 7. task.status の本番の失敗と直し（2026-11-16）
+
+| 日時（JST） | EN司令塔の呼び方 | 結果 | 原因 |
+|---|---|---|---|
+| 11-15 22:58 | `task.status`・params `{}` | failed `params_task_ref_or_view` | handler が「task_ref か view のどちらか 1 つ」を必須にしていた。Bot は params の形を知らなかった |
+| 11-15 23:19 | `task.status`・params `{"view":"pending"}` | rejected `params_invalid` | 台帳の view は `awaiting_approval`。Bot は普通の語（pending）で呼んだ |
+
+接続（Grok → VPS → Mac）は 2 回とも通っている＝接続の障害ではない。**根本の原因は、Bot が params の形を知る手段が無かったこと**：MCP の道具の説明は intent ごとの params を持たず（VPS は params を解釈しない設計）、EN司令塔の指示文（§3）にも view の語が無く、断った時の返事は code だけだった。
+
+直し（Mac の側は working tree から 5 分ごとの回が読むので、その場で本番に効く）：
+
+1. params が空＝`recent`（自分の依頼の新しい順）
+2. view の別名を受ける：`pending`・`approval`・`awaiting` → `awaiting_approval`、`failure(s)`・`error(s)` → `failed`、`success`・`done`・`completed` → `succeeded`、`all`・`latest` → `recent`（結果の `view` は正式な語）
+3. `succeeded` の view を足した（終わった依頼の一覧）
+4. 断った時は `result.hint` に正しい params の形を返す（台帳 `intents.json` の `usage`。status.query・task.status・report.morning・note.record・hermes.task）
+5. VPS の受け口の道具の説明に「`list_capabilities` で自分の鍵の intent・business が分かる」「断られたら `result.hint` を読む」を足した（**VPS への反映は Human の 1 コマンド**＝`docs/vps-maintenance.md`。反映前でも 1〜4 は効く）
+6. EN司令塔の指示文の候補（§3）に、質問と呼び方の対応を足した（**Grok の画面で Human が貼る**）
+
+境は変えていない：返すのは同じ依頼元・同じ business の依頼だけ、他の依頼元の承認待ちは件数だけ、依頼の題名・本文は返さない。
+
+検収：Mac の本番の store・本番の config で `{}`・`{"view":"pending"}`・`{"view":"failed"}`・`{"view":"hermes"}` が succeeded、`{"view":"approvals"}` が rejected＋hint（2026-11-16・source human-cli）。**EN司令塔からの往復（Grok → VPS → Mac → 結果）は未検収**：Human が EN司令塔に「承認待ちは？」「最近失敗した仕事は？」と聞き、Claude Code が `node scripts/task-hub.mjs list` で grok-commander の task.status が succeeded になったことを確かめるまで、本番稼働とは書かない。

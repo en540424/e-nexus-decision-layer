@@ -18,7 +18,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync, fstatSync } from 'node:fs';
 import path from 'node:path';
-import { BUSINESS_RE } from './envelope.mjs';
+import { BUSINESS_RE, isHint } from './envelope.mjs';
 import { openPlain, readJsonSafe, readSmallFile } from './safe-read.mjs';
 import { MAX_BODY_BYTES, RECORD_MAX_AGE_MS, STATES } from './wire.mjs';
 
@@ -401,7 +401,7 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
         params: t.params, summary: t.summary ?? '', class: t.class, handler: t.handler ?? null,
         decision: t.decision ?? { reasons: [], gateway: null }, state: t.state, content_digest: t.content_digest,
         attempts: 0, max_attempts: t.max_attempts ?? 3, next_try_at: null, timeout_ms: t.timeout_ms ?? 10_000, lease_until: null,
-        checkpoint: null, result: null, error: t.code ? { code: t.code } : null, approval: null,
+        checkpoint: null, result: null, error: t.code ? { code: t.code, ...(isHint(t.hint) ? { hint: t.hint } : {}) } : null, approval: null,
         history: [{ at: iso(at), state: t.state, event: 'created', ...(t.code ? { code: t.code } : {}) }], created_at: iso(at), updated_at: iso(at),
       };
     },
@@ -412,14 +412,14 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
       return task;
     },
     /** 読み直して・排他で・state を変えて書く。許されない遷移は bad_transition。patch は task の field を上書きする */
-    transition(id, state, { event = `to_${state}`, code = null, patch = {}, at = now() } = {}) {
+    transition(id, state, { event = `to_${state}`, code = null, hint = null, patch = {}, at = now() } = {}) {
       if (!STATES.includes(state)) throw new StoreError('bad_state');
       return locked(p('locks', `${id}.lock`), () => {
         const task = this.readTask(id);
         if (!task) throw new StoreError('not_found');
         if (!(TRANSITIONS[task.state] ?? []).includes(state)) throw new StoreError('bad_transition');
         const next = { ...task, ...patch, state, updated_at: iso(at), history: [...task.history, { at: iso(at), state, event, ...(code ? { code } : {}) }].slice(-50) };
-        if (code) next.error = { code };
+        if (code) next.error = { code, ...(isHint(hint) ? { hint } : {}) };
         return this._write(next, event, at, code);
       });
     },
@@ -427,7 +427,7 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
     // ─── outbox（依頼元＝人以外へ返す）───
     _outbox(task, at) {
       if (task.source === HUMAN_SOURCE || !OUTBOX_STATES.has(task.state)) return null;
-      const make = (withResult) => JSON.stringify({ task_id: task.task_id, state: task.state, intent: task.intent, ...(task.error?.code && task.state !== 'succeeded' ? { code: task.error.code } : {}), ...(withResult && task.state === 'succeeded' ? { result: task.result } : { ...(task.state === 'succeeded' ? { result_truncated: true } : {}) }) });
+      const make = (withResult) => JSON.stringify({ task_id: task.task_id, state: task.state, intent: task.intent, ...(task.error?.code && task.state !== 'succeeded' ? { code: task.error.code, ...(isHint(task.error.hint) ? { hint: task.error.hint } : {}) } : {}), ...(withResult && task.state === 'succeeded' ? { result: task.result } : { ...(task.state === 'succeeded' ? { result_truncated: true } : {}) }) });
       let body = make(true);
       if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) body = make(false);
       const file = p('outbox', `${sha(`${task.source}|${task.idempotency_key}|${task.state}`)}.json`);

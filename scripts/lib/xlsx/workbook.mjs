@@ -53,7 +53,8 @@ export function validSheetName(name, existing) {
 /** 見積の行（{ item, spec?, qty, unit, price, note? }）→ sheet の XML（見出し・明細・合計）。金額と合計は数式と計算済みの値 */
 export function estimateSheetXml({ title, rows, stamp }) {
   if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_ROWS) throw new XlsxError('estimate_rows_invalid');
-  const str = (v, max = 200) => { const s = String(v ?? '').normalize('NFKC').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').trim(); if (s.length > max) throw new XlsxError('estimate_text_too_long'); return s; };
+  // 文字は渡されたまま（NFC）。NFKC にすると「㎡」「①」「㈱」「Ａ邸」が別の文字に変わり、Human が承認した全文と違う見積になる（2026-11-16 監査）
+  const str = (v, max = 200) => { const s = String(v ?? '').normalize('NFC').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').trim(); if (s.length > max) throw new XlsxError('estimate_text_too_long'); return s; };
   const num = (v) => { if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1e9) throw new XlsxError('estimate_number_invalid'); return Math.round(v * 1000) / 1000; };
   const cells = [];
   const sCell = (ref, v) => `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
@@ -76,11 +77,58 @@ export function estimateSheetXml({ title, rows, stamp }) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="2" width="20" customWidth="1"/><col min="7" max="7" width="24" customWidth="1"/></cols><sheetData>${cells.join('')}</sheetData></worksheet>`;
 }
 
-/** AI の tab を足す。戻り値：{ bytes, sheet: { name, part } }。足した 3 行と新しい部品以外は元のまま（verifyPreserved で確かめてから返す） */
+/**
+ * AI の tab の要点（保存の前後の差分に使う・2026-11-16）：明細の行数と合計。この module が作った形（合計＝SUM(F4:F<最後>) の数式）だけを読む。
+ * 形が違う（Human がその tab を作り変えた）時は null＝「読めなかった」と返し、数を作らない
+ */
+export function summarizeAiSheet(xml) {
+  const m = String(xml).match(/<f>SUM\(F4:F(\d+)\)<\/f>\s*<v>([^<]+)<\/v>/); // 値が空（<v></v>）は読めない扱い＝0 と作らない
+  if (!m) return null;
+  const rows = Number(m[1]) - 3;
+  const total = Number(m[2]);
+  return Number.isInteger(rows) && rows >= 1 && Number.isFinite(total) ? { rows, total } : null;
+}
+
+/** 数式を持つ要素の中身（f・formula・formula1/2・definedName・グラフの c:f）。XML の escape を戻した文字 */
+const formulasIn = (xml) => [...xml.matchAll(/<(?:\w+:)?(?:f|formula[12]?|definedName)\b[^>]*>([^<]*)</g)].map((m) => unesc(m[1]));
+/** 複数の tab にまたがる範囲（'見積:内訳'!F7・Sheet1:Sheet3!A1）。間に挟まる tab は名前で探せないので、在れば「参照されているかもしれない」と扱う */
+const RANGE_3D = /(?:'(?:[^']|'')*:(?:[^']|'')*'|[^\s'"!:,;()+\-*/=&^<>]+:[^\s'"!:,;()+\-*/=&^<>]+)!/;
+/**
+ * この tab を、他の部品（Human の tab の数式・定義名・条件つき書式・入力規則・グラフ・ピボットの元・リンク）が参照しているか（大文字小文字は区別しない）。
+ * 探す形：「名前!」「'名前'!」（XML の中では &apos; のことも）・ピボットの元の sheet="名前"・複数の tab にまたがる範囲（どの tab でも）。
+ * 疑わしい時は「参照されている」（止まる側）。例外：AI の tab 自身の印刷範囲・フィルターの定義名（_xlnm.*・localSheetId がその tab）は参照に数えない
+ * ＝Human が AI の tab に印刷範囲を付けただけで、以後の直しが全部断られないように（2026-11-16 再検品）
+ */
+export function sheetReferenced(entries, name, ownPart) {
+  const lower = name.toLowerCase();
+  const quoted = lower.replace(/'/g, "''");
+  const inFormula = (f) => { const t = f.toLowerCase(); return t.includes(`${lower}!`) || t.includes(`'${quoted}'!`) || RANGE_3D.test(f); };
+  const rawNeedles = [`${esc(name)}!`, `'${esc(name.replace(/'/g, "''"))}'!`, `&apos;${esc(name).replace(/'/g, '&apos;&apos;')}&apos;!`, `sheet="${esc(name)}"`].map((x) => x.toLowerCase());
+  const index = listSheets(entries).findIndex((x) => x.name === name);
+  for (const e of entries) {
+    if (e.name === ownPart || e.name === CALC || !/^xl\/.*\.xml$/.test(e.name)) continue;
+    let xml = entryData(e).toString('utf8');
+    if (e.name === WB) {
+      // sheets の一覧（その tab 自身の宣言）と、その tab 自身の _xlnm.* の定義名は見ない
+      xml = xml.replace(/<(?:\w+:)?sheets\b[^>]*>[\s\S]*?<\/(?:\w+:)?sheets>/, '').replace(/<(?:\w+:)?definedName\b[^>]*>[^<]*<\/(?:\w+:)?definedName>/g, (tag) => {
+        const a = attrs(tag.slice(0, tag.indexOf('>') + 1));
+        return /^_xlnm\./.test(a.name ?? '') && a.localSheetId === String(index) ? '' : tag;
+      });
+    }
+    if (rawNeedles.some((n) => xml.toLowerCase().includes(n))) return true;
+    if (formulasIn(xml).some(inFormula)) return true;
+  }
+  return false;
+}
+
+/** AI の tab を足す。戻り値：{ bytes, sheet: { name, part }, preserved }。足した 3 行と新しい部品以外は元のまま（verifyPreserved で確かめてから返す） */
 export function addAiSheet(buf, { name, xml }) {
   const entries = readZip(buf);
   const sheets = listSheets(entries);
   if (!validSheetName(name, sheets)) throw new XlsxError('xlsx_sheet_name_invalid');
+  // Human が「ブックの構成を保護」した見積には tab を足さない（保護の意図に反する・2026-11-16 監査）
+  const prot = text(entries, WB).match(/<(?:\w+:)?workbookProtection\b[^>]*>/);
+  if (prot && ['1', 'true'].includes(attrs(prot[0]).lockStructure)) throw new XlsxError('estimate_workbook_structure_locked');
   const used = new Set(entries.map((e) => e.name));
   let n = sheets.length + 1;
   while (used.has(`xl/worksheets/sheet${n}.xml`)) n += 1;
@@ -108,8 +156,8 @@ export function addAiSheet(buf, { name, xml }) {
   // 新しい sheet は最後の worksheet の後ろ（並びは zip の中の順番で意味を持たない）
   out.push(makeEntry(part, Buffer.from(xml), byName.get(sheets[0]?.part) ?? null));
   const bytes = writeZip(out);
-  verifyPreserved(buf, bytes, { added: { part, inserts: { [WB]: sheetTag, [WB_RELS]: relTag, [CT]: ctTag } } });
-  return { bytes, sheet: { name, part, sheetId } };
+  const { preserved } = verifyPreserved(buf, bytes, { added: { part, inserts: { [WB]: sheetTag, [WB_RELS]: relTag, [CT]: ctTag } } });
+  return { bytes, sheet: { name, part, sheetId }, preserved, sheets_before: sheets.map((x) => x.name) };
 }
 
 const CALC = 'xl/calcChain.xml';
@@ -138,12 +186,16 @@ export function replaceAiSheet(buf, { name, xml, aiSheets, aiIds = {} }) {
   const s = listSheets(entries).find((x) => x.name === name);
   // 台帳の sheetId と同じ tab だけ（Excel は保存で sheetN.xml を付け直すが sheetId は保つ・名前を付け替えた Human の tab は sheetId が違う・監査 N4）
   if (!s || !name.startsWith(AI_PREFIX) || !aiSheets.includes(name) || (aiIds[name] !== undefined && aiIds[name] !== s.sheetId)) throw new XlsxError('estimate_not_ai_sheet');
+  // 作り直すと行の位置（合計の cell など）が動く。Human の tab・定義名・グラフがこの tab を参照していたら、Human の部品は 1 byte も変わらないまま
+  // 指す先だけが別の値になる＝直さない（Human が決める：新しい AI の tab を足す・参照を外す・2026-11-16 監査）
+  if (sheetReferenced(entries, name, s.part)) throw new XlsxError('estimate_ai_sheet_referenced');
+  const before = summarizeAiSheet(entryData(entries.find((e) => e.name === s.part)).toString('utf8'));
   const calcE = entries.find((e) => e.name === CALC);
   const newCalc = calcE ? rewriteCalc(entryData(calcE).toString('utf8'), s.sheetId, formulaRefs(xml)) : null;
   const out = entries.map((e) => (e.name === s.part ? makeEntry(s.part, Buffer.from(xml), e) : e.name === CALC && newCalc !== null ? makeEntry(CALC, Buffer.from(newCalc), e) : e));
   const bytes = writeZip(out);
-  verifyPreserved(buf, bytes, { replaced: s.part, calc: calcE ? { sheetId: String(s.sheetId), refs: formulaRefs(xml) } : null });
-  return { bytes, sheet: { name, part: s.part } };
+  const { preserved } = verifyPreserved(buf, bytes, { replaced: s.part, calc: calcE ? { sheetId: String(s.sheetId), refs: formulaRefs(xml) } : null });
+  return { bytes, sheet: { name, part: s.part }, preserved, before };
 }
 
 /**
@@ -157,6 +209,7 @@ export function verifyPreserved(before, after, { added = null, replaced = null, 
   const b = readZip(after);
   const bm = new Map(b.map((e) => [e.name, e]));
   const fail = () => { throw new XlsxError('xlsx_preserve_failed'); };
+  let preserved = 0; // 圧縮された bytes のまま同じだった部品の数（差分の報告に使う）
   for (const e of a) {
     const f = bm.get(e.name);
     if (!f) fail();
@@ -177,6 +230,7 @@ export function verifyPreserved(before, after, { added = null, replaced = null, 
       continue;
     }
     if (e.crc !== f.crc || e.method !== f.method || !e.raw.equals(f.raw)) fail();
+    preserved += 1;
   }
   const extra = b.filter((e) => !a.some((x) => x.name === e.name)).map((e) => e.name);
   if (added ? !(extra.length === 1 && extra[0] === added.part) : extra.length !== 0) fail();
@@ -186,7 +240,7 @@ export function verifyPreserved(before, after, { added = null, replaced = null, 
   const s1 = listSheets(a).map((x) => x.name);
   const s2 = listSheets(b).map((x) => x.name);
   if (s1.some((n, i) => s2[i] !== n)) fail();
-  return true;
+  return { preserved };
 }
 
 export { listSheets as sheetsOf };

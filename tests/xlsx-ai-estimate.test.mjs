@@ -56,7 +56,7 @@ test('verifyPreserved：Human の部品が 1 byte でも違う・部品が消え
   const relIns = entryData(readZip(bytes).find((e) => e.name === 'xl/_rels/workbook.xml.rels')).toString().match(/<Relationship Id="rId\d+"[^>]*worksheets\/sheet3\.xml"\/>/)[0];
   const ctIns = `<Override PartName="/${sheet.part}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`;
   const opts = { added: { part: sheet.part, inserts: { 'xl/workbook.xml': ins, 'xl/_rels/workbook.xml.rels': relIns, '[Content_Types].xml': ctIns } } };
-  assert.equal(verifyPreserved(orig, bytes, opts), true);
+  assert.ok(verifyPreserved(orig, bytes, opts).preserved >= 1, "同じままの部品の数を返す（差分の報告に使う・2026-11-16）");
   const changed = tamper((e) => (e.name === 'xl/worksheets/sheet2.xml' ? [makeEntry(e.name, Buffer.from(entryData(e).toString().replace('内訳（Human）', '内訳（AI が変えた）')), e)] : [e]));
   assert.throws(() => verifyPreserved(orig, changed, opts), { code: 'xlsx_preserve_failed' });
   assert.throws(() => verifyPreserved(orig, tamper((e) => (e.name === 'xl/media/image1.png' ? [] : [e])), opts), { code: 'xlsx_preserve_failed' });

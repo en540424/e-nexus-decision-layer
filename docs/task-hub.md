@@ -38,7 +38,7 @@ task → [承認待ち] →(Human が端末で承認)→ queued → run → succ
 | `queued` | auto、または ai_check で Gateway が candidate |
 | `awaiting_approval` | human_required（台帳に無い intent・source の allowlist 外・Gateway が human／review／失敗 を含む） |
 | `blocked` | forbidden（承認できない） |
-| `rejected` | params が台帳の形に合わない |
+| `rejected` | params が台帳の形に合わない（`params_invalid`）。台帳に `usage` のある intent は、依頼元への返事に `hint`（正しい params の形の 1 行・台帳の決まった文）を添える（2026-11-16。handler が `params_…` で failed にした時も同じ） |
 | 作らない | 知らない source／channel が許されない／business が許されない／署名・鮮度・再送・envelope の誤り（理由のコードだけ返し audit に残す） |
 
 ## 4. class と Gateway
@@ -56,7 +56,7 @@ task → [承認待ち] →(Human が端末で承認)→ queued → run → succ
 | intent | class | 内容 |
 |---|---|---|
 | `status.query` | auto | runtime-brief を読み、水準・要確認の件数・生成時刻だけ返す（`brief_path` が未設定なら失敗）。**`{ "detail": true }`（2026-11-13）**：区分ごとの水準（ok／warn／crit だけ・文も日数も値も無い＝runtime-brief の externalView と同じ範囲）・その business の Task Hub の件数（承認待ち・待ち・実行中・24 時間の失敗・止まった）・Hermes の業務の件数・定期の回のコード |
-| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running）。hermes.task は `hermes: { status, summary? }` も。**`{ "view": "recent"\|"awaiting_approval"\|"failed"\|"hermes", "limit": 1..20 }`（2026-11-13）**：自分の依頼の一覧（task_ref・intent・state・updated_at・code・Hermes の状態）を新しい順に。承認待ちは他の依頼元の分を件数だけ（`others_awaiting_approval`）。task_ref と view は片方だけ（両方・どちらも無い＝`params_task_ref_or_view` で failed） |
+| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running）。hermes.task は `hermes: { status, summary? }` も。**`{ "view": "recent"\|"awaiting_approval"\|"failed"\|"succeeded"\|"hermes", "limit": 1..20 }`（2026-11-13）**：自分の依頼の一覧（task_ref・intent・state・updated_at・code・Hermes の状態）を新しい順に。承認待ちは他の依頼元の分を件数だけ（`others_awaiting_approval`）。task_ref と view の両方は `params_task_ref_or_view` で failed。**2026-11-16**（本番で Bot の `{}` と `view: "pending"` が失敗した・`docs/grok-bot.md` §7）：params が空＝`recent`、view の別名（`pending`・`approval`・`awaiting`／`failure(s)`・`error(s)`／`success`・`done`・`completed`／`all`・`latest`）を正式な語へ寄せる、`succeeded` の view。台帳の enum は `handlers.mjs` の `VIEWS` と `VIEW_ALIASES` の和（test が照合） |
 | `mail.digest.ingest` | auto | Grok が作った要約を business の記録に残す（id で重複除去）。メールの操作はしない |
 | `calendar.digest.ingest` | auto | 同上＋重なり・重複の疑い（同題名＋同開始、または 90% 以上重なり題名が似ている）を検出 |
 | `report.morning` | auto | その business 自身の記録から決まった文面（3000 字まで）。2026-11-13：今日・明日の予定と同じ `case_ref` のメモ（`■ 予定に関係するメモ`）・Mac の稼働状況（水準と件数だけ）・Hermes の業務の件数を足す。**記録（`records/<business>/`）と `report.morning` の範囲は business 単位で、依頼元（source）単位ではない**：同じ business に複数の source が書けば 1 つの記録に混ざり、`承認待ちのタスク N 件` もその business の全 source の承認待ちを数える。予定の照合は最大 500 件・50,000 組まで（超えたら「一部だけ照合」と出す）。3000 件の保存でも 1 秒未満 |
