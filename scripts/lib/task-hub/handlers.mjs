@@ -6,9 +6,10 @@
  * handler の形：{ resumable, run({ task, store, config, signal, now }) → { result } }。result は JSON で 16 KiB まで。
  * 失敗は fail(code, { retryable, expected }) を throw する。expected: true は「想定内の終わり方」（休眠中・未設定）で、runner の連続失敗に数えない。
  */
-import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { readJsonSafe } from './safe-read.mjs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { readBriefFile } from '../runtime-brief.mjs';
 import { analyzeEvents, keepEvent, keepMail, morningReport, parseTime } from './digest.mjs';
@@ -112,6 +113,8 @@ export const VIEW_ALIASES = Object.freeze({
   all: 'recent', latest: 'recent',
 });
 export const VIEW_NAMES = Object.freeze(Object.keys(VIEWS));
+export const VIEW_SUMMARY_ITEMS = 5;
+export const VIEW_SUMMARY_CHARS = 200;
 /** hermes.task の Hermes の状態（と結果の要約：その依頼元へ板で返したものと同じ文） */
 function hermesOf(store, t) {
   if (t.intent !== 'hermes.task' || t.state !== 'succeeded') return undefined;
@@ -133,9 +136,16 @@ const taskStatus = ({ task, store }) => {
     const limit = Number.isInteger(task.params.limit) ? Math.min(Math.max(task.params.limit, 1), 20) : 10;
     const mine = store.listTasks({ business: task.business }).filter((t) => t.source === task.source && t.task_id !== task.task_id && VIEWS[view](t))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    // hermes の一覧は、新しい方から VIEW_SUMMARY_ITEMS 件だけ結果の要約の頭（VIEW_SUMMARY_CHARS 字）も返す（2026-11-18：「実行した仕事の結果は？」を 1 回の往復で答える。
+    // 要約は collect-hermes の関所を通って、この依頼元へ task_ref で返している文と同じ。全文は task_ref で引く）。結果の上限 16 KiB に収まる大きさ
+    let withSummary = 0;
     const items = mine.slice(0, limit).map((t) => {
       const h = hermesOf(store, t);
-      return { task_ref: t.idempotency_key, intent: t.intent, state: t.state, updated_at: t.updated_at, ...(t.error?.code && t.state !== 'succeeded' ? { code: t.error.code } : {}), ...(h ? { hermes: h.status } : {}) };
+      const cut = view === 'hermes' && typeof h?.summary === 'string' && withSummary < VIEW_SUMMARY_ITEMS ? (withSummary += 1, h.summary) : null;
+      return {
+        task_ref: t.idempotency_key, intent: t.intent, state: t.state, updated_at: t.updated_at, ...(t.error?.code && t.state !== 'succeeded' ? { code: t.error.code } : {}), ...(h ? { hermes: h.status } : {}),
+        ...(cut !== null ? { summary: [...cut].slice(0, VIEW_SUMMARY_CHARS).join(''), ...([...cut].length > VIEW_SUMMARY_CHARS ? { summary_truncated: true } : {}) } : {}),
+      };
     });
     const others = view === 'awaiting_approval' ? store.listTasks({ state: 'awaiting_approval', business: task.business }).filter((t) => t.source !== task.source).length : undefined;
     return { result: { view, total: mine.length, items, ...(others !== undefined ? { others_awaiting_approval: others } : {}) } };
@@ -189,8 +199,68 @@ export function inboxModeSafe(st, platform = process.platform) {
   return true;
 }
 
+export const OPS_CONTEXT_MAX_BYTES = 8 * 1024;
+const OPS_WINDOW_MS = 7 * DAY_MS;
+const OPS_PROBLEM = new Set(['failed', 'blocked', 'stopped', 'expired', 'rejected']);
+export const OPS_MAX_CODE_KEYS = 20;
+const OPS_CODE_RE = /^[a-z0-9_]{1,48}$/;
+const CATALOG_FILE = fileURLToPath(new URL('../../../policies/task-hub/intents.json', import.meta.url));
+let catalogNames = null;
+/**
+ * 台帳の intent の名前だけ（2026-11-18 監査 F1）。台帳に無い intent は依頼元（Bot）が書いた文字列なので、Hermes へ渡す状況には名前を出さず unknown_intent にする
+ * （名前の形の検査には長さの上限が無い＝「指示」を名前に混ぜて、状況のデータとして Hermes に読ませられる）。読めなければ全部 unknown（投げない）
+ */
+function knownIntent(name) {
+  if (catalogNames === null) { try { catalogNames = new Set(Object.keys(JSON.parse(readFileSync(CATALOG_FILE, 'utf8')).intents ?? {})); } catch { catalogNames = new Set(); } }
+  return catalogNames.has(name) ? name : 'unknown_intent';
+}
+const opsCode = (c) => (typeof c === 'string' && OPS_CODE_RE.test(c) ? c : 'other');
+/**
+ * hermes.task の kind "ops_review"（2026-11-18）が Hermes へ渡す Task Hub の状況。渡す時（承認の後）に作る。
+ * 入れるのは件数・state・code・intent・時刻だけ（依頼の params・summary・Hermes の結果の文・path・Secret は入れない）。
+ * 一覧は task.status と同じ範囲＝同じ依頼元・同じ business の依頼だけ。他の依頼元の分は hubCounts の件数だけ。8 KiB に収まるまで一覧を減らす
+ */
+export function opsReviewContext({ task, store, config, now }) {
+  let runtime = null;
+  try { runtime = statusQuery({ task: { ...task, params: { detail: true } }, store, config, now }).result; } catch (e) { runtime = { available: false, reason: e instanceof HandlerError && OPS_CODE_RE.test(e.code ?? '') ? e.code : 'status_unavailable' }; }
+  const mine = store.listTasks({ business: task.business })
+    .filter((t) => t.source === task.source && t.task_id !== task.task_id && now - Date.parse(t.updated_at) <= OPS_WINDOW_MS)
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const counted = {};
+  for (const t of mine) if (OPS_PROBLEM.has(t.state)) { const k = `${t.state}:${opsCode(t.error?.code ?? 'none')}`; counted[k] = (counted[k] ?? 0) + 1; }
+  // 多い順に OPS_MAX_CODE_KEYS 個まで（残りは other_codes に件数だけ・監査 F2）
+  const ranked = Object.entries(counted).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const byCode = Object.fromEntries(ranked.slice(0, OPS_MAX_CODE_KEYS));
+  const otherCodes = ranked.slice(OPS_MAX_CODE_KEYS).reduce((n, [, v]) => n + v, 0);
+  const row = (t) => {
+    let h = null;
+    let hermes;
+    if (t.intent === 'hermes.task' && t.state === 'succeeded') {
+      try { h = store.readHermesJob(t.task_id); hermes = h ? opsCode(h.state) : 'waiting'; } catch { hermes = 'unknown'; } // 壊れた記録 1 つで依頼全体を失敗にしない（監査 F8）
+    }
+    return {
+      intent: knownIntent(t.intent), state: t.state, updated_at: t.updated_at, attempts: t.attempts,
+      ...(t.error?.code && t.state !== 'succeeded' ? { code: opsCode(t.error.code) } : {}),
+      ...(hermes !== undefined ? { hermes, ...(h?.code ? { hermes_code: opsCode(h.code) } : {}) } : {}),
+    };
+  };
+  const paused = store.isPaused();
+  const make = (n) => {
+    const recent = mine.slice(0, n).map(row);
+    return {
+      kind: 'ops_review', generated_at: iso(now), window_days: 7, scope: 'same source and business; other sources as counts only',
+      runtime, paused, problems_by_state_code: byCode, ...(otherCodes ? { other_codes: otherCodes } : {}), recent_total: mine.length, recent,
+      ...(recent.length < mine.length ? { recent_truncated: true } : {}), // 一覧が全部でない時は必ず印（監査 F3）
+    };
+  };
+  for (const n of [30, 15, 5, 0]) { const c = make(n); if (Buffer.byteLength(JSON.stringify(c), 'utf8') <= OPS_CONTEXT_MAX_BYTES) return c; }
+  // ここに来るのは runtime が大きすぎる時だけ（code の数は上で限った）。水準と PAUSE は残す
+  return { kind: 'ops_review', generated_at: iso(now), truncated: true, paused, runtime: runtime ? { available: runtime.available, overall: runtime.overall } : null };
+}
+const HERMES_CONTEXTS = Object.freeze({ ops_review: opsReviewContext });
+
 /** 休眠中：設定された inbox のフォルダが「もう在る」時だけ、承認済みの依頼を 1 ファイル書く。フォルダは作らない */
-const hermesTask = ({ task, config }) => {
+const hermesTask = ({ task, store, config, now }) => {
   const dir = config.hermes_inbox;
   let ok = false;
   try { ok = Boolean(dir) && path.isAbsolute(dir) && !lstatSync(dir).isSymbolicLink() && statSync(dir).isDirectory(); } catch { ok = false; }
@@ -201,13 +271,22 @@ const hermesTask = ({ task, config }) => {
   if (!inboxModeSafe(statSync(real))) throw fail('hermes_inbox_unsafe');
   const file = path.join(real, `${task.task_id}.json`);
   if (existsSync(file)) return { result: { delivered: true, already: true, hermes: { status: 'waiting' } } };
+  // 依頼の種類があれば、決まった形の状況を添える（作れなければ渡さない＝失敗で返す。種類の無い依頼は今までどおり）
+  const kind = task.params.kind;
+  let context;
+  if (kind !== undefined) {
+    if (!Object.hasOwn(HERMES_CONTEXTS, kind)) throw fail('params_kind_unknown', { expected: true });
+    context = HERMES_CONTEXTS[kind]({ task, store, config, now });
+  }
   const tmp = path.join(real, `.${task.task_id}.${randomBytes(4).toString('hex')}.tmp`);
+  const doc = { v: 1, task_id: task.task_id, business: task.business, title: task.params.title, body: task.params.body, ...(kind !== undefined ? { kind, context } : {}), approval_record: task.approval ? { at: task.approval.at, digest: task.approval.digest } : null };
   // 0640：inbox のフォルダの group（Human が hermes を入れた group にする。macOS は新しい file がフォルダの group を継ぐ）だけが読める。other は読めない
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o640);
   try {
     fchmodSync(fd, 0o640); // umask に左右されない
     // 承認の記録は別の名前で渡す（受け側が「承認済み」の主張と読み違えないように、確かめる材料＝digest を添える）
-    writeSync(fd, `${JSON.stringify({ v: 1, task_id: task.task_id, business: task.business, title: task.params.title, body: task.params.body, approval_record: task.approval ? { at: task.approval.at, digest: task.approval.digest } : null })}\n`);
+    // 種類つきは行に分けて書く（状況で 1 行が長くなる＝読む側の 1 行の上限で切られないように・監査 F7）。種類の無い依頼は今までどおり 1 行
+    writeSync(fd, `${kind !== undefined ? JSON.stringify(doc, null, 1) : JSON.stringify(doc)}\n`);
   } finally { closeSync(fd); }
   try { renameSync(tmp, file); } catch (e) { try { unlinkSync(tmp); } catch { /* 済 */ } throw e; }
   // hermes.status：waiting＝渡した・まだ実行していない（実行・結果は hermes-jobs と結果の板の知らせで続きを返す。2026-11-13）

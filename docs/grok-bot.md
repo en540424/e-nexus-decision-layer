@@ -14,7 +14,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 | `task.status` | 済 | **稼働（11-16 に往復検収済み）**（11-15 に本番で 2 回失敗 → 11-16 に直し、EN司令塔から `{}`・`pending`・`failed`・`hermes` の 4 件が succeeded。§7） | なし | なし | 不要（auto） | 自分（EN司令塔）が出した e-nexus の依頼だけ。`view` で一覧（recent・承認待ち・失敗・成功・Hermes）。params なしは recent | 同上 |
 | `report.morning` | 済 | 稼働 | なし | なし | 不要（auto） | e-nexus の記録（メール・予定の要約・メモ）と稼働状況・承認待ち・Hermes の件数から決まった文面 | 同上（`result.text`） |
 | `note.record` | 済 | 稼働 | Mac の手元のメモに 1 件 | なし | 不要（ai_check＝Decision Layer が candidate の時だけ無人） | e-nexus のメモ（500 字・`case_ref` 任意） | 同上（`recorded: true`） |
-| `hermes.task` | 済 | 稼働（承認の後に Human が 1 件ずつ実行） | Hermes が 1 回動く（Mac の中だけ・sandbox） | **あり**（Haiku・1 件で API 2〜4 回） | **毎回必要**（Mac の端末で全文を読んで確認コード） | 依頼の本文の範囲だけ。Hermes が読めるのは依頼の file と状態の要約だけ | 同上の `result.hermes`（waiting → running → done／failed＋summary） |
+| `hermes.task` | 済 | 稼働（承認の後に Human が 1 件ずつ実行） | Hermes が 1 回動く（Mac の中だけ・sandbox） | **あり**（Haiku・1 件で API 2〜4 回） | **毎回必要**（Mac の端末で全文を読んで確認コード） | 依頼の本文の範囲だけ。Hermes が読めるのは依頼の file と状態の要約だけ。`kind:"ops_review"`（2026-11-18）は Task Hub の状況（件数・state・code だけ）を添えて、失敗の分類・Human 待ち・次の安全な作業を返す | 同上の `result.hermes`（waiting → running → done／failed＋summary）。`task.status {view:"hermes"}` は新しい 5 件の要約の頭も返す |
 
 許していない（Human の承認が無い限り足さない）：`mail.digest.ingest`・`calendar.digest.ingest`（§4）・メールの送信／削除／移動／既読・予定の作成／変更／削除（handler がそもそも無い）・E-STEP・個人の business。
 
@@ -26,6 +26,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 - 朝のまとめ：`{ …, "intent": "report.morning", "params": {} }`
 - メモ：`{ …, "intent": "note.record", "params": { "text": "現場 A は来週の金曜に図面の最新版", "case_ref": "case-a" } }`
 - Hermes の業務：`{ …, "intent": "hermes.task", "params": { "title": "週報の下書き", "body": "e-nexus のメモから今週の要点を 5 行に" } }` → 承認待ち（Human が Mac で承認・実行するまで動かない）
+- Hermes に運用の見直しを頼む（2026-11-18）：`{ …, "intent": "hermes.task", "params": { "title": "運用の見直し", "body": "失敗した作業の原因と、承認待ちと、次に安全にできる作業を整理して", "kind": "ops_review" } }`（課金あり・毎回 Mac で承認。状況は承認の後に Mac が添える＝Bot は状況を本文に書かなくてよい）
 
 決まり：`idempotency_key` は毎回新しい（同じ key の出し直しは前の結果を返すだけ）。結果は 1〜5 分後に `get_task_status`（`task_ref`＝idempotency_key）。`params`・`summary` に秘密・パスワード・鍵を入れない（鍵の形の値は依頼ごと拒否される）。
 
@@ -44,7 +45,11 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
   > ・「さっきの仕事は終わった？」→ 直前の task_ref が分かれば get_task_status。分からなければ intent "task.status"、params {"view":"recent"}。
   > ・「終わった仕事の一覧」→ intent "task.status"、params {"view":"succeeded"}。
   > ・「Hermes は正常？」→ intent "status.query"、params {"detail":true}（result.hermes と result.sections.hermes を読む）。Hermes に出した依頼の結果は intent "task.status"、params {"view":"hermes"}。
-  > ・「Mac の状況は？」→ intent "status.query"、params {"detail":true}。
+  > ・「Mac の状況は？」「Mac mini は正常に動いている？」→ intent "status.query"、params {"detail":true}（result.overall と result.sections を読む）。
+  > ・「Hermes の仕事は何件残っている？」→ intent "status.query"、params {"detail":true} の result.hermes（waiting＝実行待ち・running）と result.task_hub.awaiting_approval（承認待ち）。
+  > ・「昨日失敗した作業はある？」→ intent "task.status"、params {"view":"failed"}。items の updated_at（UTC）を日本時間の昨日で絞って答える。
+  > ・「実行した仕事の結果を報告して」→ intent "task.status"、params {"view":"hermes"}。新しい 5 件は items に summary（200 字まで）がある。全文は task_ref で get_task_status。
+  > ・「失敗の原因と次にやることを Hermes に整理させて」→ intent "hermes.task"、params {"title":"運用の見直し","body":"<頼みたい観点>","kind":"ops_review"}。課金があり Mac で承認されるまで動かないと伝える。
   > state が "rejected" か "failed" で result.hint がある時は、hint の形に params を直し、新しい idempotency_key で 1 回だけ出し直す。
 
 ## 4. Gmail・カレンダーの要約を渡す（**未接続**・Human の承認が要る）
@@ -74,7 +79,9 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 | したいこと | EN司令塔への言い方の例 | 中身（intent） | 状態 |
 |---|---|---|---|
 | Mac mini の状態 | 「Mac の状況を詳しく教えて」 | `status.query {detail:true}` | 今使える |
-| Hermes の状態 | 「Hermes の業務はどうなってる？」 | `status.query {detail:true}` の hermes・`task.status {view:"hermes"}` | 今使える |
+| Hermes の状態 | 「Hermes の業務はどうなってる？」「Hermes の仕事は何件残っている？」 | `status.query {detail:true}` の hermes・`task.status {view:"hermes"}` | 今使える |
+| 実行した仕事の結果 | 「実行した仕事の結果を報告して」 | `task.status {view:"hermes"}`（新しい 5 件の要約の頭・2026-11-18）・全文は task_ref | 今使える（Mac の側。Hermes の実機の結果はまだ 0 件） |
+| 失敗の原因・次の作業の整理 | 「失敗の原因と次にやることを Hermes に整理させて」 | `hermes.task {kind:"ops_review"}` | 毎回 Mac で承認（課金あり） |
 | 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | 今使える（11-16 に EN司令塔からの往復を検収済み・§7。承認は Mac の端末） |
 | 失敗した仕事 | 「最近失敗した仕事は？」 | `task.status {view:"failed"}` | 同上 |
 | さっきの仕事 | 「さっきの仕事は終わった？」 | `get_task_status`（task_ref）・`task.status {}`（recent） | 同上 |

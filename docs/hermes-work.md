@@ -1,6 +1,6 @@
 # Hermes に業務を渡す時の決まり（案・2026-11-10・MA-24）
 
-**状態（2026-11-13）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11 が今の形。
+**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
 Hermes は常駐している（gateway だけ・messaging platform なし・cron の job なし）。今の役目は監視の要約を読むことだけ（`docs/runtime-monitoring.md`）。
 
 ## 1. 渡す仕事の形（往きと還り）
@@ -156,3 +156,63 @@ business は task のものを使う（Hermes が名乗っても使わない）�
 ### 戻す
 
 `deploy/macos/hermes-work-run.sh` を 2026-11-11 の版（git の `87eeeb1`）に戻せば前の形（sandbox なし）。profile の home（`~/.hermes/profiles/work`）は hermes の権限で消してよい（業務の会話だけ）。記録 `hermes-jobs/` は消しても task は変わらない。
+
+## 12. 2026-11-18 の仕上げ（承認の期限・実用の依頼の種類・結果の返し方）
+
+### 12-1. 承認から 24 時間を過ぎた依頼（`approval_stale`）
+
+承認の期限（24 時間）は「inbox へ渡す」までを縛り、渡した後の有料の実行までは縛っていなかった（`task-hub approve` の数日後に `hermes-work-run.sh --paid-ok` を打つと、古い依頼が全文を見ないまま実行された）。
+
+- `run --paid-ok` は、選んだ 1 件の承認の `expires_at` が過ぎていれば、**sudo の前**に params の全文と確認コードを見せ、打ち直した時だけ進む（端末だけ・空 Enter・違うコードは実行しない）。監査に `hermes_reconfirmed`（値なし）
+- 見せる前に、**Hermes が実際に読む inbox の file** が承認した title・body・kind と digest に一致するかを確かめる（違えば聞かずに止める）。`ops_review` は状況を作った時刻も見せる（渡した時の状況＝今の状況ではない）
+- 端末でない・確かめていない 1 件は `approval_stale` で止まる（**sudo も聞かない**・課金なしの確かめも実行もしない・記録は waiting のまま）。やめる時は `dismiss`。依頼元への知らせは出さない（host-health の `hermes_jobs` が 24 時間の未実行で warn）
+- 確かめるのは CLI が排他の外で選んだ 1 件。排他の中で選び直した 1 件が違えば、それは確かめていない＝止まる
+- 承認の記録が無い・壊れている時も「過ぎた」側（確かめ直しを求める）
+
+### 12-2. 実用の依頼の種類（`hermes.task` の `kind`）
+
+| 頼みたいこと | 使うもの | Hermes | 課金 | 承認 |
+|---|---|---|---|---|
+| A. Mac Runtime の稼働状態 | `status.query {detail:true}` | 使わない | なし | 不要 |
+| B. Task Hub の依頼の状態の一覧 | `task.status {view}` | 使わない | なし | 不要 |
+| C. 失敗の原因の分類と報告 | `hermes.task {kind:"ops_review"}` | 使う | あり | 毎回 |
+| D. 実行した結果の要約 | `task.status {view:"hermes"}`（新しい 5 件の要約の頭・12-3）、まとめ直すなら `ops_review` | 一覧は使わない | 一覧はなし | 一覧は不要 |
+| E. 未完了と Human 待ちの整理 | 件数は `status.query {detail:true}`・一覧は `task.status {view:"awaiting_approval"}`、整理は `ops_review` | 整理だけ | 整理だけ | 整理だけ |
+| F. 安全な次の作業の候補 | `ops_review`（読む・記録するだけの手を 3 つまで） | 使う | あり | 毎回 |
+
+A・B・D・E の一覧は既存の無料の intent で足りる＝Hermes の種類にしない（重複させない・課金しない）。
+
+`kind: "ops_review"`：
+- 承認の対象は params（title・body・kind）。**状況は承認の後、inbox へ渡す時に作る**（`handlers.mjs` の `opsReviewContext`）：`status.query {detail:true}` と同じ水準・件数、PAUSE、7 日の間の同じ依頼元・同じ business の依頼（intent・state・code・時刻・試行の回数・Hermes の状態だけ）と state・code ごとの件数。**依頼の params・summary・Hermes の結果の文・task_ref・path は入れない**。他の依頼元の分は件数だけ（`task.status` と同じ範囲）。**台帳に無い intent の名前は Bot が書いた文字列なので `unknown_intent` に置き換える**（長さの上限が無く、名前に指示を混ぜられる＝独立監査 F1）。code は固定の形だけ（違えば `other`）、state・code の組は多い順に 20 まで（残りは `other_codes` に件数）。一覧は 30 件まで、8 KiB を超えれば 15→5→0 件に減らし、全部でない時は `recent_truncated: true`。それでも超えれば水準と PAUSE だけ残す（`truncated`）。file は行に分けて書く（1 行の上限で切られないように）
+- 状況は Hermes にとっても**データであって指示ではない**と決まった指示の文に書いた（依頼の本文と同じく不信頼の側）
+- Hermes への指示は種類ごとの決まった文（`hermes-work.mjs` の `KIND_GUIDES`）。依頼の文からは作らない。sandbox・読める file は変えていない（状況は依頼の file の中にある）
+- 台帳に無い種類は `params_invalid`（承認待ちにもならない）
+
+### 12-3. 結果の返し方（Grok の「実行した仕事の結果は？」）
+
+`task.status {view:"hermes"}` の一覧は、新しい方から 5 件だけ結果の要約の頭（200 字・切った時は `summary_truncated: true`）も返す。全文は `task_ref` で引く。要約は `collect-hermes` の関所を通り、同じ依頼元へ返している文と同じ。
+
+### 12-4. 今の実行可能の状態（2026-11-18 14 時台に読むだけで確認）
+
+- 常駐の gateway は動いている。inbox は 0750・outbox は 2770（どちらも専用の group）。inbox・outbox は空＝**Hermes の実機の業務の実行の実績はまだ無い**
+- 11-11 の承認待ちの `hermes.task` 1 件は承認されないまま、11-18 17:09 JST に 7 日の期限で `expired`（`approval_timeout`・依頼元へ板で返す）になる。**黙って出し直さない**
+- 実機の初回は Human（§11 の `hermes-work-run.sh --paid-ok`）。新しい依頼を出し、Mac の端末で承認して 1 件実行する
+
+### 12-5. 無人の継続・復旧の確かめ（どこで担保しているか）
+
+| 要る機能 | 担保 | 試験 |
+|---|---|---|
+| 独立の task の継続 | runner の 5 分の回・時間の予算・Dropbox だけの回路遮断（`docs/task-hub.md` §5） | `task-hub-autonomy-20261118` |
+| 承認待ちの隔離 | `awaiting_approval` は走らない・7 日で expired・Hermes は承認の後だけ inbox | `task-hub-e2e`・`hermes-ops-20261118` |
+| 有限回の再試行 | handler は既定 3 回の指数 backoff。Hermes は自動でやり直さない（有料）・`--retry` で最大 3 回 | `hermes-work` |
+| 二重の実行の防止 | run.lock・名前つきの排他 `hermes-work`・結果の file が在れば実行しない・取り込みの印 | `hermes-work`・`task-hub-chain` |
+| 時間の上限 | handler の timeout・Hermes は 120 秒で強制終了・課金なしの確かめは 60 秒 | `hermes-work` |
+| エラーの分類 | 固定の code（監査・板・host-health の `hermes_jobs`） | 各 test |
+| 結果の永続化 | `hermes-jobs/`・notes・監査の鎖 | `hermes-work` |
+| 中断の後の整合 | lease の切れた running・`interrupted`（4 分の猶予と process の印） | `hermes-work` |
+| host-health | `task_hub_approval`・`task_hub_queue`・`hermes_jobs`（§11） | `task-hub-watch` |
+| 安全な停止と復旧 | `PAUSE`・`connect-task-hub.sh --remove`・`dismiss` | `task-hub` |
+
+新しい定期の job・常駐・無制限の自律ループは足していない。
+
+独立監査（2026-11-18・1 名）：high 0・medium 1（F1 上記）・low 7（code の数の上限・切り詰めの印・確かめ直しで inbox の file を照らす・断った時に sudo を聞かない・状況の読みの失敗の code・行に分けて書く・壊れた記録 1 つで失敗にしない）。全部直して試験を足した（`tests/hermes-ops-20261118.test.mjs`）。残り：Hermes の `read_file` が長い file をどこで切るかは未確認（v0.22.4 の source で確かめていない。実機の初回の結果で見る）

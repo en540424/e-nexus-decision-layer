@@ -56,13 +56,13 @@ task → [承認待ち] →(Human が端末で承認)→ queued → run → succ
 | intent | class | 内容 |
 |---|---|---|
 | `status.query` | auto | runtime-brief を読み、水準・要確認の件数・生成時刻だけ返す（`brief_path` が未設定なら失敗）。**`{ "detail": true }`（2026-11-13）**：区分ごとの水準（ok／warn／crit だけ・文も日数も値も無い＝runtime-brief の externalView と同じ範囲）・その business の Task Hub の件数（承認待ち・待ち・実行中・24 時間の失敗・止まった）・Hermes の業務の件数・定期の回のコード |
-| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running）。hermes.task は `hermes: { status, summary? }` も。**`{ "view": "recent"\|"awaiting_approval"\|"failed"\|"succeeded"\|"hermes", "limit": 1..20 }`（2026-11-13）**：自分の依頼の一覧（task_ref・intent・state・updated_at・code・Hermes の状態）を新しい順に。承認待ちは他の依頼元の分を件数だけ（`others_awaiting_approval`）。task_ref と view の両方は `params_task_ref_or_view` で failed。**2026-11-16**（本番で Bot の `{}` と `view: "pending"` が失敗した・`docs/grok-bot.md` §7）：params が空＝`recent`、view の別名（`pending`・`approval`・`awaiting`／`failure(s)`・`error(s)`／`success`・`done`・`completed`／`all`・`latest`）を正式な語へ寄せる、`succeeded` の view。台帳の enum は `handlers.mjs` の `VIEWS` と `VIEW_ALIASES` の和（test が照合） |
+| `task.status` | auto | 同じ依頼元**かつ**同じ business の task の状態だけ。無い・別の business は `not_found`（存在を教えない）。自分自身の key を引けば `found`（state は running）。hermes.task は `hermes: { status, summary? }` も。**`{ "view": "recent"\|"awaiting_approval"\|"failed"\|"succeeded"\|"hermes", "limit": 1..20 }`（2026-11-13）**：自分の依頼の一覧（task_ref・intent・state・updated_at・code・Hermes の状態）を新しい順に。承認待ちは他の依頼元の分を件数だけ（`others_awaiting_approval`）。task_ref と view の両方は `params_task_ref_or_view` で failed。**2026-11-16**（本番で Bot の `{}` と `view: "pending"` が失敗した・`docs/grok-bot.md` §7）：params が空＝`recent`、view の別名（`pending`・`approval`・`awaiting`／`failure(s)`・`error(s)`／`success`・`done`・`completed`／`all`・`latest`）を正式な語へ寄せる、`succeeded` の view。台帳の enum は `handlers.mjs` の `VIEWS` と `VIEW_ALIASES` の和（test が照合）。**2026-11-18**：`hermes` の view は新しい 5 件だけ結果の要約の頭（200 字・`summary_truncated`）も返す（`docs/hermes-work.md` §12-3） |
 | `mail.digest.ingest` | auto | Grok が作った要約を business の記録に残す（id で重複除去）。メールの操作はしない |
 | `calendar.digest.ingest` | auto | 同上＋重なり・重複の疑い（同題名＋同開始、または 90% 以上重なり題名が似ている）を検出 |
 | `report.morning` | auto | その business 自身の記録から決まった文面（3000 字まで）。2026-11-13：今日・明日の予定と同じ `case_ref` のメモ（`■ 予定に関係するメモ`）・Mac の稼働状況（水準と件数だけ）・Hermes の業務の件数を足す。**記録（`records/<business>/`）と `report.morning` の範囲は business 単位で、依頼元（source）単位ではない**：同じ business に複数の source が書けば 1 つの記録に混ざり、`承認待ちのタスク N 件` もその business の全 source の承認待ちを数える。予定の照合は最大 500 件・50,000 組まで（超えたら「一部だけ照合」と出す）。3000 件の保存でも 1 秒未満 |
 | `note.record` | ai_check | 短いメモ（500 字）を business のメモに追記。`case_ref`（任意・予定の case_ref と同じ値）で朝のまとめが予定と結ぶ |
 
-走らない：`hermes.task`（承認が要る。**休眠**：`hermes_inbox` に設定されたフォルダが既に在る時だけ 1 file 書く。作らない。無ければ `hermes_inbox_not_connected` で終わり再試行しない）。台帳にだけ在り handler が無いもの：`freeform.request`・`mail.reply.draft`・`mail.send`・`mail.label`・`mail.move`・`mail.mark-read`・`mail.delete`・`calendar.event.create|update|delete`・`docomo.rule.propose`・`dropbox.read`・`github.read`。これらは追跡のために受けるだけで、承認しても `blocked/no_handler`。
+走らない：`hermes.task`（承認が要る。`kind: "ops_review"`〈2026-11-18〉は渡す時に Task Hub の状況を添える＝`docs/hermes-work.md` §12-2。**休眠**：`hermes_inbox` に設定されたフォルダが既に在る時だけ 1 file 書く。作らない。無ければ `hermes_inbox_not_connected` で終わり再試行しない）。台帳にだけ在り handler が無いもの：`freeform.request`・`mail.reply.draft`・`mail.send`・`mail.label`・`mail.move`・`mail.mark-read`・`mail.delete`・`calendar.event.create|update|delete`・`docomo.rule.propose`・`dropbox.read`・`github.read`。これらは追跡のために受けるだけで、承認しても `blocked/no_handler`。
 
 runner：`run` の呼び出しごとに 1 回回って終わる（常駐しない）。lock・lease・指数 backoff（30 秒から、最大 1 時間、既定 3 回まで）・AbortSignal の timeout。**同期の handler は timer が回る前に終わるので、戻った後の実時間も測り、`timeout_ms` を超えていたら timeout として扱う**（結果は捨てて再試行の道）。lease の切れた running は、handler が resumable なら checkpoint を残して queued に戻し、そうでなければ `stopped`（`interrupted_not_resumable`）。想定外の失敗が連続 3 回で `PAUSE` を書いて止まる（消すのは Human）。**連続回数は store の `breaker.json` に残り、`run` の呼び出しをまたいで数える**（`--max 1` を繰り返しても 3 回で止まる。成功で 0、PAUSE を書いたら 0 から）。休眠・未設定のような想定内の失敗は数えない。
 
@@ -230,3 +230,15 @@ routines の API trigger の endpoint・token の範囲・上限・課金／ク�
 1. 最初の手動の試験 1 回（Human の login・Max の枠を使う）：公開 repo の docs だけを直す安全な依頼を `claude --cloud` で出し、**branch の名前・PR の出方・状態の見え方・使った枠**を実測して §17-3 の未確認を減らす
 2. 結果が良ければ、依頼の記録だけの intent（Task Hub は起動しない）を足すか決める。B は公式の仕様が固まってから
 
+### 17-5. 開発の依頼の受け付けの形（案・2026-11-18・コードは足していない）
+
+| 項目 | 今の形（足さずに使える物） | 足すなら（§17-4 の手動の試験の後・Human の判断） |
+|---|---|---|
+| 受付 | `note.record`（`case_ref: "dev-<repo の略>-<連番>"`・text に repo とやりたいこと）で記録だけ。Task Hub は Claude Code を起動しない | 記録だけの intent `dev.request`（`repo` は enum・`target` は enum・title・body）。承認しても起動しない |
+| 対象の repo | `deploy/macos/repos.conf` の E-NEXUS の repo の名前だけ（任意の URL・他人の repo は受けない） | 同じ一覧を enum に |
+| 実行先 | Human が選ぶ：Mac の Claude Code（Human のセッション）か `claude --cloud`（Human の login）。Bot は選ばない | 同上（Bot に選ばせない） |
+| 状態 | Task Hub の state は「記録した」まで。開発の状態は claude.ai/code と GitHub の branch／PR | `dev.request` の task に `case_ref` を持たせ、完了を記録だけの intent で足す |
+| 完了の記録 | Human か Claude Code が同じ `case_ref` で `note.record`（短い sha・PR の番号） | 読む intent（同じ依頼元の dev の記録の一覧）を足さないと Grok からは見えない（今は `report.morning` の予定に結んだメモだけ） |
+| 失敗・承認待ち | Human が PR を merge しない・閉じる。Task Hub に承認の代わりを持たせない | 変えない |
+
+限り：Grok → Claude Code の自動の起動は作らない（§17 の規約・Max の login を VPS・Bot に置かない）。開発の結果を Grok が読むには、読む intent の追加（記録だけ・同じ依頼元）が要る＝Human の判断。

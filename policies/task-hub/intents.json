@@ -73,8 +73,8 @@
     "hermes.task": {
       "class": "human_required", "handler": "hermes.task", "timeout_ms": 10000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 } } },
-      "usage": "params: {\"title\":\"<1-120 chars>\",\"body\":\"<1-2000 chars>\"}. No other keys. It runs only after a human approves it on the Mac.",
+      "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 }, "kind": { "type": "string", "enum": ["ops_review"] } } },
+      "usage": "params: {\"title\":\"<1-120 chars>\",\"body\":\"<1-2000 chars>\",\"kind\":\"<optional: ops_review = Hermes reviews Task Hub states, failures and waiting items>\"}. No other keys. It runs only after a human approves it on the Mac.",
       "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
     },
     "dropbox.search": {

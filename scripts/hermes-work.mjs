@@ -7,6 +7,7 @@
  *        1. 承認待ちの hermes.task を 1 件ずつ全文で見せ、確認コードを打てば承認（task-hub の approve と同じ。端末だけ・空 Enter で飛ばす）
  *        2. Task Hub の queue を回して承認済みの依頼を Hermes の inbox へ渡す
  *        3. 渡す 1 件を選び、--paid-ok が無ければ課金の前で止まる。--paid-ok なら sudo の password（排他を取る前に）
+ *           承認から 24 時間を過ぎた依頼は、sudo の前にもう一度全文を見せて確認コードを聞く（端末だけ。打たなければ approval_stale で止まる・2026-11-18）
  *        4. 課金なしの確かめ（メモリ・常駐・権限・sandbox の規則・無効な鍵での Hermes の起動＝Anthropic が 401 を返すところまで）
  *        5. hermes として sandbox の中で `hermes -z` を 1 回（120 秒・道具は file だけ・鍵は環境変数だけ）→ 結果の取り込み → 依頼元（Grok）へ返す
  *        やり直し（時間切れ・結果なし・結果の拒否・中断）は --task <id> --retry（有料・最大 3 回）
@@ -26,13 +27,14 @@ import { fileURLToPath } from 'node:url';
 import { LOADER, productionParams, sandboxArgs, WORK_PROFILE } from './lib/hermes-sandbox.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
 import { businessServices } from './lib/task-hub/business-services.mjs';
-import { dismissJob, jobStatus, pgrepAlive } from './lib/task-hub/hermes-jobs.mjs';
-import { runWork } from './lib/task-hub/hermes-work.mjs';
+import { confirmCodeOf, currentDigest } from './lib/task-hub/approval.mjs';
+import { dismissJob, jobStatus, pgrepAlive, selectNext } from './lib/task-hub/hermes-jobs.mjs';
+import { approvalStale, runWork } from './lib/task-hub/hermes-work.mjs';
 import { createPolicy, loadCatalog, loadLocalConfig } from './lib/task-hub/policy.mjs';
 import { runOnce } from './lib/task-hub/runner.mjs';
 import { readSmallFile } from './lib/task-hub/safe-read.mjs';
 import { openStore, TASK_ID_RE } from './lib/task-hub/store.mjs';
-import { main as taskHub } from './task-hub.mjs';
+import { fullParams, main as taskHub } from './task-hub.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_STORE = path.join(homedir(), 'e-nexus-runtime', 'mac-runtime-state', 'task-hub');
@@ -185,6 +187,31 @@ async function approveHermesTasks({ store, out, isTTY }) {
   return n;
 }
 
+/**
+ * 承認から 24 時間を過ぎた依頼を、有料の実行の前に確かめ直す（端末だけ・全文・確認コード）。戻り値 { ok: 確かめた task id の Set, declined }。
+ * declined＝確かめ直しが要るのに通らなかった（端末でない・空・違うコード・inbox の file が承認の内容と違う）＝呼び出し側は sudo を聞かずに止める。
+ * ここで選ぶ 1 件は runWork が排他の中で選び直す。選び直した 1 件が違えば、その 1 件は確かめていない＝approval_stale で止まる（黙って実行しない）
+ * Hermes が読むのは inbox の file なので、見せる前にその file が承認した params・digest と同じかを確かめ、状況（context）の作った時刻も見せる（2026-11-18 監査 F4）
+ */
+export async function reconfirmStale({ store, config, taskId, retry, out, isTTY, ask, now = Date.now() }) {
+  const ok = new Set();
+  const sel = selectNext(store, { inbox: config.hermes_inbox, outbox: config.hermes_outbox, taskId, retry });
+  // 記録しなかった結果の file が残る --retry は、runWork が隔離してから選び直す＝ここでは id で読む（監査 F5）
+  const t = sel.task ?? (sel.code === 'rejected_result_present' && taskId ? store.readTask(taskId) : null);
+  if (!t || !approvalStale(t, now)) return { ok, declined: false };
+  const stop = (msg) => { out(msg); return { ok, declined: true }; };
+  if (!isTTY) return stop(`承認から 24 時間を過ぎた依頼：${t.task_id}（端末で実行すると、全文を見て確かめ直せる。今回は実行しない）`);
+  let doc = null;
+  try { doc = JSON.parse(readSmallFile(path.join(config.hermes_inbox, `${t.task_id}.json`), 64 * 1024)); } catch { doc = null; }
+  const same = doc && doc.task_id === t.task_id && doc.title === t.params.title && doc.body === t.params.body && doc.kind === t.params.kind
+    && typeof t.approval?.digest === 'string' && doc.approval_record?.digest === t.approval.digest && currentDigest(t) === t.approval.digest && t.content_digest === t.approval.digest;
+  if (!same) return stop(`inbox の file が承認した内容と違う・読めない：${t.task_id}（実行しない。Claude Code に伝える）`);
+  out(`\n── 承認から 24 時間を過ぎた Hermes の依頼：${t.task_id}（承認 ${t.approval.at ?? '-'}・依頼元 ${t.source}・${t.business}）\n今の内容（params の全文）：\n${fullParams(t)}${doc.context?.generated_at ? `\n添えた状況（context）の作った時刻：${doc.context.generated_at}（渡した時の状況。今の状況ではない）` : ''}\n確認コード：${confirmCodeOf(t)}`);
+  const code = String(await ask('この内容のまま Hermes に実行させる（有料）なら確認コードを入力。やめるなら空のまま Enter：')).trim();
+  if (code && code === confirmCodeOf(t)) { ok.add(t.task_id); return { ok, declined: false }; }
+  return stop(code ? '確認コードが違う（実行しない）' : '実行しない（閉じるなら dismiss）');
+}
+
 async function deliver({ store, configPath, out }) {
   const policy = createPolicy({ catalog: loadCatalog(), config: loadLocalConfig(configPath) });
   for (let i = 0; i < 6; i += 1) {
@@ -195,7 +222,7 @@ async function deliver({ store, configPath, out }) {
   }
 }
 
-export async function main(argv, { out = (s) => console.log(s), err = (s) => console.error(s), isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY), sudoValidate = () => spawnSync('/usr/bin/sudo', ['-v'], { stdio: 'inherit' }).status === 0 } = {}) {
+export async function main(argv, { out = (s) => console.log(s), err = (s) => console.error(s), isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY), sudoValidate = () => spawnSync('/usr/bin/sudo', ['-v'], { stdio: 'inherit' }).status === 0, ask = null, makeSys = null } = {}) {
   let a;
   try { a = parse(argv); } catch (e) { err(e.message); return 2; }
   const dir = path.resolve(a.store ?? DEFAULT_STORE);
@@ -228,11 +255,18 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
   if (a.approve) { const n = await approveHermesTasks({ store, out, isTTY }); if (n) out(`承認 ${n} 件`); }
   await deliver({ store, configPath, out });
   // sudo の password は排他を取る前に（入力を待つ間に排他を長く持たない・2026-11-13 監査 F6）
+  let reconfirmed = new Set();
+  if (a.paidOk && typeof config.hermes_inbox === 'string' && typeof config.hermes_outbox === 'string') {
+    const rc = await reconfirmStale({ store, config, taskId: a.task, retry: a.retry, out, isTTY, ask: ask ?? (async (q) => { const rl = createInterface({ input: process.stdin, output: process.stdout }); try { return await rl.question(q); } finally { rl.close(); } }) });
+    if (rc.declined) { out('止めました：approval_stale（sudo は聞かない・記録は waiting のまま）'); return 1; }
+    reconfirmed = rc.ok;
+  }
   if (a.paidOk) { out('sudo の password を聞かれたら入力（hermes の権限で動かすため）'); if (!sudoValidate()) { out('止めました：sudo_failed'); return 1; } }
-  const r = await runWork({ store, config, sys: macSys({ store, log: out, outbox: config.hermes_outbox }), taskId: a.task, retry: a.retry, paidOk: a.paidOk, log: out });
+  const r = await runWork({ store, config, sys: (makeSys ?? macSys)({ store, log: out, outbox: config.hermes_outbox }), taskId: a.task, retry: a.retry, paidOk: a.paidOk, reconfirmed, log: out });
   const say = {
     not_connected: 'Hermes の inbox・outbox が config に無い（休眠）', busy: '別の Hermes の実行の最中（終わってから）', nothing: '渡す依頼がありません（承認済みで Hermes へ渡した依頼が無い）',
-    paid_not_ok: `渡す依頼：${r.task_id}（中身は node scripts/task-hub.mjs show ${r.task_id}）。有料の実行の前で止めました。渡すなら --paid-ok を付けて実行`,
+    paid_not_ok: `渡す依頼：${r.task_id}（中身は node scripts/task-hub.mjs show ${r.task_id}）。有料の実行の前で止めました。渡すなら --paid-ok を付けて実行${r.approval_stale ? '（承認から 24 時間を過ぎているので、実行の前にもう一度全文を見て確認コードを打つ）' : ''}`,
+    approval_stale: `承認から 24 時間を過ぎた依頼：${r.task_id}（端末で --paid-ok を付けて実行し、全文を見て確認コードを打てば実行。やめるなら dismiss ${r.task_id} --confirm <12 桁>）`,
     done: `完了：${r.task_id}（結果は記録と依頼元へ）`, failed: `Hermes が「できない」と返した：${r.task_id}（理由は記録の notes）`,
     timeout: `時間切れ：${r.task_id}（やり直すなら --task ${r.task_id} --retry --paid-ok）`, no_result: `結果の file が無い：${r.task_id}（Claude Code に伝える。やり直すなら --task ${r.task_id} --retry --paid-ok）`,
     result_rejected: `結果を記録しなかった（${r.reason}）：${r.task_id}（Claude Code に伝える。やり直すなら --task ${r.task_id} --retry --paid-ok）`,
