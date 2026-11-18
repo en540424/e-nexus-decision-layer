@@ -10,7 +10,8 @@
  *           承認から 24 時間を過ぎた依頼は、sudo の前にもう一度全文を見せて確認コードを聞く（端末だけ。打たなければ approval_stale で止まる・2026-11-18）
  *        4. 課金なしの確かめ（メモリ・常駐・権限・sandbox の規則・無効な鍵での Hermes の起動＝Anthropic が 401 を返すところまで）
  *           --check-only（--paid-ok の代わり）はここまでで止める＝有料の実行はしない・記録は waiting のまま（2026-11-18）
- *        5. hermes として sandbox の中で `hermes -z` を 1 回（120 秒・道具は file だけ・鍵は環境変数だけ）→ 結果の取り込み → 依頼元（Grok）へ返す
+ *        5. hermes として sandbox の中で Hermes の -z を 1 回（120 秒・道具は file だけ・鍵は環境変数だけ）→ 結果の取り込み → 依頼元（Grok）へ返す
+ *           -z は sandbox の中の同じ process で動かす（v0.22.4 の `hermes -z` は常駐の gateway へ渡す client＝使わない。lib/hermes-sandbox.mjs の inProcessCommand・2026-11-18 夜）
  *        やり直し（時間切れ・結果なし・結果の拒否・中断）は --task <id> --retry（有料・最大 3 回）
  *   node scripts/hermes-work.mjs dismiss <task_id> --confirm <12hex>   実行せずに閉じる（waiting・やり直し待ち。端末だけ。確認コードは task-hub show と同じ）
  *   sh deploy/macos/hermes-work-run.sh --paid-ok  は run と同じ
@@ -26,7 +27,7 @@ import { lstatSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'no
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOADER, productionParams, sandboxArgs, WORK_LOCKED_DIRS, WORK_PROFILE, WORK_SOUL_MD } from './lib/hermes-sandbox.mjs';
+import { inProcessCommand, LOADER, productionParams, sandboxArgs, WORK_LOCKED_DIRS, WORK_PROFILE, WORK_SOUL_MD } from './lib/hermes-sandbox.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
 import { businessServices } from './lib/task-hub/business-services.mjs';
 import { confirmCodeOf, currentDigest } from './lib/task-hub/approval.mjs';
@@ -52,7 +53,31 @@ const RSS_LIMIT_MIB = 2048;
 const PROBE_SECONDS = 60;
 const OUTBOX_READ_MAX = 64 * 1024;
 const SECRET_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|[0-9a-f]{64,}/g;
-const AUTH_ERROR = /401|authentication|invalid[ _-]?x?-?api[ _-]?key|unauthori[sz]ed/i;
+/** Anthropic が鍵を拒んだ印（\b401\b＝session_id 等の数字の中の 401 を拾わない。in-process の 401 は stdout の「rejected your API key」で出る：
+ *  v0.22.4 agent/turn_failure_copy.py の _AUTH_COPY。監査 1・2） */
+const AUTH_ERROR = /\b401\b|authentication_error|invalid[ _-]?x-?api[ _-]?key|rejected your API key|unauthori[sz]ed/i;
+/** in-process の起動の差し替えが働かなかった（lib/hermes-sandbox.mjs の INPROC_ENTRY が出す） */
+const INPROC_ERROR = /e-nexus: (?:hermes oneshot signature changed|in-process oneshot returned|resume is not allowed|-z prompt is required)/;
+/** Hermes の gateway の client の止まり（gateway_client.connect_gateway・gateway_runtime）。「Gateway inaccessible: authorization」は鍵の 401 ではない */
+const GATEWAY_ERROR = /Gateway (?:inaccessible|absent|starting|draining|incompatible|could not start|connection failed|bootstrap|protocol mismatch)|no local fallback/i;
+
+/**
+ * 課金なしの起動の確かめの結果を判定する（null＝通った）。text は Hermes の stdout・stderr と usage の file の failure・turn_exit_reason だけ
+ * （session_id・token の数の中の数字を 401 と読まない。監査 1）。
+ * gateway の止まりを先に見る（2026-11-18 夜：v0.22.4 の hermes -z が gateway に渡そうとして sandbox に拒まれた「authorization」を、鍵の 401 と読まない）
+ */
+export function classifyProbe(pr, usageText = '') {
+  let u = null;
+  try { u = JSON.parse(usageText || 'null'); } catch { u = null; }
+  const usageWhy = u && typeof u === 'object' ? [u.failure, u.turn_exit_reason].filter((v) => typeof v === 'string').join('\n') : '';
+  const text = `${pr?.stdout ?? ''}\n${pr?.stderr ?? ''}\n${usageWhy}`;
+  if (pr?.status === 0) return 'probe_unexpected_success'; // 無効な鍵で成功＝別の資格情報が使われた（止める）
+  if (INPROC_ERROR.test(text)) return 'probe_inproc_unexpected'; // Hermes の形が変わった（Hermes を上げた時）
+  if (GATEWAY_ERROR.test(text)) return 'probe_gateway_transport'; // sandbox の外の常駐へ渡そうとした（in-process で動いていない）
+  if (AUTH_ERROR.test(text)) return null;
+  if (/Operation not permitted|PermissionError|EPERM|sandbox/i.test(text)) return 'probe_sandbox_breaks_hermes';
+  return pr?.signal || pr?.error ? 'probe_timeout' : 'probe_no_auth_error';
+}
 
 export function parse(argv) {
   const a = { command: argv[0], paidOk: false, checkOnly: false, retry: false, approve: true, task: null, store: null, confirm: null, positional: [] };
@@ -133,8 +158,10 @@ export function macSys({ store, log, outbox }) {
   const boxed = (ctx, seconds, cmd, { probe = true, usage = PROBE_USAGE } = {}) => [...envFor(ctx, probe), '/usr/bin/perl', '-e', LOADER, `${ROOT}/.env`, String(seconds), `${WORK_HOME}/cwd`,
     '/usr/bin/sandbox-exec', ...sandboxArgs(params(ctx, usage)), ...cmd];
   const readSafe = (n) => { try { return Buffer.from(readSmallFile(path.join(outbox, n), OUTBOX_READ_MAX), 'utf8'); } catch { return null; } };
+  let launch = null; // Hermes の in-process の起動（preflight が sandbox の中で決める・exec はこれだけを使う）
   return {
     async preflight(task, ctx) {
+      launch = null; // 途中で止まった確かめの後に前の起動を残さない（監査 5）
       if (sh('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']).stdout.trim() !== '1') return { ok: false, code: 'memory_pressure' };
       if (!ok(sh('/usr/bin/pgrep', ['-U', HU, '-f', GATEWAY]))) return { ok: false, code: 'gateway_not_running' };
       const rss = sh('/bin/ps', ['-U', HU, '-o', 'rss=']).stdout.split('\n').reduce((s, x) => s + (Number(x.trim()) || 0), 0) / 1024;
@@ -158,25 +185,30 @@ export function macSys({ store, log, outbox }) {
       if (inBox(['/bin/mkdir', `${ROOT}/plugins/.probe-${ctx.runToken}`])) { asHermes(['/bin/rmdir', `${ROOT}/plugins/.probe-${ctx.runToken}`]); return { ok: false, code: 'sandbox_plugins_writable' }; }
       if (inBox(['/usr/bin/touch', `${ctx.outbox}/.probe-${ctx.runToken}`])) { try { unlinkSync(`${ctx.outbox}/.probe-${ctx.runToken}`); } catch { /* 無い */ } return { ok: false, code: 'sandbox_outbox_open' }; }
       if (!inBox(['/usr/bin/touch', PROBE_USAGE])) return { ok: false, code: 'sandbox_usage_unwritable' };
+      // Hermes の launcher の runtime command を sandbox の中で読み、in-process の起動を作る（形が違えば止める）
+      const rc = asHermes(boxed(ctx, 30, [HERMES_BIN, '--print-runtime-command']), { timeout: 50_000 });
+      const cmd = ok(rc) ? inProcessCommand(rc.stdout, ROOT) : null;
+      if (!cmd) { keepLog(store, `${task.task_id}-launcher`, outputTail(rc)); return { ok: false, code: 'hermes_launcher_unexpected' }; }
       // Hermes 本体を sandbox の中で起動（無効な鍵＝Anthropic は 401 を返し課金されない）。起動・依存・state の場所が sandbox で壊れないことを確かめる
       log('課金なしの起動の確かめ（無効な鍵で Hermes を sandbox の中で起動。最大 60 秒）');
       const since = Date.now();
-      const pr = asHermes(boxed(ctx, PROBE_SECONDS, ['/usr/sbin/taskpolicy', '-b', HERMES_BIN, '-z', `Reply with the single word OK. (probe ${ctx.runToken})`, '-t', 'file', '--usage-file', PROBE_USAGE]), { timeout: (PROBE_SECONDS + 20) * 1000 });
+      const pr = asHermes(boxed(ctx, PROBE_SECONDS, ['/usr/sbin/taskpolicy', '-b', ...cmd, '-z', `Reply with the single word OK. (probe ${ctx.runToken})`, '-t', 'file', '--usage-file', PROBE_USAGE]), { timeout: (PROBE_SECONDS + 20) * 1000 });
       if (pr.signal || pr.error) asHermes(['/usr/bin/pkill', '-KILL', '-f', `probe ${ctx.runToken}`]);
-      keepLog(store, `${task.task_id}-probe`, outputTail(pr));
+      const pu = asHermes(['/bin/cat', PROBE_USAGE]);
+      const usageText = ok(pu) ? String(pu.stdout).slice(0, 4000) : '';
+      keepLog(store, `${task.task_id}-probe`, `${outputTail(pr)}\n--- usage ---\n${usageText}`);
       asHermes(['/bin/rm', '-f', PROBE_USAGE]);
-      const text = `${pr.stdout}\n${pr.stderr}`;
-      let code = null;
-      if (pr.status === 0) code = 'probe_unexpected_success'; // 無効な鍵で成功＝別の資格情報が使われた（止める）
-      else if (!AUTH_ERROR.test(text)) code = /Operation not permitted|PermissionError|EPERM|sandbox/i.test(text) ? 'probe_sandbox_breaks_hermes' : pr.signal || pr.error ? 'probe_timeout' : 'probe_no_auth_error';
+      const code = classifyProbe(pr, usageText);
       if (code) { keepDenials(store, `${task.task_id}-probe-denials`, since); return { ok: false, code }; }
       // 起動の確かめの間に sandbox の外（同じ uid の常駐など）から置かれた物が無いか、実行の直前にもう一度（監査 L3）
       const again = prepareWorkHome(asHermes);
       if (again) return { ok: false, code: again };
+      launch = cmd;
       return { ok: true };
     },
     async exec(task, ctx) {
-      const r = asHermes(boxed(ctx, ctx.seconds, ['/usr/sbin/taskpolicy', '-b', HERMES_BIN, '-z', ctx.prompt, '-t', 'file', '--usage-file', USAGE], { probe: false, usage: USAGE }), { timeout: (ctx.seconds + 30) * 1000 });
+      if (!launch) { keepLog(store, task.task_id, 'no launch command (preflight did not pass in this process)'); return { exit: 70, signal: null, timedOut: false }; }
+      const r = asHermes(boxed(ctx, ctx.seconds, ['/usr/sbin/taskpolicy', '-b', ...launch, '-z', ctx.prompt, '-t', 'file', '--usage-file', USAGE], { probe: false, usage: USAGE }), { timeout: (ctx.seconds + 30) * 1000 });
       keepLog(store, task.task_id, outputTail(r));
       return { exit: r.status, signal: r.signal, timedOut: r.signal === 'SIGALRM' || r.status === 142 || r.signal === 'SIGKILL' || r.error?.code === 'ETIMEDOUT' };
     },

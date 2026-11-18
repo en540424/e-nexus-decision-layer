@@ -19,6 +19,7 @@
  *   - 443 は名前で絞れない（Seatbelt の限界）。Anthropic 以外へ鍵を送らせないのは、管理の設定の base_url の固定と、profile の config.yaml を書けないこと
  *   - process-exec の拒否は代表の道具だけ（sh・python 等は止めていない）。今の道具は file だけで command を起こせない（terminal 等は管理の設定で無効）
  * 規則は tests/hermes-sandbox.test.mjs が Mac の sandbox-exec で確かめる（Hermes 本体での起動は hermes-work.mjs の課金なしの probe が確かめる）。
+ * Hermes は sandbox の中の同じ process で動かす（v0.22.4 の hermes -z は gateway＝sandbox の外の常駐へ渡す client なので使わない：下の inProcessCommand）。
  */
 const ENV_RE = String.raw`(regex #"/\.env(\.[^/]*)?$") (regex #"/\.envrc$") (regex #"/\.op\.env$")`;
 const AUTH_RE = String.raw`(regex #"/auth\.json$") (regex #"/auth\.lock$") (regex #"/\.anthropic_oauth\.json$") (regex #"/webhook_subscriptions\.json$")`;
@@ -136,3 +137,61 @@ chdir $wd or exit 67;
 alarm $secs;
 exec { $ARGV[0] } @ARGV or exit 66;
 `;
+
+/**
+ * Hermes の実行を sandbox の中の同じ process に留める起動（2026-11-18 夜・初回の --check-only の preflight_probe_no_auth_error）。
+ *
+ * v0.22.4 の `hermes -z` は gateway の client だけ（hermes_cli/main.py の _run_oneshot_from_args → gateway_chat.launch_from_args →
+ * gateway_client.connect_gateway）。会話の処理は gateway の owner で動き、named profile（profiles/work）の owner は root の multiplexer
+ * ＝常駐の gateway（sandbox の外・root の本物の鍵と設定）。sandbox は root の config と socket を拒むので「Gateway inaccessible: authorization」
+ * （gateway_runtime._refused）で止まった＝安全の側。gateway へはつながせない（つなぐと sandbox も無効な鍵の確かめも意味を失う）。
+ *
+ * 代わりに Hermes の in-process の -z の本体（hermes_cli.main._run_and_exit_oneshot → hermes_cli.oneshot.run_oneshot。上流の
+ * tests/hermes_cli/test_oneshot_*.py が試験している）を sandbox の中のこの process で動かす。起動は Hermes の launcher が出す
+ * runtime command（`hermes --print-runtime-command`＝hermes_cli/_launchers.runtime_command：store の python・-I・bootstrap）をそのまま使い、
+ * 最後の entry（runpy.run_module('hermes_cli.main')）だけを、gateway の transport を in-process に差し替えてから main() を呼ぶ code に替える。
+ * 引数の解釈・home の初期化・設定の読みは Hermes の main のまま。resume は使わない（前の会話を続けさせない）。
+ */
+export const RUNTIME_ENTRY = "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)";
+/** _run_and_exit_oneshot の引数（v0.22.4・main.py:137）。違えば起動しない（Hermes を上げた時に気づく・監査 6） */
+export const INPROC_SIGNATURE = 'prompt,model,provider,toolsets,skills,usage_file,resume,reasoning';
+export const INPROC_ENTRY = [
+  'import inspect',
+  'import hermes_cli.main as _m',
+  `if ','.join(inspect.signature(_m._run_and_exit_oneshot).parameters) != '${INPROC_SIGNATURE}': sys.exit('e-nexus: hermes oneshot signature changed')`,
+  'def _enexus_inproc(a):',
+  "    if getattr(a, 'resume', None) or getattr(a, 'continue_last', None): sys.exit('e-nexus: resume is not allowed')",
+  "    if not isinstance(getattr(a, 'oneshot', None), str): sys.exit('e-nexus: -z prompt is required')",
+  "    _m._run_and_exit_oneshot(a.oneshot, model=getattr(a, 'model', None), provider=getattr(a, 'provider', None), toolsets=getattr(a, 'toolsets', None), skills=getattr(a, 'skills', None), usage_file=getattr(a, 'usage_file', None), resume=None, reasoning=getattr(a, 'reasoning', None))",
+  "    sys.exit('e-nexus: in-process oneshot returned')",
+  '_m._run_oneshot_from_args = _enexus_inproc',
+  "sys.argv[0] = 'hermes'",
+  'sys.exit(_m.main())',
+].join('\n');
+
+/**
+ * `hermes --print-runtime-command` の出力（JSON の配列 1 行）から in-process の起動の command を作る。形が違えば null（止める）。
+ * python は Hermes の root の hermes-agent・tools・installs の下の python3（名前の頭が . の段を含まない＝sandbox の中で書ける
+ * installs の .leases・.install.lock と profile の home の python は使わない。監査 3）。
+ * bootstrap は v0.22.4 の _launchers.runtime_command（home なし）の文とちょうど同じであること（形だけでなく全文。監査 4）。
+ */
+export function runtimeBootstrap(hermesRoot) {
+  return "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
+    + `os.environ.pop('VIRTUAL_ENV', None); sys.path.insert(0, '${hermesRoot}/hermes-agent'); sys._hermes_pin_default_home = True; import hermes_bootstrap; `
+    + "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', str(__import__('hermes_constants').get_default_hermes_root())); "
+    + RUNTIME_ENTRY;
+}
+const PY_SEG = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export function inProcessCommand(printed, hermesRoot) {
+  const line = String(printed ?? '').split('\n').map((l) => l.trim()).filter(Boolean).pop();
+  let cmd;
+  try { cmd = JSON.parse(line ?? ''); } catch { return null; }
+  if (!Array.isArray(cmd) || cmd.length !== 4 || !cmd.every((x) => typeof x === 'string')) return null;
+  const [py, iso, dashC, boot] = cmd;
+  if (iso !== '-I' || dashC !== '-c') return null;
+  if (!SAFE_PATH.test(py) || !SAFE_PATH.test(hermesRoot) || !py.startsWith(`${hermesRoot}/`)) return null;
+  const segs = py.slice(hermesRoot.length + 1).split('/');
+  if (!['hermes-agent', 'tools', 'installs'].includes(segs[0]) || segs.length < 2 || !segs.every((x) => PY_SEG.test(x)) || !/^python3(\.\d+)?$/.test(segs.at(-1))) return null;
+  if (boot !== runtimeBootstrap(hermesRoot)) return null;
+  return [py, '-I', '-c', `${boot.slice(0, -RUNTIME_ENTRY.length)}exec(${JSON.stringify(INPROC_ENTRY)})`];
+}
