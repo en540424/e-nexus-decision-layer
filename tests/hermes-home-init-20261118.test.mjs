@@ -56,7 +56,7 @@ function world() {
   const U = path.join(R, 'Users');
   const H = path.join(U, 'hermes');
   const root = path.join(H, '.hermes');
-  const work = path.join(root, 'profiles/work');
+  const work = path.join(root, 'e-nexus-work');
   for (const p of [path.join(root, 'hermes-agent'), path.join(root, 'tools'), path.join(root, 'installs'), path.join(work, 'cwd'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(U, 'Shared/w/inbox'), path.join(U, 'Shared/w/outbox')]) mkdirSync(p, { recursive: true });
   const script = path.join(root, 'hermes-agent', 'init_home.py');
   writeFileSync(script, INIT_PY);
@@ -80,7 +80,7 @@ test('11-18 の停止の再現と直し：先に整えなければ Hermes の起
   const x = world();
   const before = initInBox(x);
   assert.equal(before.status, 3, before.stdout + before.stderr);
-  assert.match(before.stderr, /Operation not permitted.*\/profiles\/work\/cron/, '本番の log と同じ止まり方（probe_sandbox_breaks_hermes）');
+  assert.match(before.stderr, /Operation not permitted.*\/e-nexus-work\/cron/, '本番の log と同じ止まり方（probe_sandbox_breaks_hermes）');
   assert.equal(prepareWorkHome(localRun, x.work), null);
   const after = initInBox(x);
   assert.equal(after.status, 0, after.stderr);
@@ -98,7 +98,7 @@ test('11-18 の停止の再現と直し：先に整えなければ Hermes の起
 test('prepareWorkHome：空のフォルダと決まった SOUL.md を作る（0600）。中身・link・plugins・.env・config.yaml・cwd の中身・書き換えた SOUL.md が在れば止める', { skip: process.platform !== 'darwin' }, async () => {
   const { prepareWorkHome } = await import('../scripts/hermes-work.mjs');
   const R = realpathSync(mkdtempSync(path.join(tmpdir(), 'hermes-prep-')));
-  const work = path.join(R, '.hermes/profiles/work');
+  const work = path.join(R, '.hermes/e-nexus-work');
   const p = (s) => path.join(work, s);
   assert.equal(prepareWorkHome(localRun, work), null);
   for (const d of ['cwd', ...WORK_LOCKED_DIRS]) assert.ok(lstatSync(p(d)).isDirectory(), d);
@@ -140,7 +140,7 @@ test('prepareWorkHome：空のフォルダと決まった SOUL.md を作る（06
   // home そのものが link
   const real = path.join(R, 'real-work');
   mkdirSync(real);
-  const linked = path.join(R, '.hermes/profiles/linked');
+  const linked = path.join(R, '.hermes/linked');
   symlinkSync(real, linked);
   assert.equal(prepareWorkHome(localRun, linked), 'work_home_link');
   assert.equal(prepareWorkHome(() => ({ status: 1, stdout: '' }), work), 'work_home', 'mkdir が失敗すれば止める');

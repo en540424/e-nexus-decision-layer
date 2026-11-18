@@ -59,7 +59,7 @@ function world(main = FAKE_MAIN) {
   const U = path.join(R, 'Users');
   const H = path.join(U, 'hermes');
   const root = path.join(H, '.hermes');
-  const work = path.join(root, 'profiles/work');
+  const work = path.join(root, 'e-nexus-work');
   const code = path.join(root, 'hermes-agent');
   for (const p of [path.join(code, 'hermes_cli'), path.join(root, 'tools/py/bin'), path.join(root, 'installs'), path.join(work, 'cwd'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(U, 'Shared/w/inbox'), path.join(U, 'Shared/w/outbox')]) mkdirSync(p, { recursive: true });
   writeFileSync(path.join(code, 'hermes_bootstrap.py'), '');
@@ -94,8 +94,8 @@ test('inProcessCommand：形が違えば null（止める）', () => {
   const bad = [
     '', 'not json', '{"a":1}', JSON.stringify([py, '-I', '-c']), JSON.stringify([py, '-c', boot, 'x']),
     JSON.stringify([py, '-I', '-c', boot, '--extra']),
-    JSON.stringify([`${root}/profiles/work/bin/python3`, '-I', '-c', boot]), // sandbox の中で書ける所の python
-    JSON.stringify([`${root}/tools/../profiles/work/python3`, '-I', '-c', boot]),
+    JSON.stringify([`${root}/e-nexus-work/bin/python3`, '-I', '-c', boot]), // sandbox の中で書ける所の python
+    JSON.stringify([`${root}/tools/../e-nexus-work/python3`, '-I', '-c', boot]),
     JSON.stringify(['/usr/bin/python3', '-I', '-c', boot]),
     JSON.stringify([`${root}/tools/p y/python3`, '-I', '-c', boot]),
     JSON.stringify([`${root}/installs/k/.leases/python3`, '-I', '-c', boot]), // sandbox の中で書ける（監査 3）
@@ -126,6 +126,18 @@ test('classifyProbe：gateway の「authorization」は鍵の 401 と読まな�
   assert.equal(classifyProbe({ status: 2, stdout: "Anthropic rejected your API key, so the model can't be reached. Update it in Settings → Providers, or run `hermes setup` in a terminal.\n", stderr: '' }), null, 'in-process の 401 の文（turn_failure_copy._AUTH_COPY・監査 2）');
   assert.equal(classifyProbe({ status: 1, stderr: 'e-nexus: hermes oneshot signature changed' }), 'probe_inproc_unexpected');
   assert.equal(classifyProbe({ status: 1, stderr: 'e-nexus: in-process oneshot returned' }), 'probe_inproc_unexpected');
+  // traceback は -c の code の全文を出す：code の中の文で差し替えの止まりと読まない（11-18 夜）
+  const tb = `Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    exec(${JSON.stringify(INPROC_ENTRY)})\nModuleNotFoundError: No module named 'pydantic'\n`;
+  assert.equal(classifyProbe({ status: 1, stderr: tb }), 'probe_hermes_crashed');
+  assert.equal(classifyProbe({ status: 1, stderr: `${tb}PermissionError: [Errno 1] Operation not permitted: '/x/cron'` }), 'probe_sandbox_breaks_hermes');
+  // 監査（11-18 夜・2 回目）M1：traceback の行番号・source の識別子・時間切れの前の 401 の文で通さない
+  const frame401 = 'Traceback (most recent call last):\n  File "/Users/hermes/.hermes/hermes-agent/run_agent.py", line 401, in __init__\n    self._open_store()\nPermissionError: [Errno 1] Operation not permitted: \'/Users/hermes/.hermes/e-nexus-work/memories/MEMORY.md\'\n';
+  assert.equal(classifyProbe({ status: 1, stderr: frame401 }), 'probe_sandbox_breaks_hermes');
+  const ident = 'Traceback (most recent call last):\n  File "/x/agent/credential_pool.py", line 88, in load\n    raise UnauthorizedClientError(reason)\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nImportError: cannot import name x\n';
+  assert.equal(classifyProbe({ status: 1, stderr: ident }), 'probe_hermes_crashed');
+  assert.equal(classifyProbe({ status: null, signal: 'SIGALRM', stdout: "Anthropic rejected your API key, so the model can't be reached.\n" }), 'probe_timeout');
+  assert.equal(classifyProbe({ status: 1, stderr: 'Unauthorized' }), 'probe_no_auth_error', '識別子・語だけの Unauthorized は鍵の拒否の印にしない');
+  assert.equal(classifyProbe({ status: 2, stdout: 'Error code: 401 - {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' }), null);
   assert.equal(classifyProbe({ status: 0, stdout: 'OK' }), 'probe_unexpected_success');
   assert.equal(classifyProbe({ status: 1, stderr: "PermissionError: [Errno 1] Operation not permitted: '/x/cron'" }), 'probe_sandbox_breaks_hermes');
   assert.equal(classifyProbe({ status: null, signal: 'SIGKILL', stderr: '' }), 'probe_timeout');

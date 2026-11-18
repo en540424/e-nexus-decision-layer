@@ -19,16 +19,16 @@ function world() {
   const U = path.join(R, 'Users');
   const H = path.join(U, 'hermes');
   const root = path.join(H, '.hermes');
-  const work = path.join(root, 'profiles/work');
+  const work = path.join(root, 'e-nexus-work');
   const d = (p) => { mkdirSync(p, { recursive: true }); return p; };
-  for (const p of ['hermes-agent', 'tools', 'installs/k1/environments/g1/.leases', 'sessions', 'memories', 'auth', 'logs', 'backups', 'cron', 'plugins', 'hooks', 'skills', 'profiles/other', 'profiles/work/sessions', 'profiles/work/cwd', 'profiles/work/cache/scratch']) d(path.join(root, p));
+  for (const p of ['hermes-agent', 'tools', 'installs/k1/environments/g1/.leases', 'sessions', 'memories', 'auth', 'logs', 'backups', 'cron', 'plugins', 'hooks', 'skills', 'profiles/other', 'profiles/work/cron', 'e-nexus-work/sessions', 'e-nexus-work/cwd', 'e-nexus-work/cache/scratch']) d(path.join(root, p));
   d(path.join(H, '.local/bin')); d(path.join(H, 'work')); d(path.join(U, 'operator/.ssh')); d(path.join(R, 'vf'));
   const shared = d(path.join(U, 'Shared/w'));
   const inbox = d(path.join(shared, 'inbox'));
   const outbox = d(path.join(shared, 'outbox'));
   const w = (p, s = 'x') => writeFileSync(p, s);
   w(path.join(root, '.env'), `ANTHROPIC_API_KEY=${'k'.repeat(40)}\n`);
-  for (const p of ['auth.json', 'auth/token', 'state.db', 'sessions/s1', 'memories/m', 'logs/agent.log', 'backups/state.db', 'cron/jobs.json', 'profiles/other/state.db', 'config.yaml', 'hermes-agent/code.py', 'installs/k1/facts.json', 'profiles/work/state.db', 'profiles/work/.env.bak']) w(path.join(root, p));
+  for (const p of ['auth.json', 'auth/token', 'state.db', 'sessions/s1', 'memories/m', 'logs/agent.log', 'backups/state.db', 'cron/jobs.json', 'profiles/other/state.db', 'profiles/work/state.db', 'config.yaml', 'hermes-agent/code.py', 'installs/k1/facts.json', 'e-nexus-work/state.db', 'e-nexus-work/.env.bak']) w(path.join(root, p));
   w(path.join(U, 'operator/.ssh/id'), 's'); w(path.join(inbox, `${TASK}.json`), 'req'); w(path.join(inbox, 't2.json'), 'other'); w(path.join(shared, 'brief.json'), 'b');
   w(path.join(outbox, 't-20261113000000-0000ffff.json'), '{"summary":"別の business の結果"}');
   const params = { USERS_ROOT: U, HERMES_ROOT: root, WORK_HOME: work, LOCAL_BIN: path.join(H, '.local/bin'), USAGE_FILE: path.join(H, 'work/u.json'), REQUEST: path.join(inbox, `${TASK}.json`), BRIEF: path.join(shared, 'brief.json'), RESULT: path.join(outbox, `${TASK}.json`), SYSTEM_TMP: path.join(R, 'vf') };
@@ -41,9 +41,9 @@ test('sandbox の読み：依頼の 1 file・code・依存・profile の state �
   const x = world();
   const rd = (p) => inBox(x.params, '/bin/cat', p);
   const r = (p) => path.join(x.root, p);
-  const yes = [x.params.REQUEST, x.params.BRIEF, r('hermes-agent/code.py'), r('installs/k1/facts.json'), r('profiles/work/state.db'), '/etc/hosts'];
-  const no = [path.join(x.inbox, 't2.json'), path.join(x.outbox, 't-20261113000000-0000ffff.json'), r('.env'), r('profiles/work/.env.bak'), r('auth.json'), r('auth/token'),
-    r('state.db'), r('sessions/s1'), r('memories/m'), r('logs/agent.log'), r('backups/state.db'), r('cron/jobs.json'), r('profiles/other/state.db'), r('config.yaml'),
+  const yes = [x.params.REQUEST, x.params.BRIEF, r('hermes-agent/code.py'), r('installs/k1/facts.json'), r('e-nexus-work/state.db'), '/etc/hosts'];
+  const no = [path.join(x.inbox, 't2.json'), path.join(x.outbox, 't-20261113000000-0000ffff.json'), r('.env'), r('e-nexus-work/.env.bak'), r('auth.json'), r('auth/token'),
+    r('state.db'), r('sessions/s1'), r('memories/m'), r('logs/agent.log'), r('backups/state.db'), r('cron/jobs.json'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('config.yaml'),
     path.join(x.U, 'operator/.ssh/id')];
   for (const p of yes) assert.equal(rd(p), true, `読める：${p}`);
   for (const p of no) assert.equal(rd(p), false, `読めない：${p}`);
@@ -55,15 +55,16 @@ test('sandbox の書き：結果の 1 file・usage・profile の state・依存�
   const x = world();
   const wr = (p) => inBox(x.params, '/usr/bin/touch', p);
   const r = (p) => path.join(x.root, p);
-  const yes = [x.params.RESULT, x.params.USAGE_FILE, r('profiles/work/sessions/s'), r('profiles/work/state.db'), r('profiles/work/cache/scratch/t'), r('installs/k1/.install.lock'), r('installs/k1/environments/g1/.leases/abc'), path.join(x.R, 'vf/t')];
+  const yes = [x.params.RESULT, x.params.USAGE_FILE, r('e-nexus-work/sessions/s'), r('e-nexus-work/state.db'), r('e-nexus-work/cache/scratch/t'), r('installs/k1/.install.lock'), r('installs/k1/environments/g1/.leases/abc'), path.join(x.R, 'vf/t')];
   const no = [path.join(x.outbox, 'other.json'), path.join(x.outbox, `.${TASK}.json.tmp`), r('plugins/p.py'), r('hooks/h.py'), r('cron/jobs.json'), r('skills/SKILL.md'), r('SOUL.md'), r('config.yaml'),
     r('hermes-agent/x.py'), r('tools/py'), r('installs/k1/environments/g1/site.py'), r('installs/k1/facts.json'), r('.env'), r('state.db'), r('sessions/s2'),
-    r('profiles/work/config.yaml'), r('profiles/work/.env'), r('profiles/work/cwd/AGENTS.md'), r('profiles/work/SOUL.md'), r('profiles/other/state.db'),
+    r('e-nexus-work/config.yaml'), r('e-nexus-work/.env'), r('e-nexus-work/cwd/AGENTS.md'), r('e-nexus-work/SOUL.md'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('profiles/work/cron/jobs.json'), r('profiles/work/SOUL.md'), r('profiles/new/SOUL.md'),
     path.join(x.inbox, 'x'), path.join(x.U, 'operator/x'), `/private/tmp/hermes-sbx-probe-${process.pid}`];
   for (const p of yes) assert.equal(wr(p), true, `書ける：${p}`);
   for (const p of no) assert.equal(wr(p), false, `書けない：${p}`);
-  assert.equal(inBox(x.params, '/bin/mkdir', '-p', r('profiles/work/hooks/h')), false, 'profile に hook のフォルダを作れない');
-  assert.equal(inBox(x.params, '/bin/ln', r('.env'), r('profiles/work/k')), false, '.env の hardlink を作れない');
+  assert.equal(inBox(x.params, '/bin/mkdir', '-p', r('e-nexus-work/hooks/h')), false, 'profile に hook のフォルダを作れない');
+  assert.equal(inBox(x.params, '/bin/ln', r('.env'), r('e-nexus-work/k')), false, '.env の hardlink を作れない');
+  assert.equal(inBox(x.params, '/bin/mkdir', '-p', r('profiles/new')), false, 'profiles/ の下に profile を作れない（常駐の gateway が serve する場所）');
   assert.equal(inBox(x.params, '/usr/bin/security', 'list-keychains'), false, 'Keychain の道具は起動できない');
   assert.equal(inBox(x.params, '/usr/bin/curl', '--version'), false, 'curl は起動できない');
   rmSync(x.R, { recursive: true, force: true });
@@ -86,14 +87,16 @@ test('loader：.env の鍵の 1 行だけを環境変数へ・値は出さない
   rmSync(x.R, { recursive: true, force: true });
 });
 
-test('sandboxArgs：安全でない path は拒否・本番の値は /Users/hermes の root と profiles/work', () => {
+test('sandboxArgs：安全でない path は拒否・本番の値は /Users/hermes の root と root の直下の e-nexus-work（profiles/ の外）', () => {
   const base = productionParams({ request: `/Users/Shared/e-nexus-hermes/work/inbox/${TASK}.json`, brief: '/Users/Shared/e-nexus-hermes/status/runtime-brief.json', result: `/Users/Shared/e-nexus-hermes/work/outbox/${TASK}.json`, usage: '/Users/hermes/work/work-run-usage.json' });
-  assert.deepEqual([base.HERMES_ROOT, base.WORK_HOME], ['/Users/hermes/.hermes', '/Users/hermes/.hermes/profiles/work']);
+  assert.deepEqual([base.HERMES_ROOT, base.WORK_HOME], ['/Users/hermes/.hermes', '/Users/hermes/.hermes/e-nexus-work']);
   const [flag, profile] = sandboxArgs(base);
   assert.equal(flag, '-p');
   assert.match(profile, /\(literal "\/Users\/Shared\/e-nexus-hermes\/work\/outbox\/t-20261113000000-0000abcd\.json"\)/);
   assert.match(profile, /\^\/Users\/hermes\/\\\.hermes\/installs\/\[\^\/\]\+\/\\\.install\\\.lock\$/);
   for (const bad of ['relative/path', '/x/../etc', '/x/"quote', '/x y', '', '/x/']) assert.throws(() => sandboxArgs({ ...base, RESULT: bad }), /RESULT/);
   assert.throws(() => sandboxArgs({ ...base, WORK_HOME: '/Users/hermes/elsewhere' }), /WORK_HOME/);
+  for (const bad of ['/Users/hermes/.hermes/profiles/work', '/Users/hermes/.hermes/profiles', '/Users/hermes/.hermes/installs', '/Users/hermes/.hermes/hermes-agent', '/Users/hermes/.hermes/a/b', '/Users/hermes/.hermes/.hidden', '/Users/hermes/.hermes/Work', '/Users/hermes/.hermes/node', '/Users/hermes/.hermes/models', '/Users/hermes/.hermes/e-nexus-work2'])
+    assert.throws(() => sandboxArgs({ ...base, WORK_HOME: bad }), /WORK_HOME/, bad);
   assert.match(profile, /\(allow network-outbound \(remote tcp "\*:443"\)\)/);
 });

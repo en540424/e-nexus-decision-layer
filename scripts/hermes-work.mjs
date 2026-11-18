@@ -16,7 +16,8 @@
  *   node scripts/hermes-work.mjs dismiss <task_id> --confirm <12hex>   実行せずに閉じる（waiting・やり直し待ち。端末だけ。確認コードは task-hub show と同じ）
  *   sh deploy/macos/hermes-work-run.sh --paid-ok  は run と同じ
  *
- * 変えないもの：Hermes の設定・権限・常駐・鍵の file。作るもの：hermes の home の profile のフォルダ（~/.hermes/profiles/work・初回だけ）と、
+ * 変えないもの：Hermes の設定・権限・常駐・鍵の file。作るもの：hermes の root の下の業務の home（~/.hermes/e-nexus-work・初回だけ。profiles/ の外＝
+ * 常駐の gateway が serve しない・2026-11-18 夜に profiles/work から移した）と、
  * Hermes が起動で作る中の空のフォルダ（cron・hooks・memories・skills）と決まった SOUL.md（sandbox の中では書けない所・prepareWorkHome）。
  * 出すもの：段のコード・usage の数。依頼の本文・Hermes の出力の全文・鍵は画面に出さない（出力の末尾は鍵の形を伏せて store の hermes-work-logs/ に 0600。
  * 課金なしの確かめで止まった時は、その時刻の sandbox の拒否の行〈path だけ〉も同じ場所へ）。outbox の余計な file は store の hermes-quarantine/ へ移す。
@@ -27,7 +28,7 @@ import { lstatSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'no
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { inProcessCommand, LOADER, productionParams, sandboxArgs, WORK_LOCKED_DIRS, WORK_PROFILE, WORK_SOUL_MD } from './lib/hermes-sandbox.mjs';
+import { inProcessCommand, LEGACY_WORK_HOME_REL, LOADER, sandboxArgs, WORK_HOME_NAME, WORK_LOCKED_DIRS, WORK_SOUL_MD } from './lib/hermes-sandbox.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
 import { businessServices } from './lib/task-hub/business-services.mjs';
 import { confirmCodeOf, currentDigest } from './lib/task-hub/approval.mjs';
@@ -44,7 +45,7 @@ export const DEFAULT_STORE = path.join(homedir(), 'e-nexus-runtime', 'mac-runtim
 const HU = 'hermes';
 const HH = `/Users/${HU}`;
 const ROOT = `${HH}/.hermes`;
-const WORK_HOME = `${ROOT}/profiles/${WORK_PROFILE}`;
+const WORK_HOME = `${ROOT}/${WORK_HOME_NAME}`;
 const HERMES_BIN = `${HH}/.local/bin/hermes`;
 const USAGE = `${HH}/work/work-run-usage.json`;
 const PROBE_USAGE = `${HH}/work/work-probe-usage.json`;
@@ -55,11 +56,25 @@ const OUTBOX_READ_MAX = 64 * 1024;
 const SECRET_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|[0-9a-f]{64,}/g;
 /** Anthropic が鍵を拒んだ印（\b401\b＝session_id 等の数字の中の 401 を拾わない。in-process の 401 は stdout の「rejected your API key」で出る：
  *  v0.22.4 agent/turn_failure_copy.py の _AUTH_COPY。監査 1・2） */
-const AUTH_ERROR = /\b401\b|authentication_error|invalid[ _-]?x-?api[ _-]?key|rejected your API key|unauthori[sz]ed/i;
+const AUTH_ERROR = /\b401\b|authentication_error|invalid[ _-]?x-api[ _-]?key|rejected your API key/i;
 /** in-process の起動の差し替えが働かなかった（lib/hermes-sandbox.mjs の INPROC_ENTRY が出す） */
 const INPROC_ERROR = /e-nexus: (?:hermes oneshot signature changed|in-process oneshot returned|resume is not allowed|-z prompt is required)/;
 /** Hermes の gateway の client の止まり（gateway_client.connect_gateway・gateway_runtime）。「Gateway inaccessible: authorization」は鍵の 401 ではない */
 const GATEWAY_ERROR = /Gateway (?:inaccessible|absent|starting|draining|incompatible|could not start|connection failed|bootstrap|protocol mismatch)|no local fallback/i;
+
+/**
+ * traceback の frame の行（File "…", line N）と、その下の source の行・^~ の行を除く（行番号の 401・識別子の Unauthorized を鍵の 401 と読まない。11-18 夜の監査）
+ */
+export function stripTraceback(text) {
+  const out = [];
+  const lines = String(text ?? '').split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/^\s*File ".*", line \d+/.test(lines[i])) { if (i + 1 < lines.length && !/^\s*File "/.test(lines[i + 1]) && /^\s{4,}/.test(lines[i + 1])) i += 1; continue; }
+    if (/^\s*[~^]+[\s~^]*$/.test(lines[i])) continue;
+    out.push(lines[i]);
+  }
+  return out.join('\n');
+}
 
 /**
  * 課金なしの起動の確かめの結果を判定する（null＝通った）。text は Hermes の stdout・stderr と usage の file の failure・turn_exit_reason だけ
@@ -70,13 +85,16 @@ export function classifyProbe(pr, usageText = '') {
   let u = null;
   try { u = JSON.parse(usageText || 'null'); } catch { u = null; }
   const usageWhy = u && typeof u === 'object' ? [u.failure, u.turn_exit_reason].filter((v) => typeof v === 'string').join('\n') : '';
-  const text = `${pr?.stdout ?? ''}\n${pr?.stderr ?? ''}\n${usageWhy}`;
+  const text = stripTraceback(`${pr?.stdout ?? ''}\n${pr?.stderr ?? ''}\n${usageWhy}`);
+  // 止まる側を先に見る（通ったと読むのは、ほかの止まりが何も無く鍵の拒否の印が在る時だけ）
   if (pr?.status === 0) return 'probe_unexpected_success'; // 無効な鍵で成功＝別の資格情報が使われた（止める）
+  if (pr?.signal || pr?.error) return 'probe_timeout'; // 時間切れ・起動できない（401 の文の後でも通さない）
   if (INPROC_ERROR.test(text)) return 'probe_inproc_unexpected'; // Hermes の形が変わった（Hermes を上げた時）
   if (GATEWAY_ERROR.test(text)) return 'probe_gateway_transport'; // sandbox の外の常駐へ渡そうとした（in-process で動いていない）
+  if (/Operation not permitted|PermissionError|\bEPERM\b/.test(text)) return 'probe_sandbox_breaks_hermes';
+  if (/Traceback \(most recent call last\)/.test(text)) return 'probe_hermes_crashed'; // 起動の途中の例外（記録の traceback を読む）
   if (AUTH_ERROR.test(text)) return null;
-  if (/Operation not permitted|PermissionError|EPERM|sandbox/i.test(text)) return 'probe_sandbox_breaks_hermes';
-  return pr?.signal || pr?.error ? 'probe_timeout' : 'probe_no_auth_error';
+  return 'probe_no_auth_error';
 }
 
 export function parse(argv) {
@@ -122,7 +140,7 @@ const OWN_700_DIR = 'test -d "$1" && test ! -L "$1" && test "$(/usr/bin/stat -f 
 const EMPTY_OWN_DIR = `${OWN_700_DIR} && out=$(/usr/bin/find "$1" -mindepth 1 -maxdepth 1 -print -quit) && test -z "$out"`;
 const ABSENT = 'test -e "$1" || test -L "$1"';
 /**
- * 業務の profile の home を sandbox の外（hermes の権限・run＝asHermes）で整える。戻り値は止める code か null。
+ * 業務の home（root の直下の e-nexus-work）を sandbox の外（hermes の権限・run＝asHermes）で整える。戻り値は止める code か null。
  * Hermes は起動で cron・hooks・memories・skills を作り SOUL.md を書くが、sandbox はそこへの書きを拒む（2026-11-18 の初回：probe_sandbox_breaks_hermes）。
  * だから空のフォルダと決まった SOUL.md を先に置き、毎回「空・link でない・文が同じ」を確かめる（中身が在れば止める。sandbox の規則は変えない）。
  * plugins は Hermes が起動で作らない＝在れば止める（前と同じ）。.env も在れば止める（鍵は環境変数だけ）。
@@ -147,74 +165,107 @@ export function prepareWorkHome(run, home = WORK_HOME) {
   return null;
 }
 
-/** macOS の実装（sudo・sandbox-exec・hermes）。test は lib/task-hub/hermes-work.mjs に模擬を渡す */
-export function macSys({ store, log, outbox }) {
+/**
+ * 本番の置き場所と実行の仕方（hermes ユーザー・sudo）。test は同じ形の layout を渡して、本番と同じ確かめ・起動・取り込みの code を
+ * 自分の user・偽の root・本物の sandbox で動かす（tests/hermes-chain-20261118.test.mjs）。
+ */
+export function productionLayout() {
+  return {
+    user: HU, home: HH, root: ROOT, workHome: WORK_HOME, bin: HERMES_BIN, usage: USAGE, probeUsage: PROBE_USAGE,
+    usersRoot: '/Users', systemTmp: '/private/var/folders', probeSeconds: PROBE_SECONDS, runSeconds: null, keepDenials: true,
+    /** sandbox の外で hermes として動かす（sudo の password は run の初めに聞いた） */
+    asUser: (sh) => (args, opts) => sh('/usr/bin/sudo', ['-n', '-u', HU, '-H', ...args], opts),
+    /** 常駐・メモリ・sudo の確かめ（止める code か null） */
+    hostCheck: (sh, ok) => {
+      if (sh('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']).stdout.trim() !== '1') return 'memory_pressure';
+      if (!ok(sh('/usr/bin/pgrep', ['-U', HU, '-f', GATEWAY]))) return 'gateway_not_running';
+      const rss = sh('/bin/ps', ['-U', HU, '-o', 'rss=']).stdout.split('\n').reduce((a, x) => a + (Number(x.trim()) || 0), 0) / 1024;
+      if (rss >= RSS_LIMIT_MIB) return 'hermes_rss_high';
+      if (!ok(sh('/usr/bin/sudo', ['-n', '-v']))) return 'sudo_failed'; // password は run の初めに聞いた（排他を取る前）
+      return null;
+    },
+    /** hermes が読めてはいけない Mac の user の場所 */
+    boundary: [homedir(), path.join(homedir(), 'e-nexus-runtime'), path.join(homedir(), '.enexus')],
+  };
+}
+
+/** sandbox の path（本番は productionParams と同じ値になる：tests/hermes-chain-20261118.test.mjs） */
+export function layoutParams(L, { request, brief, result, usage }) {
+  return { USERS_ROOT: L.usersRoot, HERMES_ROOT: L.root, WORK_HOME: L.workHome, LOCAL_BIN: `${L.home}/.local/bin`, USAGE_FILE: usage, REQUEST: request, BRIEF: brief, RESULT: result, SYSTEM_TMP: L.systemTmp };
+}
+
+/** macOS の実装（sudo・sandbox-exec・hermes）。lib/task-hub/hermes-work.mjs の runWork が使う */
+export function macSys({ store, log, outbox, layout = productionLayout() }) {
+  const L = layout;
   const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
-  const asHermes = (args, opts) => sh('/usr/bin/sudo', ['-n', '-u', HU, '-H', ...args], opts);
+  const asHermes = L.asUser(sh);
   const ok = (r) => r.status === 0 && !r.error;
-  const envFor = (ctx, probe) => ['/usr/bin/env', '-i', `HOME=${HH}`, `HERMES_HOME=${WORK_HOME}`, `HERMES_WRITE_SAFE_ROOT=${ctx.outbox}`, 'HERMES_DISABLE_LAZY_INSTALLS=1',
-    `PATH=${HH}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`, 'LANG=en_US.UTF-8', ...(probe ? ['KEY_PROBE=invalid'] : [])];
-  const params = (ctx, usage) => productionParams({ hermesUser: HU, request: ctx.inboxFile, brief: ctx.briefFile ?? '/nonexistent/brief.json', result: ctx.outboxFile, usage });
-  const boxed = (ctx, seconds, cmd, { probe = true, usage = PROBE_USAGE } = {}) => [...envFor(ctx, probe), '/usr/bin/perl', '-e', LOADER, `${ROOT}/.env`, String(seconds), `${WORK_HOME}/cwd`,
+  const envFor = (ctx, probe) => ['/usr/bin/env', '-i', `HOME=${L.home}`, `HERMES_HOME=${L.workHome}`, `HERMES_WRITE_SAFE_ROOT=${ctx.outbox}`, 'HERMES_DISABLE_LAZY_INSTALLS=1',
+    `PATH=${L.home}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`, 'LANG=en_US.UTF-8', ...(probe ? ['KEY_PROBE=invalid'] : [])];
+  const params = (ctx, usage) => layoutParams(L, { request: ctx.inboxFile, brief: ctx.briefFile ?? '/nonexistent/brief.json', result: ctx.outboxFile, usage });
+  const boxed = (ctx, seconds, cmd, { probe = true, usage = L.probeUsage } = {}) => [...envFor(ctx, probe), '/usr/bin/perl', '-e', LOADER, `${L.root}/.env`, String(seconds), `${L.workHome}/cwd`,
     '/usr/bin/sandbox-exec', ...sandboxArgs(params(ctx, usage)), ...cmd];
   const readSafe = (n) => { try { return Buffer.from(readSmallFile(path.join(outbox, n), OUTBOX_READ_MAX), 'utf8'); } catch { return null; } };
   let launch = null; // Hermes の in-process の起動（preflight が sandbox の中で決める・exec はこれだけを使う）
   return {
     async preflight(task, ctx) {
       launch = null; // 途中で止まった確かめの後に前の起動を残さない（監査 5）
-      if (sh('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']).stdout.trim() !== '1') return { ok: false, code: 'memory_pressure' };
-      if (!ok(sh('/usr/bin/pgrep', ['-U', HU, '-f', GATEWAY]))) return { ok: false, code: 'gateway_not_running' };
-      const rss = sh('/bin/ps', ['-U', HU, '-o', 'rss=']).stdout.split('\n').reduce((s, x) => s + (Number(x.trim()) || 0), 0) / 1024;
-      if (rss >= RSS_LIMIT_MIB) return { ok: false, code: 'hermes_rss_high' };
-      if (!ok(sh('/usr/bin/sudo', ['-n', '-v']))) return { ok: false, code: 'sudo_failed' }; // password は run の初めに聞いた（排他を取る前）
+      const host = L.hostCheck(sh, ok);
+      if (host) return { ok: false, code: host };
       const t = (flag, p) => ok(asHermes(['/bin/test', flag, p]));
       if (!t('-r', ctx.inboxFile)) return { ok: false, code: 'request_unreadable' };
       if (!t('-w', ctx.outbox)) return { ok: false, code: 'outbox_unwritable' };
-      if (!t('-w', path.dirname(USAGE))) return { ok: false, code: 'usage_dir_unwritable' };
-      for (const p of [homedir(), path.join(homedir(), 'e-nexus-runtime'), path.join(homedir(), '.enexus')]) if (t('-x', p) && t('-r', p)) return { ok: false, code: 'boundary_broken' };
-      const wh = prepareWorkHome(asHermes);
+      if (!t('-w', path.dirname(L.usage))) return { ok: false, code: 'usage_dir_unwritable' };
+      for (const p of L.boundary) if (t('-x', p) && t('-r', p)) return { ok: false, code: 'boundary_broken' };
+      const wh = prepareWorkHome(asHermes, L.workHome);
       if (wh) return { ok: false, code: wh };
+      // custom の home では Hermes が root の active_profile を読んで profile を切り替え得る（v0.22.4 main.py の _apply_profile_override）。
+      // sandbox が読みを拒むので今は効かないが、偶然に頼らない：無いか default であること（監査 11-18 夜）
+      if (!ok(asHermes(['/bin/sh', '-c', 'f="$1/active_profile"; test ! -e "$f" && test ! -L "$f" || { test -f "$f" && test "$(/usr/bin/head -c 64 "$f" | /usr/bin/tr -d "[:space:]")" = default; }', 'sh', L.root]))) return { ok: false, code: 'hermes_active_profile_set' };
+      // 前の業務の home（profiles/work）はもう使わない。残っていれば常駐が serve し続けるので片付けを知らせる（AI は常駐の状態を変えない・止めない）
+      if (ok(asHermes(['/bin/test', '-e', `${L.root}/${LEGACY_WORK_HOME_REL}`]))) log('注意：前の業務の home（~/.hermes/profiles/work）が残っている。常駐の gateway が profile として serve し続ける（複数の profile の状態）。片付ける：sudo -u hermes -H /Users/hermes/.local/bin/hermes profile delete work（確認に work と打つ・docs/hermes-work.md §12-8）');
       // 鍵が root の .env に在る（値は見ない：loader が長さだけ確かめる）
-      if (!ok(asHermes([...envFor(ctx, false), '/usr/bin/perl', '-e', LOADER, `${ROOT}/.env`, '10', `${WORK_HOME}/cwd`, '/bin/sh', '-c', 'test "${#ANTHROPIC_API_KEY}" -ge 20']))) return { ok: false, code: 'key_missing' };
+      if (!ok(asHermes([...envFor(ctx, false), '/usr/bin/perl', '-e', LOADER, `${L.root}/.env`, '10', `${L.workHome}/cwd`, '/bin/sh', '-c', 'test "${#ANTHROPIC_API_KEY}" -ge 20']))) return { ok: false, code: 'key_missing' };
       // sandbox の規則（hermes の権限で・課金なし）
       const inBox = (cmd) => ok(asHermes(boxed(ctx, 15, cmd)));
-      if (inBox(['/bin/cat', `${ROOT}/.env`])) return { ok: false, code: 'sandbox_env_readable' };
-      if (inBox(['/bin/cat', `${ROOT}/state.db`])) return { ok: false, code: 'sandbox_gateway_state_readable' };
+      if (inBox(['/bin/cat', `${L.root}/.env`])) return { ok: false, code: 'sandbox_env_readable' };
+      if (inBox(['/bin/cat', `${L.root}/state.db`])) return { ok: false, code: 'sandbox_gateway_state_readable' };
       if (!inBox(['/bin/cat', ctx.inboxFile])) return { ok: false, code: 'sandbox_request_unreadable' };
-      if (inBox(['/usr/bin/touch', `${ROOT}/config.yaml`])) return { ok: false, code: 'sandbox_config_writable' };
-      if (inBox(['/bin/mkdir', `${ROOT}/plugins/.probe-${ctx.runToken}`])) { asHermes(['/bin/rmdir', `${ROOT}/plugins/.probe-${ctx.runToken}`]); return { ok: false, code: 'sandbox_plugins_writable' }; }
+      if (inBox(['/usr/bin/touch', `${L.root}/config.yaml`])) return { ok: false, code: 'sandbox_config_writable' };
+      if (inBox(['/bin/mkdir', `${L.root}/plugins/.probe-${ctx.runToken}`])) { asHermes(['/bin/rmdir', `${L.root}/plugins/.probe-${ctx.runToken}`]); return { ok: false, code: 'sandbox_plugins_writable' }; }
       if (inBox(['/usr/bin/touch', `${ctx.outbox}/.probe-${ctx.runToken}`])) { try { unlinkSync(`${ctx.outbox}/.probe-${ctx.runToken}`); } catch { /* 無い */ } return { ok: false, code: 'sandbox_outbox_open' }; }
-      if (!inBox(['/usr/bin/touch', PROBE_USAGE])) return { ok: false, code: 'sandbox_usage_unwritable' };
+      if (!inBox(['/usr/bin/touch', L.probeUsage])) return { ok: false, code: 'sandbox_usage_unwritable' };
       // Hermes の launcher の runtime command を sandbox の中で読み、in-process の起動を作る（形が違えば止める）
-      const rc = asHermes(boxed(ctx, 30, [HERMES_BIN, '--print-runtime-command']), { timeout: 50_000 });
-      const cmd = ok(rc) ? inProcessCommand(rc.stdout, ROOT) : null;
+      const rc = asHermes(boxed(ctx, 30, [L.bin, '--print-runtime-command']), { timeout: 50_000 });
+      const cmd = ok(rc) ? inProcessCommand(rc.stdout, L.root) : null;
       if (!cmd) { keepLog(store, `${task.task_id}-launcher`, outputTail(rc)); return { ok: false, code: 'hermes_launcher_unexpected' }; }
       // Hermes 本体を sandbox の中で起動（無効な鍵＝Anthropic は 401 を返し課金されない）。起動・依存・state の場所が sandbox で壊れないことを確かめる
       log('課金なしの起動の確かめ（無効な鍵で Hermes を sandbox の中で起動。最大 60 秒）');
       const since = Date.now();
-      const pr = asHermes(boxed(ctx, PROBE_SECONDS, ['/usr/sbin/taskpolicy', '-b', ...cmd, '-z', `Reply with the single word OK. (probe ${ctx.runToken})`, '-t', 'file', '--usage-file', PROBE_USAGE]), { timeout: (PROBE_SECONDS + 20) * 1000 });
+      const pr = asHermes(boxed(ctx, L.probeSeconds, ['/usr/sbin/taskpolicy', '-b', ...cmd, '-z', `Reply with the single word OK. (probe ${ctx.runToken})`, '-t', 'file', '--usage-file', L.probeUsage]), { timeout: (L.probeSeconds + 20) * 1000 });
       if (pr.signal || pr.error) asHermes(['/usr/bin/pkill', '-KILL', '-f', `probe ${ctx.runToken}`]);
-      const pu = asHermes(['/bin/cat', PROBE_USAGE]);
+      const pu = asHermes(['/bin/cat', L.probeUsage]);
       const usageText = ok(pu) ? String(pu.stdout).slice(0, 4000) : '';
       keepLog(store, `${task.task_id}-probe`, `${outputTail(pr)}\n--- usage ---\n${usageText}`);
-      asHermes(['/bin/rm', '-f', PROBE_USAGE]);
+      asHermes(['/bin/rm', '-f', L.probeUsage]);
       const code = classifyProbe(pr, usageText);
-      if (code) { keepDenials(store, `${task.task_id}-probe-denials`, since); return { ok: false, code }; }
+      if (code) { if (L.keepDenials) keepDenials(store, `${task.task_id}-probe-denials`, since); return { ok: false, code }; }
       // 起動の確かめの間に sandbox の外（同じ uid の常駐など）から置かれた物が無いか、実行の直前にもう一度（監査 L3）
-      const again = prepareWorkHome(asHermes);
+      const again = prepareWorkHome(asHermes, L.workHome);
       if (again) return { ok: false, code: again };
       launch = cmd;
       return { ok: true };
     },
     async exec(task, ctx) {
       if (!launch) { keepLog(store, task.task_id, 'no launch command (preflight did not pass in this process)'); return { exit: 70, signal: null, timedOut: false }; }
-      const r = asHermes(boxed(ctx, ctx.seconds, ['/usr/sbin/taskpolicy', '-b', ...launch, '-z', ctx.prompt, '-t', 'file', '--usage-file', USAGE], { probe: false, usage: USAGE }), { timeout: (ctx.seconds + 30) * 1000 });
+      const seconds = L.runSeconds ?? ctx.seconds;
+      const r = asHermes(boxed(ctx, seconds, ['/usr/sbin/taskpolicy', '-b', ...launch, '-z', ctx.prompt, '-t', 'file', '--usage-file', L.usage], { probe: false, usage: L.usage }), { timeout: (seconds + 30) * 1000 });
       keepLog(store, task.task_id, outputTail(r));
       return { exit: r.status, signal: r.signal, timedOut: r.signal === 'SIGALRM' || r.status === 142 || r.signal === 'SIGKILL' || r.error?.code === 'ETIMEDOUT' };
     },
     readUsage() {
-      const r = asHermes(['/bin/cat', USAGE]);
-      asHermes(['/bin/rm', '-f', USAGE]);
+      const r = asHermes(['/bin/cat', L.usage]);
+      asHermes(['/bin/rm', '-f', L.usage]);
       try { return JSON.parse(r.stdout); } catch { return null; }
     },
     listOutbox: () => readdirSync(outbox),

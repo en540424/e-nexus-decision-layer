@@ -193,7 +193,8 @@ test('保守の script の形：構文・vps-apply が再起動するのは e-ne
   assert.match(hwm, /HERMES_WRITE_SAFE_ROOT=\$\{ctx\.outbox\}/);
   assert.match(hwm, /'-t', 'file'/);
   assert.match(hwm, /'\/usr\/bin\/sandbox-exec', \.\.\.sandboxArgs\(/, 'Hermes は sandbox の中で動く');
-  assert.match(hwm, /HERMES_HOME=\$\{WORK_HOME\}/, '業務は profile の home（.env を置かない）');
+  assert.match(hwm, /HERMES_HOME=\$\{L\.workHome\}/, '業務の home（.env を置かない・profiles/ の外）');
+  assert.match(hwm, /const WORK_HOME = `\$\{ROOT\}\/\$\{WORK_HOME_NAME\}`/);
   assert.match(hwm, /HERMES_DISABLE_LAZY_INSTALLS=1/, '実行の中で依存を同期しない（download しない）');
   assert.match(hwm, /KEY_PROBE=invalid/, '課金なしの起動の確かめ');
   const plist = spawnSync('/bin/bash', [path.join(REPO, 'deploy/macos/connect-task-hub.sh')], { encoding: 'utf8', timeout: 10_000 });

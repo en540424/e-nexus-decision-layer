@@ -1,6 +1,6 @@
 # Hermes に業務を渡す時の決まり（案・2026-11-10・MA-24）
 
-**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。初回の課金なしの確かめの停止を直した（§12-6）。続く `--check-only` の停止（Hermes の `-z` が sandbox の外の常駐の gateway へ渡そうとした）を、Hermes を sandbox の中の同じ process で動かす形に直した（§12-7・Hermes 本体での確かめは Human の `--check-only` 待ち）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
+**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。初回の課金なしの確かめの停止を直した（§12-6）。続く `--check-only` の停止（Hermes の `-z` が sandbox の外の常駐の gateway へ渡そうとした）を、Hermes を sandbox の中の同じ process で動かす形に直した（§12-7）。続く `work_home_has_cron`・`work_home_has_plugins` の根本（業務の home を常駐の gateway が serve する `profiles/` の下に置いていた）を、業務の home を `~/.hermes/e-nexus-work` へ移して直した（§12-8・**今の形**。Hermes 本体での確かめは Human の 1 回の `--check-only` 待ち）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
 Hermes は常駐している（gateway だけ・messaging platform なし・cron の job なし）。今の役目は監視の要約を読むことだけ（`docs/runtime-monitoring.md`）。
 
 ## 1. 渡す仕事の形（往きと還り）
@@ -237,3 +237,29 @@ A・B・D・E の一覧は既存の無料の intent で足りる＝Hermes の種
 - **試験**：`tests/hermes-inproc-20261118.test.mjs`（8 件）。本番と同じ sandbox の規則の中で、launcher の runtime command の写しと `hermes_cli.main` の形の偽物を動かし、そのままなら gateway へ渡して止まる（本番と同じ判定）・`inProcessCommand` なら同じ process で `-z` を受ける（prompt・`-t file`・usage の file・HERMES_HOME＝業務の profile・resume なし）を確かめる。sandbox の通信の規則（TCP 443 と名前解決だけ）が変わっていないことも確かめる
 - **未確認**：Hermes 本体の in-process の起動が sandbox の中で 401 まで届くか（sudo の password が要る＝Human の `--check-only`）。`hermes_bootstrap` が依存の版の違いで子の process に起動し直す時は差し替えが外れ、gateway へ渡そうとして `probe_gateway_transport` で止まる（止まる側）
 - **独立監査**（2026-11-18 夜・1 名）：原因の見立て（gateway の client・multiplexer・`_refused`）と、in-process の道から本物の鍵・設定・常駐の gateway へ戻る道が無いこと（管理の設定の `fallback_providers: []`・auth と .env の読みの拒否・通信は 443 だけ・bootstrap の起動し直しも `-c` の code を保つ）を確かめた。指摘は high 0・medium 1・low-medium 2・low 3、全部直して試験を足した。M1：usage の file の全文で `401` を探したので、session_id の中の数字で通ったと読めた → `\b401\b`・usage は `failure`・`turn_exit_reason` だけ。LM2：in-process の 401 は stdout の「rejected your API key」だけに出ることがある → 印に足す。LM3：python の許しが `installs` の `.leases`（sandbox の中で書ける）を通した → 頭が `.` の段を拒み `python3` だけ。L4：bootstrap を形だけで見ていた → 全文で照らす。L5：確かめの初めに前の起動を消す。L6：`_run_and_exit_oneshot` は上流でもう呼ばれていない＝引数の形を毎回確かめる。残り（受け入れ）：試験の偽物の main は `_try_fast_chat_launch`・`_prepare_agent_startup` を通らない（本物の通り道は Human の `--check-only` で見る）
+
+### 12-8. 根本の直し：業務の home を常駐の gateway の serve の外へ（2026-11-18 夜・`work_home_has_cron`・`work_home_has_plugins`）
+
+**今の形**。§11・§12-6・§12-7 の `~/.hermes/profiles/work` は、ここから `~/.hermes/e-nexus-work` と読み替える。
+
+- **起きたこと**：§12-7 の後の `--check-only` が `preflight_work_home_has_cron`・`preflight_work_home_has_plugins` で止まった（課金の前・記録は残らない段）。sandbox の中の Hermes は `cron`・`plugins` に書けない＝書いたのは sandbox の外
+- **根本の原因**（4d04303 の source・本物の `hermes_constants.py` で確かめた）：常駐の gateway（root の multiplexer）は `~/.hermes/profiles/` の下の「印」（`config.yaml`・`.env`・**`SOUL.md`**・`profile.yaml`・`auth.json`・**`state.db`**：`_PROFILE_IDENTITY_MARKERS`）の在る dir を 30 秒ごとに serve し直す（`gateway/run_profile_reconcile.py`）。cron の時計は serve する全部の profile の store を回し、hook の登録もし直す（`cron/AGENTS.md`）。§12-6 で置いた `SOUL.md` が印になり、`profiles/work` は常駐の profile になった → 常駐が `cron`・`plugins` を書き足し → 確かめが止めた。**確かめ自身が置いた物が次の拒否の元**だった。さらに、そこに置かれた hook・cron は sandbox の外の常駐で動き得る（境界の穴になり得た）
+- **これまでの止まりの整理**（全部、課金の前・有料の実行なし）：
+  1. `probe_sandbox_breaks_hermes`（§12-6）：Hermes が起動で作るフォルダを sandbox が拒む → 先に作る
+  2. `probe_no_auth_error`（§12-7）：`hermes -z` は常駐の gateway へ渡す client → in-process で動かす
+  3. `work_home_has_cron`・`work_home_has_plugins`（ここ）：業務の home を常駐が serve → serve の外へ
+  - 共通の根：Hermes v0.22.4 の「profile は常駐の gateway が持つ」という作りと、「業務は sandbox の中の別の process で完結させる」という 11-13 の設計の食い違い。11-13 の確かめは sandbox の規則だけで、Hermes 本体と常駐の振る舞いを見ていなかった
+- **直し**：業務の home を root の直下の `~/.hermes/e-nexus-work`（Hermes から見ると "custom"）へ移す。profiles/ の外＝常駐は serve しない・cron の時計も hook の登録も回らない。root の下なので `_hermes_root_of` の root は `~/.hermes`＝依存（installs・tools）を共有し download しない。sandbox の規則は同じ形（読み書きの allowlist の中の業務の home の path だけが変わる）。`sandboxArgs` は業務の home を「root の直下の 1 段・profiles と Hermes の名前でない」に限る
+- **前の home（`profiles/work`）**：もう使わない。sandbox の中からは読めない・書けない。ただし `SOUL.md`・`state.db` が在る限り常駐は profile として serve し続ける＝常駐は複数の profile の状態のまま（profile を決めない secret の読みは止まる側・再起動の時も multiplex で起きる・前の probe の state.db を開いたまま）。**片付けが要る**：Human が `sudo -u hermes -H /Users/hermes/.local/bin/hermes profile delete work`（確認に `work` と打つ）。Hermes の正規の消し方（tombstone を置いて常駐に知らせてから消す）。止める process は `-p work` か `HERMES_HOME=…/profiles/work` の物だけ＝常駐の gateway（HERMES_HOME は root）は止まらない（4d04303 の `profiles.delete_profile`・`_profile_bound_backend_pids`）。確かめは残っていれば注意を出す（止めない）。AI は常駐の状態を変えない
+- **初回と 2 回目以降**：業務の home に sandbox の外から書くのは確かめ（`prepareWorkHome`・hermes の権限）だけ、中から書くのは sandbox の中の Hermes だけ。sandbox は `cron`・`hooks`・`memories`・`skills`・`cwd`・`plugins`・`config.yaml`・`SOUL.md`・`.env` を拒む＝何回動かしても確かめの前提が崩れない。Hermes が中で作る物（`sessions`・`state.db`・`logs`・`cache`）は確かめの対象外
+- **失敗の後**：probe の usage は毎回消す。時間切れは perl の alarm と `pkill -f`（確かめは `probe <token>`・実行は `run <token>`）で止め、自動ではやり直さない（`--task <id> --retry`）。sandbox の外に残る物は無い（業務の home の中だけ）
+- **判定**（`classifyProbe`）：止まる側を先に見て、ほかの止まりが無く鍵の拒否の印が在る時だけ通す（成功 → 時間切れ → 差し替え → gateway → `PermissionError` → 例外 → 401 の順）。traceback の frame の行と source の行は見ない（行番号の `401`・識別子の `Unauthorized` を鍵の 401 と読んでいた＝監査 11-18 夜の medium）。`probe_hermes_crashed`（起動の途中の例外）を足した。in-process の止まりの文は code の中で `'e-nexus: ' + '…'` と分けて書く（Python の traceback は `-c` の code の全文を出すので、文のままだと何の失敗でも差し替えの止まりに読めた・試験で見つけた）
+- **試験**（本物と模擬を分ける）：
+  - **本物の Hermes の code**：`tests/hermes-home-layout-20261118.test.mjs`。4d04303 の `hermes_constants.py`（git の blob の sha で固定）を本番と同じ Python 3.14.7 で動かし、前の home は SOUL.md を置いた時から serve の一覧に入る・新しい home は入らず root は `~/.hermes`、を確かめる（`HERMES_SRC` を渡した時だけ。repo に Hermes の code は入れない）
+  - **本番の code の通り道・本物の sandbox・Hermes の形の偽物**：`tests/hermes-chain-20261118.test.mjs`。`macSys` を本番と同じ code のまま `layout`（user・path・時間）だけ替えて今の user で動かす。Task Hub → 承認 → inbox → 確かめ（業務の home・sandbox の規則・launcher・無効な鍵の 401）→ 2 回目も同じに通る → 時間切れ → 自動でやり直さない → `--retry` で done → 取り込み → 板 → Bot が `task.status` で読む。sandbox の中から hook・cron・skills・memories・SOUL.md・config.yaml・cwd・root の .env へは書けない・読めない。業務の home に外から物を置けば止まり、片付ければ通る。launcher の形が変われば止まる
+  - 本番の `layout` の sandbox の path は前の `productionParams` と同じ（試験で照らす）
+- **sandbox の拒否の記録**：macOS は sandbox-exec の拒否を unified log に出さない（手元で拒否を起こしても 0 行）。確かめで止まった時の原因は Hermes の出力の末尾・usage の失敗の文・traceback（store の `hermes-work-logs/`）で読む
+- **未確認**（実機）：本物の Hermes の in-process の起動が sandbox の中で 401 まで届くか。手元に同じ版の Hermes を入れて sudo なしで確かめる案は、外への通信を伴う install として Claude Code の自動の許可の判定で断られた（Human の許可があればできる）。実機の hermes ユーザーの install は sudo の password が要る
+- **active_profile**：custom の home では Hermes が root の `active_profile` を読んで profile を切り替え得る（4d04303 `main.py` の `_apply_profile_override`）。sandbox が読みを拒むので今は効かないが、確かめで「無いか default」を見て、違えば `hermes_active_profile_set` で止める
+- **独立監査**（2026-11-18 夜・2 回目・1 名）：原因（SOUL.md・state.db が印になり常駐が 30 秒ごとに serve・cron の時計が `cron/.tick.lock` を作る）と、新しい home が serve・tick・hook・plugin の対象外で root は `~/.hermes` のままを source で確かめた。指摘 medium 2・low 3、全部直した：M1 判定が traceback の行番号・識別子・時間切れの前の 401 の文で通っていた → 止まる側を先に・frame を除く。M2 前の home を「片付けは任意」と書いていた → 常駐が複数の profile の状態のまま＝片付けを Human の手順に入れる。L active_profile を確かめる。L 業務の home の名前を denylist でなく決まった 1 つに。L docs の pkill の文
+
