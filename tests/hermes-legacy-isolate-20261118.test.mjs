@@ -113,7 +113,8 @@ test('模擬（監査 M1）：記録から work が外れても、フォルダ�
     await new Promise((r) => { setTimeout(r, 300); });
     let polls = 0;
     const r = await isolateLegacyProfile(localRun, x.root, { waitSeconds: 70, pollSeconds: 5, sleep: async () => { polls += 1; } });
-    assert.deepEqual(r, { state: 'parked', reason: 'still_open' });
+    assert.equal(r.state, 'parked');
+    assert.match(r.reason, /^still_open\(tail:\d+:\d+\)$/, '開いている process の名前・pid・数を記録に残す');
     assert.equal(polls, 0, '印は前の回の物＝待たずに 1 回だけ見る');
     assert.ok(existsSync(x.legacy));
     holder.kill('SIGKILL');

@@ -24,7 +24,8 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { lstatSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -229,7 +230,11 @@ export async function isolateLegacyProfile(run, root, { waitSeconds = 70, pollSe
     // 開いた file が残っていない（lsof は hermes の process だけを見る＝常駐の gateway も hermes）。lsof が動かなければ移さない
     const lo = run(['/usr/sbin/lsof', '-n', '-P', '+D', legacy], { timeout: 30_000 });
     if (lo?.error || lo?.signal || ![0, 1].includes(lo?.status)) return 'lsof_failed';
-    return String(lo.stdout ?? '').trim() ? 'still_open' : null;
+    // 判定は出力が空か（止まる側）。名前・pid は記録のためだけ（COMMAND の空白で崩れても判定は変わらない・監査 11-18 夜）
+    const out = String(lo.stdout ?? '').trim();
+    if (!out) return null;
+    const held = out.split('\n').filter((l) => !/^COMMAND\s/.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(':')).filter(Boolean);
+    return `still_open(${[...new Set(held)].slice(0, 5).join(',') || 'unknown'}:${held.length})`;
   };
   let why = unserved();
   for (let waited = 0; placed && why && waited < waitSeconds; waited += pollSeconds) {
@@ -339,6 +344,14 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
       if (inBox(['/usr/bin/touch', `${L.root}/config.yaml`])) return { ok: false, code: 'sandbox_config_writable' };
       if (inBox(['/bin/mkdir', `${L.root}/plugins/.probe-${ctx.runToken}`])) { asHermes(['/bin/rmdir', `${L.root}/plugins/.probe-${ctx.runToken}`]); return { ok: false, code: 'sandbox_plugins_writable' }; }
       if (inBox(['/usr/bin/touch', `${ctx.outbox}/.probe-${ctx.runToken}`])) { try { unlinkSync(`${ctx.outbox}/.probe-${ctx.runToken}`); } catch { /* 無い */ } return { ok: false, code: 'sandbox_outbox_open' }; }
+      // Hermes の write_file の一時 file（結果と同じ dir の .hermes-tmp.<12 hex>）を作って付け替えて消せること（11-18 の初回の no_result の原因・課金の前に見る）
+      {
+        const tmpA = `${ctx.outbox}/.hermes-tmp.${ctx.runToken}`;
+        const tmpB = `${ctx.outbox}/.hermes-tmp.${randomBytes(6).toString('hex')}`; // tmpA と同じにならない（runToken の逆さは回文で同じになり得た）
+        const made = inBox(['/bin/sh', '-c', ': > "$1" && /bin/mv -f "$1" "$2" && /bin/rm -f "$2"', 'sh', tmpA, tmpB]);
+        for (const t of [tmpA, tmpB]) { try { unlinkSync(t); } catch { /* 無い */ } }
+        if (!made) return { ok: false, code: 'sandbox_result_tmp_unwritable' };
+      }
       if (!inBox(['/usr/bin/touch', L.probeUsage])) return { ok: false, code: 'sandbox_usage_unwritable' };
       // Hermes の launcher の runtime command を sandbox の中で読み、in-process の起動を作る（形が違えば止める）
       const rc = asHermes(boxed(ctx, 30, [L.bin, '--print-runtime-command']), { timeout: 50_000 });
@@ -389,7 +402,9 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
           mkdirSync(dir, { recursive: true, mode: 0o700 });
           writeFileSync(path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '')}-${why}-${n}`), b, { mode: 0o600 });
         }
-        if (lstatSync(path.join(outbox, n), { throwIfNoEntry: false })) unlinkSync(path.join(outbox, n));
+        const st = lstatSync(path.join(outbox, n), { throwIfNoEntry: false });
+        if (st?.isDirectory()) rmdirSync(path.join(outbox, n)); // 空のフォルダだけ（中身が在れば消さない・Human が見る）
+        else if (st) unlinkSync(path.join(outbox, n));
       } catch { /* 消せない時は次の実行の前の一覧に残る（取り込まない） */ }
     },
     killStragglers: (ctx) => { asHermes(['/usr/bin/pkill', '-KILL', '-f', `run ${ctx.runToken}`]); },

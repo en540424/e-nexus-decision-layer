@@ -61,6 +61,14 @@ def _init_home():
     except OSError:
         tries['root .env'] = 'denied'
     return tries
+def _atomic(path, text):
+    # 4d04303 tools/file_operations_native.atomic_write と同じ書き方：同じ dir に .hermes-tmp.<12 hex> を O_EXCL で作り、書いて os.replace
+    import secrets
+    tmp = os.path.join(os.path.dirname(path), '.hermes-tmp.' + secrets.token_hex(6))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    with open(fd, 'wb') as fh:
+        fh.write(text.encode('utf-8'))
+    os.replace(tmp, path)
 def _usage(path, d):
     if path:
         Path(path).write_text(json.dumps(d))
@@ -81,7 +89,7 @@ def _run_and_exit_oneshot(prompt, *, model=None, provider=None, toolsets=None, s
     m_out = re.search(r'create (\S+/(t-[0-9]{14}-[0-9a-f]{8})\.json) containing', prompt)
     body = json.loads(Path(m_in.group(1)).read_text())
     summary = 'done: ' + str(body.get('title', ''))
-    Path(m_out.group(1)).write_text(json.dumps({'v': 1, 'task_id': m_out.group(2), 'status': 'done', 'summary': summary}, ensure_ascii=False))
+    _atomic(m_out.group(1), json.dumps({'v': 1, 'task_id': m_out.group(2), 'status': 'done', 'summary': summary}, ensure_ascii=False))
     _usage(usage_file, {'model': 'claude-haiku-5-5', 'api_calls': 1, 'input_tokens': 12, 'output_tokens': 7, 'completed': True})
     sys.stdout.write('done\n')
     sys.stdout.flush()

@@ -31,6 +31,11 @@ const AUTH_RE = String.raw`(regex #"/auth\.json$") (regex #"/auth\.lock$") (rege
 /** SBPL の文字列の中の path（sandboxArgs が safe な文字だけに限る＝" と \ を含まない）と、regex に埋める path（. を \. に） */
 const lit = (p) => `"${p}"`;
 const rx = (p) => p.replace(/\./g, '\\.');
+/** 結果の file の dir（Hermes の書きの一時 file の置き場所） */
+const resultTmpDir = (result) => result.slice(0, result.lastIndexOf('/'));
+/** Hermes の write_file の一時 file の名前（4d04303 tools/file_operations_native.py：f".hermes-tmp.{secrets.token_hex(6)}"） */
+export const RESULT_TMP_RE = /^\.hermes-tmp\.[0-9a-f]{12}$/;
+// SBPL の regex は {n} の繰り返しを効かせない（11-18 夜に sandbox-exec で確かめた：{12} では一時 file を作れなかった）＝profile では [0-9a-f] を 12 回並べる
 
 /**
  * 読み：Hermes の root のうち code（hermes-agent）・python（tools）・依存（installs）と業務の profile の home、~/.local/bin、
@@ -40,7 +45,12 @@ const rx = (p) => p.replace(/\./g, '\\.');
  *       SOUL.md／AGENTS.md・.env は書けない（-z は HERMES_ACCEPT_HOOKS＝hook を自動で受ける＝植えられると次の実行で動く）。
  *       Hermes が起動で作るその中のフォルダと SOUL.md は、sandbox の外で先に作る（WORK_LOCKED_DIRS・WORK_SOUL_MD・hermes-work.mjs の prepareWorkHome）。
  *       依存の lock（installs/<key>/.install.lock）と lease（…/.leases/）だけ（v0.22.4 hermes_cli/runtime_state.py）。usage の 1 file と、
- *       この依頼の結果の 1 file だけ（Hermes の write_file は一時 file を使わず直接書く：v0.22.4 tools/file_tools.py）。
+ *       この依頼の結果の 1 file と、その書きの一時 file（結果と同じ dir の .hermes-tmp.<16 進 12 桁>）だけ。
+ *       Hermes の write_file は同じ dir に一時 file を O_EXCL で作って書き、os.replace で結果の名前に付け替える（4d04303 tools/file_operations_native.py
+ *       の atomic_write・secrets.token_hex(6)）。11-13 の「一時 file を使わず直接書く」は誤りで、11-18 の初回の実機の実行は一時 file を拒まれて
+ *       結果を書けなかった（no_result）。付け替え先は結果の 1 file だけ＝他の依頼の結果は作れない。残った一時 file は runWork が隔離する
+ *       結果の dir の下にはフォルダを作らせない（write_file の makedirs で「<結果>.json/x」が結果の名前をフォルダにし、その依頼をやり直せなくなる・
+ *       監査 11-18 夜。vnode-type と subpath は require-all で両方：並べるだけでは「どちらか」になり file も作れなくなる）
  *       常駐の gateway の root（plugins・hooks・cron・skills・config・SOUL・code）には書けない
  */
 export function buildProfile(p) {
@@ -64,6 +74,7 @@ export function buildProfile(p) {
   (regex #"^${rx(R)}/installs/[^/]+/\\.install\\.lock$")
   (regex #"^${rx(R)}/installs/.+/\\.leases(/[^/]+)?$")
   (literal ${lit(p.USAGE_FILE)}) (literal ${lit(p.RESULT)})
+  (regex #"^${rx(resultTmpDir(p.RESULT))}/\\.hermes-tmp\\.${'[0-9a-f]'.repeat(12)}$")
   (subpath ${lit(p.SYSTEM_TMP)}) (subpath "/dev"))
 (deny file-write*
   (literal ${lit(`${W}/config.yaml`)}) (subpath ${lit(`${W}/hooks`)}) (subpath ${lit(`${W}/plugins`)}) (subpath ${lit(`${W}/cron`)})
@@ -71,6 +82,8 @@ export function buildProfile(p) {
   (regex #"/(SOUL|AGENTS|CLAUDE)\\.md$") (regex #"/\\.hermes\\.md$")
   ${ENV_RE}
   ${AUTH_RE})
+(deny file-write-create
+  (require-all (vnode-type DIRECTORY) (subpath ${lit(resultTmpDir(p.RESULT))})))
 (deny process-exec
   (literal "/usr/bin/security") (literal "/usr/bin/osascript") (literal "/usr/bin/curl") (literal "/usr/bin/nc")
   (literal "/usr/bin/ssh") (literal "/usr/bin/scp") (literal "/usr/bin/sftp") (literal "/usr/bin/rsync")
