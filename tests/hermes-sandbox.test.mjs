@@ -21,14 +21,14 @@ function world() {
   const root = path.join(H, '.hermes');
   const work = path.join(root, 'e-nexus-work');
   const d = (p) => { mkdirSync(p, { recursive: true }); return p; };
-  for (const p of ['hermes-agent', 'tools', 'installs/k1/environments/g1/.leases', 'sessions', 'memories', 'auth', 'logs', 'backups', 'cron', 'plugins', 'hooks', 'skills', 'profiles/other', 'profiles/work/cron', 'e-nexus-work/sessions', 'e-nexus-work/cwd', 'e-nexus-work/cache/scratch']) d(path.join(root, p));
+  for (const p of ['hermes-agent', 'tools', 'installs/k1/environments/g1/.leases', 'sessions', 'memories', 'auth', 'logs', 'backups', 'cron', 'plugins', 'hooks', 'skills', 'profiles/other', 'profiles/work/cron', 'e-nexus-legacy/profiles-work-x', 'e-nexus-work/sessions', 'e-nexus-work/cwd', 'e-nexus-work/cache/scratch']) d(path.join(root, p));
   d(path.join(H, '.local/bin')); d(path.join(H, 'work')); d(path.join(U, 'operator/.ssh')); d(path.join(R, 'vf'));
   const shared = d(path.join(U, 'Shared/w'));
   const inbox = d(path.join(shared, 'inbox'));
   const outbox = d(path.join(shared, 'outbox'));
   const w = (p, s = 'x') => writeFileSync(p, s);
   w(path.join(root, '.env'), `ANTHROPIC_API_KEY=${'k'.repeat(40)}\n`);
-  for (const p of ['auth.json', 'auth/token', 'state.db', 'sessions/s1', 'memories/m', 'logs/agent.log', 'backups/state.db', 'cron/jobs.json', 'profiles/other/state.db', 'profiles/work/state.db', 'config.yaml', 'hermes-agent/code.py', 'installs/k1/facts.json', 'e-nexus-work/state.db', 'e-nexus-work/.env.bak']) w(path.join(root, p));
+  for (const p of ['auth.json', 'auth/token', 'state.db', 'sessions/s1', 'memories/m', 'logs/agent.log', 'backups/state.db', 'cron/jobs.json', 'profiles/other/state.db', 'profiles/work/state.db', 'e-nexus-legacy/profiles-work-x/state.db', 'config.yaml', 'hermes-agent/code.py', 'installs/k1/facts.json', 'e-nexus-work/state.db', 'e-nexus-work/.env.bak']) w(path.join(root, p));
   w(path.join(U, 'operator/.ssh/id'), 's'); w(path.join(inbox, `${TASK}.json`), 'req'); w(path.join(inbox, 't2.json'), 'other'); w(path.join(shared, 'brief.json'), 'b');
   w(path.join(outbox, 't-20261113000000-0000ffff.json'), '{"summary":"別の business の結果"}');
   const params = { USERS_ROOT: U, HERMES_ROOT: root, WORK_HOME: work, LOCAL_BIN: path.join(H, '.local/bin'), USAGE_FILE: path.join(H, 'work/u.json'), REQUEST: path.join(inbox, `${TASK}.json`), BRIEF: path.join(shared, 'brief.json'), RESULT: path.join(outbox, `${TASK}.json`), SYSTEM_TMP: path.join(R, 'vf') };
@@ -43,7 +43,7 @@ test('sandbox の読み：依頼の 1 file・code・依存・profile の state �
   const r = (p) => path.join(x.root, p);
   const yes = [x.params.REQUEST, x.params.BRIEF, r('hermes-agent/code.py'), r('installs/k1/facts.json'), r('e-nexus-work/state.db'), '/etc/hosts'];
   const no = [path.join(x.inbox, 't2.json'), path.join(x.outbox, 't-20261113000000-0000ffff.json'), r('.env'), r('e-nexus-work/.env.bak'), r('auth.json'), r('auth/token'),
-    r('state.db'), r('sessions/s1'), r('memories/m'), r('logs/agent.log'), r('backups/state.db'), r('cron/jobs.json'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('config.yaml'),
+    r('state.db'), r('sessions/s1'), r('memories/m'), r('logs/agent.log'), r('backups/state.db'), r('cron/jobs.json'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('e-nexus-legacy/profiles-work-x/state.db'), r('config.yaml'),
     path.join(x.U, 'operator/.ssh/id')];
   for (const p of yes) assert.equal(rd(p), true, `読める：${p}`);
   for (const p of no) assert.equal(rd(p), false, `読めない：${p}`);
@@ -58,7 +58,7 @@ test('sandbox の書き：結果の 1 file・usage・profile の state・依存�
   const yes = [x.params.RESULT, x.params.USAGE_FILE, r('e-nexus-work/sessions/s'), r('e-nexus-work/state.db'), r('e-nexus-work/cache/scratch/t'), r('installs/k1/.install.lock'), r('installs/k1/environments/g1/.leases/abc'), path.join(x.R, 'vf/t')];
   const no = [path.join(x.outbox, 'other.json'), path.join(x.outbox, `.${TASK}.json.tmp`), r('plugins/p.py'), r('hooks/h.py'), r('cron/jobs.json'), r('skills/SKILL.md'), r('SOUL.md'), r('config.yaml'),
     r('hermes-agent/x.py'), r('tools/py'), r('installs/k1/environments/g1/site.py'), r('installs/k1/facts.json'), r('.env'), r('state.db'), r('sessions/s2'),
-    r('e-nexus-work/config.yaml'), r('e-nexus-work/.env'), r('e-nexus-work/cwd/AGENTS.md'), r('e-nexus-work/SOUL.md'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('profiles/work/cron/jobs.json'), r('profiles/work/SOUL.md'), r('profiles/new/SOUL.md'),
+    r('e-nexus-work/config.yaml'), r('e-nexus-work/.env'), r('e-nexus-work/cwd/AGENTS.md'), r('e-nexus-work/SOUL.md'), r('profiles/other/state.db'), r('profiles/work/state.db'), r('profiles/work/cron/jobs.json'), r('profiles/work/SOUL.md'), r('profiles/new/SOUL.md'), r('e-nexus-legacy/profiles-work-x/state.db'), r('profiles/work/gateway.parked'),
     path.join(x.inbox, 'x'), path.join(x.U, 'operator/x'), `/private/tmp/hermes-sbx-probe-${process.pid}`];
   for (const p of yes) assert.equal(wr(p), true, `書ける：${p}`);
   for (const p of no) assert.equal(wr(p), false, `書けない：${p}`);

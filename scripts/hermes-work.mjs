@@ -165,6 +165,65 @@ export function prepareWorkHome(run, home = WORK_HOME) {
   return null;
 }
 
+/** 前の業務の home を移す先（root の直下・profiles/ の外＝常駐が serve しない・sandbox の中からは読めない） */
+export const LEGACY_ARCHIVE_DIR = 'e-nexus-legacy';
+const PLAIN_OWN_DIR = 'test -d "$1" && test ! -L "$1" && test "$(/usr/bin/stat -f %u "$1")" = "$(/usr/bin/id -u)"';
+/**
+ * 前の業務の home（~/.hermes/profiles/work）を、消さず・常駐の gateway を止めずに、常駐の serve から外す（2026-11-18 夜。
+ * hermes profile delete は gateway の停止と全部の削除を伴う＝使わない）。sandbox の外（hermes の権限・run＝asHermes）で動く。
+ *   1. 空の gateway.parked を置く：Hermes の正規の印（v0.22.4 docs/user-guide/multi-profile-gateways.md「adding the marker by hand unserves the
+ *      profile」・hermes_cli/profiles.py の profile_is_parked・profiles_to_serve）。常駐は 30 秒ごとの再走査で serve と cron の時計から外す。
+ *      「Parking does not delete the profile, its sessions, or its scheduled jobs」。消せば戻る
+ *   2. parked でも再起動の判定（gateway_multiplex_mode.py の include_parked=True）では数に入り、常駐は複数の profile の形で起きる。
+ *      だから常駐の記録（root の gateway_state.json の served_profiles）が印より新しく work を含まない（＝もう serve していない）と読めた時だけ、
+ *      フォルダごと root の e-nexus-legacy/ へ mv -n で移す（上書きしない・中身はそのまま・同じ file system の rename）
+ *      記録だけでは足りない：止めきれない turn が残ると、常駐は記録から work を外しても state.db・gateway.lock 等を開いたまま
+ *      （run_profile_reconcile.py の _unserve_profile が早く戻る）＝フォルダの中の file を開いた process が無い（lsof +D が空）ことも見る（監査 11-18 夜 M1）
+ *   待つのは印をこの回に置いた時だけ（前の回の印なら記録はもう書かれている＝1 回だけ見る）。移す先は同じ file system（rename・copy しない）。
+ *   読めない・形が違う・link・持ち主が違う時は何もしない（skipped）か parked のまま（次の実行で移す）。確かめの結果は変えない（止めない）。
+ * 戻り値：{ state: 'absent' | 'parked' | 'moved' | 'skipped', reason?, to? }
+ */
+export async function isolateLegacyProfile(run, root, { waitSeconds = 70, pollSeconds = 5, stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, 'Z'), sleep = (ms) => new Promise((r) => { setTimeout(r, ms); }) } = {}) {
+  const ok = (r) => r?.status === 0 && !r.error;
+  const sh = (script, ...args) => run(['/bin/sh', '-c', script, 'sh', ...args]);
+  const legacy = `${root}/${LEGACY_WORK_HOME_REL}`;
+  const marker = `${legacy}/gateway.parked`;
+  if (!ok(sh(ABSENT, legacy))) return { state: 'absent' };
+  if (!ok(sh(PLAIN_OWN_DIR, `${root}/profiles`)) || !ok(sh(PLAIN_OWN_DIR, legacy))) return { state: 'skipped', reason: 'legacy_not_plain_dir' };
+  const placed = !ok(sh(ABSENT, marker));
+  if (placed) sh('umask 077; set -C; : > "$1"', marker);
+  if (!ok(sh('test -f "$1" && test ! -L "$1"', marker))) return { state: 'skipped', reason: 'marker_not_plain_file' };
+  const unserved = () => {
+    const r = sh('s="$1/gateway_state.json"; test -f "$s" && test ! -L "$s" && /usr/bin/stat -f %Fm "$s" "$2" && /usr/bin/head -c 1048576 "$s"', root, marker);
+    if (!ok(r)) return 'state_unreadable';
+    const [sm, mm, ...rest] = String(r.stdout).split('\n');
+    let st;
+    try { st = JSON.parse(rest.join('\n')); } catch { return 'state_not_json'; }
+    if (!(Number(sm) > Number(mm))) return 'state_older_than_marker';
+    const served = st?.served_profiles;
+    if (!Array.isArray(served)) return 'state_no_served_profiles';
+    if (served.includes('work')) return 'still_served';
+    // 開いた file が残っていない（lsof は hermes の process だけを見る＝常駐の gateway も hermes）。lsof が動かなければ移さない
+    const lo = run(['/usr/sbin/lsof', '-n', '-P', '+D', legacy], { timeout: 30_000 });
+    if (lo?.error || lo?.signal || ![0, 1].includes(lo?.status)) return 'lsof_failed';
+    return String(lo.stdout ?? '').trim() ? 'still_open' : null;
+  };
+  let why = unserved();
+  for (let waited = 0; placed && why && waited < waitSeconds; waited += pollSeconds) {
+    await sleep(pollSeconds * 1000);
+    why = unserved();
+  }
+  if (why) return { state: 'parked', reason: why };
+  const dest = `${root}/${LEGACY_ARCHIVE_DIR}/profiles-work-${stamp}`;
+  if (!ok(run(['/bin/mkdir', '-p', '-m', '700', `${root}/${LEGACY_ARCHIVE_DIR}`])) || !ok(sh(PLAIN_OWN_DIR, `${root}/${LEGACY_ARCHIVE_DIR}`))) return { state: 'parked', reason: 'archive_dir' };
+  if (!ok(sh('test "$(/usr/bin/stat -f %d "$1")" = "$(/usr/bin/stat -f %d "$2")"', legacy, `${root}/${LEGACY_ARCHIVE_DIR}`))) return { state: 'parked', reason: 'archive_other_device' };
+  if (ok(sh(ABSENT, dest))) return { state: 'parked', reason: 'dest_exists' };
+  sh('/bin/mv -n "$1" "$2"', legacy, dest);
+  // 移した物が dest 自身（dest の中の work ではない）で、元の場所に無いこと
+  if (!ok(sh('test -d "$2" && test ! -L "$2" && test -e "$2/gateway.parked" && ! { test -e "$2/work" || test -L "$2/work"; } && ! { test -e "$1" || test -L "$1"; }', legacy, dest))) return { state: 'parked', reason: 'move_failed' };
+  return { state: 'moved', to: dest };
+}
+
 /**
  * 本番の置き場所と実行の仕方（hermes ユーザー・sudo）。test は同じ形の layout を渡して、本番と同じ確かめ・起動・取り込みの code を
  * 自分の user・偽の root・本物の sandbox で動かす（tests/hermes-chain-20261118.test.mjs）。
@@ -173,6 +232,8 @@ export function productionLayout() {
   return {
     user: HU, home: HH, root: ROOT, workHome: WORK_HOME, bin: HERMES_BIN, usage: USAGE, probeUsage: PROBE_USAGE,
     usersRoot: '/Users', systemTmp: '/private/var/folders', probeSeconds: PROBE_SECONDS, runSeconds: null, keepDenials: true,
+    /** 前の業務の home を移す前に、常駐が serve から外したと読めるまで待つ秒（再走査は 30 秒ごと） */
+    legacyWaitSeconds: 70, legacyPollSeconds: 5,
     /** sandbox の外で hermes として動かす（sudo の password は run の初めに聞いた） */
     asUser: (sh) => (args, opts) => sh('/usr/bin/sudo', ['-n', '-u', HU, '-H', ...args], opts),
     /** 常駐・メモリ・sudo の確かめ（止める code か null） */
@@ -222,8 +283,17 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
       // custom の home では Hermes が root の active_profile を読んで profile を切り替え得る（v0.22.4 main.py の _apply_profile_override）。
       // sandbox が読みを拒むので今は効かないが、偶然に頼らない：無いか default であること（監査 11-18 夜）
       if (!ok(asHermes(['/bin/sh', '-c', 'f="$1/active_profile"; test ! -e "$f" && test ! -L "$f" || { test -f "$f" && test "$(/usr/bin/head -c 64 "$f" | /usr/bin/tr -d "[:space:]")" = default; }', 'sh', L.root]))) return { ok: false, code: 'hermes_active_profile_set' };
-      // 前の業務の home（profiles/work）はもう使わない。残っていれば常駐が serve し続けるので片付けを知らせる（AI は常駐の状態を変えない・止めない）
-      if (ok(asHermes(['/bin/test', '-e', `${L.root}/${LEGACY_WORK_HOME_REL}`]))) log('注意：前の業務の home（~/.hermes/profiles/work）が残っている。常駐の gateway が profile として serve し続ける（複数の profile の状態）。片付ける：sudo -u hermes -H /Users/hermes/.local/bin/hermes profile delete work（確認に work と打つ・docs/hermes-work.md §12-8）');
+      // 前の業務の home（profiles/work）を、消さず・常駐を止めずに serve から外す（parked → 外れたと読めたら e-nexus-legacy/ へ移す・§12-9）
+      const iso = await isolateLegacyProfile(asHermes, L.root, { waitSeconds: L.legacyWaitSeconds, pollSeconds: L.legacyPollSeconds });
+      if (iso.state === 'moved') log(`前の業務の home（~/.hermes/profiles/work）を常駐の serve から外し、消さずに ~/.hermes/${LEGACY_ARCHIVE_DIR}/${path.basename(iso.to)} へ移した（常駐の gateway は止めていない）`);
+      else if (iso.state === 'parked') log(`前の業務の home（~/.hermes/profiles/work）に gateway.parked を置いた（常駐の serve と cron から外れる・データはそのまま）。移すのは次の実行で（${iso.reason}）`);
+      else if (iso.state === 'skipped') log(`注意：前の業務の home を隔離しなかった（${iso.reason}）。Claude Code に伝える`);
+      // 常駐が multiplex の形へ移った時、Hermes は root の config.yaml に gateway.multiplex_profiles: true を書く（gateway_multiplex_mode.py の persist_resolved_default）。
+      // 在れば再起動の後も multiplex で起きる。読むだけで知らせる（戻すかは Human の判断・AI は常駐の設定を変えない）
+      {
+        const mp = asHermes(['/usr/bin/grep', '-E', '^[[:space:]]*multiplex_profiles:[[:space:]]*(true|yes|on|1)[[:space:]]*$', `${L.root}/config.yaml`]);
+        if (mp.status === 0) log('常駐の root の config.yaml に gateway.multiplex_profiles: true が在る（常駐は再起動の後も複数の profile の形で起きる）。戻すかは Human の判断（docs/hermes-work.md §12-9・変えていない）');
+      }
       // 鍵が root の .env に在る（値は見ない：loader が長さだけ確かめる）
       if (!ok(asHermes([...envFor(ctx, false), '/usr/bin/perl', '-e', LOADER, `${L.root}/.env`, '10', `${L.workHome}/cwd`, '/bin/sh', '-c', 'test "${#ANTHROPIC_API_KEY}" -ge 20']))) return { ok: false, code: 'key_missing' };
       // sandbox の規則（hermes の権限で・課金なし）

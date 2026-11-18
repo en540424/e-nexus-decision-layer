@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { productionParams, runtimeBootstrap, WORK_HOME_NAME, WORK_LOCKED_DIRS, WORK_SOUL_MD } from '../scripts/lib/hermes-sandbox.mjs';
@@ -127,7 +127,7 @@ function world() {
     ...productionLayout(),
     user: process.env.USER, home: H, root, workHome: path.join(root, WORK_HOME_NAME), bin: path.join(H, '.local/bin/hermes'),
     usage: path.join(H, 'work/run-usage.json'), probeUsage: path.join(H, 'work/probe-usage.json'),
-    usersRoot: U, systemTmp: path.join(R, 'vf'), probeSeconds: 20, runSeconds: 3, keepDenials: false,
+    usersRoot: U, systemTmp: path.join(R, 'vf'), probeSeconds: 20, runSeconds: 3, keepDenials: false, legacyWaitSeconds: 0, legacyPollSeconds: 1,
     asUser: (sh) => (args, opts) => sh('/usr/sbin/taskpolicy', ['-b', ...args], opts),
     hostCheck: () => null,
     boundary: [],
@@ -179,12 +179,34 @@ test('模擬 E2E（本番の確かめと実行の code・本物の sandbox）：
     const tries = JSON.parse(probeLog.match(/tries=(\{.*\})/)[1]);
     assert.deepEqual(tries, { 'SOUL.md': 'denied', 'config.yaml': 'denied', 'cron/jobs.json': 'denied', 'cwd/AGENTS.md': 'denied', 'hooks/planted.py': 'denied', 'memories/MEMORY.md': 'denied', 'root .env': 'denied', 'skills/x/SKILL.md': 'denied' });
     assert.ok(!existsSync(x.layout.probeUsage), 'probe の usage は片付ける');
-    assert.ok(logs.some((l) => /前の業務の home.*profile delete work/.test(l)), '前の home が残っていれば片付けを知らせる（止めない）');
-    assert.equal(readFileSync(path.join(x.root, 'profiles/work/SOUL.md'), 'utf8'), 'old', '前の home には触らない');
+    assert.ok(logs.some((l) => /前の業務の home.*gateway\.parked を置いた/.test(l)), '前の home は parked にする（常駐の記録が無いので移すのは次）');
+    assert.equal(readFileSync(path.join(x.root, 'profiles/work/gateway.parked'), 'utf8'), '');
+    assert.equal(readFileSync(path.join(x.root, 'profiles/work/SOUL.md'), 'utf8'), 'old', '前の home の中身は変えない');
 
     // 2) 2 回目の --check-only：前の回の物（sessions・state.db・logs）が在っても同じに通る＝確かめ自身が作った物を次に拒まない
     r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
     assert.equal(r.code, 'check_ok', JSON.stringify(r));
+
+    // 2b) 常駐が再走査で前の home を serve から外した（記録は印より新しく work を含まない）→ 次の確かめで e-nexus-legacy へ移す（中身はそのまま）
+    const st = path.join(x.root, 'gateway_state.json');
+    writeFileSync(st, JSON.stringify({ served_profiles: ['default'] }));
+    const later = Date.now() / 1000 + 5;
+    utimesSync(st, later, later);
+    r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
+    assert.equal(r.code, 'check_ok');
+    assert.equal(existsSync(path.join(x.root, 'profiles/work')), false);
+    const [moved] = readdirSync(path.join(x.root, 'e-nexus-legacy'));
+    assert.match(moved, /^profiles-work-/);
+    assert.equal(readFileSync(path.join(x.root, 'e-nexus-legacy', moved, 'SOUL.md'), 'utf8'), 'old', '消さずに移した');
+    assert.ok(readdirSync(path.join(x.root, 'e-nexus-legacy', moved, 'cron')), '中のフォルダもそのまま');
+
+    // 2c) 常駐が root の config.yaml に multiplex_profiles: true を書いていれば、読むだけで知らせる（変えない）
+    writeFileSync(path.join(x.root, 'config.yaml'), 'gateway:\n  multiplex_profiles: true\n');
+    logs.length = 0;
+    r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
+    assert.equal(r.code, 'check_ok');
+    assert.ok(logs.some((l) => /multiplex_profiles: true が在る/.test(l)));
+    assert.equal(readFileSync(path.join(x.root, 'config.yaml'), 'utf8'), 'gateway:\n  multiplex_profiles: true\n', '常駐の設定は変えない');
 
     // 3) 時間切れ（偽の Hermes が止まらない）→ 自動ではやり直さない → --retry で done
     x.mode('hang');
