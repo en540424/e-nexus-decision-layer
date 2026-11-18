@@ -1,6 +1,6 @@
 # Hermes に業務を渡す時の決まり（案・2026-11-10・MA-24）
 
-**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
+**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。初回の課金なしの確かめの停止を直した（§12-6・Hermes 本体での確かめは Human の `--check-only` 待ち）。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
 Hermes は常駐している（gateway だけ・messaging platform なし・cron の job なし）。今の役目は監視の要約を読むことだけ（`docs/runtime-monitoring.md`）。
 
 ## 1. 渡す仕事の形（往きと還り）
@@ -216,3 +216,14 @@ A・B・D・E の一覧は既存の無料の intent で足りる＝Hermes の種
 新しい定期の job・常駐・無制限の自律ループは足していない。
 
 独立監査（2026-11-18・1 名）：high 0・medium 1（F1 上記）・low 7（code の数の上限・切り詰めの印・確かめ直しで inbox の file を照らす・断った時に sudo を聞かない・状況の読みの失敗の code・行に分けて書く・壊れた記録 1 つで失敗にしない）。全部直して試験を足した（`tests/hermes-ops-20261118.test.mjs`）。残り：Hermes の `read_file` が長い file をどこで切るかは未確認（v0.22.4 の source で確かめていない。実機の初回の結果で見る）
+
+### 12-6. 初回の課金なしの確かめで止まった（2026-11-18 16:36 JST・`preflight_probe_sandbox_breaks_hermes`）
+
+- **起きたこと**：Human の初回の `--paid-ok` の実行（`t-20261118073100-b6888126`）が、無効な鍵で Hermes を sandbox の中で起動する段で止まった。**有料の実行はしていない**（job を始める前・試行 0・記録は waiting のまま）
+- **原因**（store の `hermes-work-logs/<task>-probe.txt`）：Hermes v0.22.4 は起動の度に HERMES_HOME の下へ `cron`・`sessions`・`logs`・`logs/curator`・`memories`・`pairing`・`hooks`・`image_cache`・`audio_cache`・`skills` を作り、`SOUL.md` が無ければ既定の文を書く（commit 4d04303 の `hermes_cli/config.py` の `_HERMES_HOME_SUBDIRS`・`config_home.initialize_home`・`_ensure_default_soul_md`）。sandbox は `cron`・`hooks`・`memories`・`skills`・`SOUL.md` への書きを**わざと**拒む（§11：植えられると次の実行で動く・読まれる）ので、`profiles/work/cron` の mkdir が EPERM になり `HomeInitializationError` で止まった。11-13 の設計は「profile の中の hook 等は作れない＝無いはず」とし、前の確かめも「在れば止める」だった＝Hermes の起動の段と両立しなかった。sandbox の規則の試験は Hermes 本体を動かさないので見つけられなかった
+- **直し**（sandbox の規則は変えない）：課金なしの確かめの中、sandbox の外（hermes の権限）で `prepareWorkHome` が空の `cron`・`hooks`・`memories`・`skills` と決まった文の `SOUL.md`（0600・Hermes の旧い雛形と違う文＝Hermes は書き換えない）を先に置く。毎回「空・link でない・SOUL.md の文が同じ」を確かめ、違えば `work_home_has_<dir>`・`work_home_soul_changed`・`work_home_link` で止める。`plugins`・`.env` は前と同じく在れば止める。Hermes は在るフォルダの mkdir の失敗（Python の `mkdir(exist_ok=True)` は在れば EPERM でも通す）と chmod の失敗を無視する
+- **残りの警告**：`install out of sync (venv: could not enumerate profiles)` は sandbox が profiles の一覧を読ませないための警告（`pm/plugins_state.dependency_homes`）で、止まる原因ではない。一覧を許すと他の profile の名前が見えるので許さない
+- **`--check-only`**（新）：`sh deploy/macos/hermes-work-run.sh --check-only` は課金なしの確かめ（sudo・sandbox の規則・無効な鍵での起動）までで止める。依頼を実行しない・試行に数えない・承認の確かめ直しも聞かない。`--paid-ok` と一緒には使えない
+- **試験**：`tests/hermes-home-init-20261118.test.mjs`（4 件）。本番と同じ sandbox の規則の中で、Hermes の起動の初めの段を同じ手順に写した Python を動かし、整える前は `profiles/work/cron` の EPERM で止まる（本番の log と同じ）・整えた後は通る・中へは書けないままを確かめる。sandbox で書けないフォルダの一覧は規則から導いて `WORK_LOCKED_DIRS` と照らす
+- **未確認**：Hermes 本体を実機の sandbox で起動して 401 まで届くか（sudo の password が要る＝Human）。起動の段より後に別の書けない所へ書くかは、`--check-only` の結果で見る
+- **独立監査**（2026-11-18・1 名）：high 0・medium 2・low 3。全部直して試験を足した。M1：中が空かを `ls -A` で見ていたので、名前に改行の在るフォルダ（`skills/<改行>/SKILL.md`）が空に見えた → `find -mindepth 1 -print -quit`。M2：一覧を読めない mode（0100）のフォルダは空に見え、決まった名前の file（MEMORY.md 等）は Hermes に読まれる → chmod 700 してから mode・持ち主・中身を確かめ、一覧の失敗は止める。L3：確かめから実行までの間 → 起動の確かめの後（実行の直前）にもう一度。L4：`cwd` の中身（AGENTS.md 等が読まれる）と profile の `config.yaml` は前から見ていなかった → 在れば `work_home_has_cwd`・`work_home_has_config` で止める。`check_ok` で承認の期限切れも知らせる。残り（受け入れ）：`.hermes`・`profiles` が link の時は sandbox が本当の path で拒む＝止まる側。起動の段より後の書き（同梱の skill の同期・設定の移し替え・cron の lock）は source の写しからは決められない＝`--check-only` で見る

@@ -9,12 +9,14 @@
  *        3. 渡す 1 件を選び、--paid-ok が無ければ課金の前で止まる。--paid-ok なら sudo の password（排他を取る前に）
  *           承認から 24 時間を過ぎた依頼は、sudo の前にもう一度全文を見せて確認コードを聞く（端末だけ。打たなければ approval_stale で止まる・2026-11-18）
  *        4. 課金なしの確かめ（メモリ・常駐・権限・sandbox の規則・無効な鍵での Hermes の起動＝Anthropic が 401 を返すところまで）
+ *           --check-only（--paid-ok の代わり）はここまでで止める＝有料の実行はしない・記録は waiting のまま（2026-11-18）
  *        5. hermes として sandbox の中で `hermes -z` を 1 回（120 秒・道具は file だけ・鍵は環境変数だけ）→ 結果の取り込み → 依頼元（Grok）へ返す
  *        やり直し（時間切れ・結果なし・結果の拒否・中断）は --task <id> --retry（有料・最大 3 回）
  *   node scripts/hermes-work.mjs dismiss <task_id> --confirm <12hex>   実行せずに閉じる（waiting・やり直し待ち。端末だけ。確認コードは task-hub show と同じ）
  *   sh deploy/macos/hermes-work-run.sh --paid-ok  は run と同じ
  *
- * 変えないもの：Hermes の設定・権限・常駐・鍵の file。作るもの：hermes の home の profile のフォルダ（~/.hermes/profiles/work・初回だけ）。
+ * 変えないもの：Hermes の設定・権限・常駐・鍵の file。作るもの：hermes の home の profile のフォルダ（~/.hermes/profiles/work・初回だけ）と、
+ * Hermes が起動で作る中の空のフォルダ（cron・hooks・memories・skills）と決まった SOUL.md（sandbox の中では書けない所・prepareWorkHome）。
  * 出すもの：段のコード・usage の数。依頼の本文・Hermes の出力の全文・鍵は画面に出さない（出力の末尾は鍵の形を伏せて store の hermes-work-logs/ に 0600。
  * 課金なしの確かめで止まった時は、その時刻の sandbox の拒否の行〈path だけ〉も同じ場所へ）。outbox の余計な file は store の hermes-quarantine/ へ移す。
  */
@@ -24,7 +26,7 @@ import { lstatSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'no
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOADER, productionParams, sandboxArgs, WORK_PROFILE } from './lib/hermes-sandbox.mjs';
+import { LOADER, productionParams, sandboxArgs, WORK_LOCKED_DIRS, WORK_PROFILE, WORK_SOUL_MD } from './lib/hermes-sandbox.mjs';
 import { HANDLERS } from './lib/task-hub/handlers.mjs';
 import { businessServices } from './lib/task-hub/business-services.mjs';
 import { confirmCodeOf, currentDigest } from './lib/task-hub/approval.mjs';
@@ -53,10 +55,11 @@ const SECRET_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|[0-9a-f]{64
 const AUTH_ERROR = /401|authentication|invalid[ _-]?x?-?api[ _-]?key|unauthori[sz]ed/i;
 
 export function parse(argv) {
-  const a = { command: argv[0], paidOk: false, retry: false, approve: true, task: null, store: null, confirm: null, positional: [] };
+  const a = { command: argv[0], paidOk: false, checkOnly: false, retry: false, approve: true, task: null, store: null, confirm: null, positional: [] };
   for (let i = 1; i < argv.length; i += 1) {
     const k = argv[i];
     if (k === '--paid-ok') a.paidOk = true;
+    else if (k === '--check-only') a.checkOnly = true;
     else if (k === '--retry') a.retry = true;
     else if (k === '--no-approve') a.approve = false;
     else if (['--task', '--store', '--confirm'].includes(k)) { if (argv[i + 1] === undefined) throw new Error(`${k} needs a value`); a[k.slice(2)] = argv[i + 1]; i += 1; } else if (k.startsWith('--')) throw new Error(`unknown argument: ${k}`);
@@ -65,6 +68,7 @@ export function parse(argv) {
   if (!['run', 'status', 'dismiss'].includes(a.command)) throw new Error('command must be run|status|dismiss');
   if (a.task !== null && !TASK_ID_RE.test(a.task)) throw new Error('--task needs a task id');
   if (a.retry && !a.task) throw new Error('--retry needs --task <id>（やり直す 1 件を指定する）');
+  if (a.checkOnly && (a.paidOk || a.command !== 'run')) throw new Error('--check-only は run だけ・--paid-ok と一緒に使わない（課金なしの確かめで止める）');
   if (a.command === 'dismiss' && (!TASK_ID_RE.test(a.positional[0] ?? '') || !/^[0-9a-f]{12}$/.test(a.confirm ?? ''))) throw new Error('dismiss <task_id> --confirm <12hex>');
   return a;
 }
@@ -86,6 +90,36 @@ function keepDenials(store, name, sinceMs) {
   const r = spawnSync('/usr/sbin/taskpolicy', ['-b', '/usr/bin/log', 'show', '--last', `${mins}m`, '--style', 'compact', '--predicate', 'sender == "Sandbox" AND eventMessage CONTAINS "deny"'], { encoding: 'utf8', timeout: 40_000, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'] });
   const lines = String(r.stdout ?? '').split('\n').filter((l) => /deny/.test(l) && /(python|hermes|perl|sandbox-exec)/i.test(l)).map((l) => l.replace(/^.*?(deny\S*\s)/, '$1')).slice(-200);
   keepLog(store, name, lines.length ? lines.join('\n') : `（拒否の行を読めなかった：exit ${r.status ?? '-'}）`);
+}
+
+/** 自分の 0700 の本物のフォルダで、中が空（find は名前に改行が在っても path を出す・一覧を読めなければ失敗＝止める。2026-11-18 監査 M1・M2） */
+const OWN_700_DIR = 'test -d "$1" && test ! -L "$1" && test "$(/usr/bin/stat -f "%Lp %u" "$1")" = "700 $(/usr/bin/id -u)"';
+const EMPTY_OWN_DIR = `${OWN_700_DIR} && out=$(/usr/bin/find "$1" -mindepth 1 -maxdepth 1 -print -quit) && test -z "$out"`;
+const ABSENT = 'test -e "$1" || test -L "$1"';
+/**
+ * 業務の profile の home を sandbox の外（hermes の権限・run＝asHermes）で整える。戻り値は止める code か null。
+ * Hermes は起動で cron・hooks・memories・skills を作り SOUL.md を書くが、sandbox はそこへの書きを拒む（2026-11-18 の初回：probe_sandbox_breaks_hermes）。
+ * だから空のフォルダと決まった SOUL.md を先に置き、毎回「空・link でない・文が同じ」を確かめる（中身が在れば止める。sandbox の規則は変えない）。
+ * plugins は Hermes が起動で作らない＝在れば止める（前と同じ）。.env も在れば止める（鍵は環境変数だけ）。
+ * cwd（AGENTS.md 等が読まれる）も空、config.yaml（plugin の選び・base_url）も無いこと（sandbox は中からの書きだけを止める＝外から置かれた物はここで見る）。
+ * 既に在るフォルダは mkdir -m が mode を直さない＝chmod 700 してから mode・持ち主・中身を確かめる。課金なしの確かめの初めと、起動の確かめの後（実行の直前）の 2 回。
+ */
+export function prepareWorkHome(run, home = WORK_HOME) {
+  const ok = (r) => r?.status === 0 && !r.error;
+  const sh = (script, ...args) => run(['/bin/sh', '-c', script, 'sh', ...args]);
+  const dirs = ['cwd', ...WORK_LOCKED_DIRS];
+  if (!ok(run(['/bin/mkdir', '-p', '-m', '700', home, ...dirs.map((d) => `${home}/${d}`)]))) return 'work_home';
+  if (!ok(sh('test -d "$1" && test ! -L "$1"', home))) return 'work_home_link';
+  run(['/bin/chmod', '-h', '700', home, ...dirs.map((d) => `${home}/${d}`)]); // 失敗は下の確かめで止まる（link は chmod しても下で止まる）
+  if (!ok(sh(OWN_700_DIR, home))) return 'work_home_link';
+  for (const [f, code] of [['.env', 'env'], ['plugins', 'plugins'], ['config.yaml', 'config']]) if (ok(sh(ABSENT, `${home}/${f}`))) return `work_home_has_${code}`;
+  for (const d of dirs) if (!ok(sh(EMPTY_OWN_DIR, `${home}/${d}`))) return `work_home_has_${d}`;
+  const soul = `${home}/SOUL.md`;
+  // 無い時だけ作る（set -C＝在れば上書きしない・link も辿らない）。在る時は下の比べで違えば止める
+  if (!ok(sh(ABSENT, soul))) sh('umask 077; set -C; printf "%s\\n" "$2" > "$1"', soul, WORK_SOUL_MD);
+  const r = sh('test -f "$1" && test ! -L "$1" && /bin/cat "$1"', soul);
+  if (!ok(r) || r.stdout !== `${WORK_SOUL_MD}\n`) return 'work_home_soul_changed';
+  return null;
 }
 
 /** macOS の実装（sudo・sandbox-exec・hermes）。test は lib/task-hub/hermes-work.mjs に模擬を渡す */
@@ -111,9 +145,8 @@ export function macSys({ store, log, outbox }) {
       if (!t('-w', ctx.outbox)) return { ok: false, code: 'outbox_unwritable' };
       if (!t('-w', path.dirname(USAGE))) return { ok: false, code: 'usage_dir_unwritable' };
       for (const p of [homedir(), path.join(homedir(), 'e-nexus-runtime'), path.join(homedir(), '.enexus')]) if (t('-x', p) && t('-r', p)) return { ok: false, code: 'boundary_broken' };
-      if (!ok(asHermes(['/bin/mkdir', '-p', '-m', '700', WORK_HOME, `${WORK_HOME}/cwd`]))) return { ok: false, code: 'work_home' };
-      if (t('-e', `${WORK_HOME}/.env`)) return { ok: false, code: 'work_home_has_env' }; // profile に .env を置かない（鍵は環境変数だけ）
-      for (const d of ['hooks', 'plugins', 'cron']) if (t('-e', `${WORK_HOME}/${d}`)) return { ok: false, code: `work_home_has_${d}` }; // 業務の profile に hook 等は無いはず（作れない）
+      const wh = prepareWorkHome(asHermes);
+      if (wh) return { ok: false, code: wh };
       // 鍵が root の .env に在る（値は見ない：loader が長さだけ確かめる）
       if (!ok(asHermes([...envFor(ctx, false), '/usr/bin/perl', '-e', LOADER, `${ROOT}/.env`, '10', `${WORK_HOME}/cwd`, '/bin/sh', '-c', 'test "${#ANTHROPIC_API_KEY}" -ge 20']))) return { ok: false, code: 'key_missing' };
       // sandbox の規則（hermes の権限で・課金なし）
@@ -137,6 +170,9 @@ export function macSys({ store, log, outbox }) {
       if (pr.status === 0) code = 'probe_unexpected_success'; // 無効な鍵で成功＝別の資格情報が使われた（止める）
       else if (!AUTH_ERROR.test(text)) code = /Operation not permitted|PermissionError|EPERM|sandbox/i.test(text) ? 'probe_sandbox_breaks_hermes' : pr.signal || pr.error ? 'probe_timeout' : 'probe_no_auth_error';
       if (code) { keepDenials(store, `${task.task_id}-probe-denials`, since); return { ok: false, code }; }
+      // 起動の確かめの間に sandbox の外（同じ uid の常駐など）から置かれた物が無いか、実行の直前にもう一度（監査 L3）
+      const again = prepareWorkHome(asHermes);
+      if (again) return { ok: false, code: again };
       return { ok: true };
     },
     async exec(task, ctx) {
@@ -261,12 +297,13 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     if (rc.declined) { out('止めました：approval_stale（sudo は聞かない・記録は waiting のまま）'); return 1; }
     reconfirmed = rc.ok;
   }
-  if (a.paidOk) { out('sudo の password を聞かれたら入力（hermes の権限で動かすため）'); if (!sudoValidate()) { out('止めました：sudo_failed'); return 1; } }
-  const r = await runWork({ store, config, sys: (makeSys ?? macSys)({ store, log: out, outbox: config.hermes_outbox }), taskId: a.task, retry: a.retry, paidOk: a.paidOk, reconfirmed, log: out });
+  if (a.paidOk || a.checkOnly) { out('sudo の password を聞かれたら入力（hermes の権限で動かすため）'); if (!sudoValidate()) { out('止めました：sudo_failed'); return 1; } }
+  const r = await runWork({ store, config, sys: (makeSys ?? macSys)({ store, log: out, outbox: config.hermes_outbox }), taskId: a.task, retry: a.retry, paidOk: a.paidOk, checkOnly: a.checkOnly, reconfirmed, log: out });
   const say = {
     not_connected: 'Hermes の inbox・outbox が config に無い（休眠）', busy: '別の Hermes の実行の最中（終わってから）', nothing: '渡す依頼がありません（承認済みで Hermes へ渡した依頼が無い）',
     paid_not_ok: `渡す依頼：${r.task_id}（中身は node scripts/task-hub.mjs show ${r.task_id}）。有料の実行の前で止めました。渡すなら --paid-ok を付けて実行${r.approval_stale ? '（承認から 24 時間を過ぎているので、実行の前にもう一度全文を見て確認コードを打つ）' : ''}`,
     approval_stale: `承認から 24 時間を過ぎた依頼：${r.task_id}（端末で --paid-ok を付けて実行し、全文を見て確認コードを打てば実行。やめるなら dismiss ${r.task_id} --confirm <12 桁>）`,
+    check_ok: `課金なしの確かめは全部通った：${r.task_id}（有料の実行はしていない・記録は waiting のまま。実行するなら --paid-ok${r.approval_stale ? '。承認から 24 時間を過ぎているので、その時にもう一度全文を見て確認コードを打つ' : ''}）`,
     done: `完了：${r.task_id}（結果は記録と依頼元へ）`, failed: `Hermes が「できない」と返した：${r.task_id}（理由は記録の notes）`,
     timeout: `時間切れ：${r.task_id}（やり直すなら --task ${r.task_id} --retry --paid-ok）`, no_result: `結果の file が無い：${r.task_id}（Claude Code に伝える。やり直すなら --task ${r.task_id} --retry --paid-ok）`,
     result_rejected: `結果を記録しなかった（${r.reason}）：${r.task_id}（Claude Code に伝える。やり直すなら --task ${r.task_id} --retry --paid-ok）`,
@@ -278,7 +315,7 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     const p = spawnSync(process.execPath, [path.join(HERE, 'task-intake-sync.mjs'), 'push', '--outbox', store.path('outbox'), '--sent', store.path('outbox-sent')], { encoding: 'utf8', timeout: 45_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
     out(`依頼元への返却：${p.status === 0 ? 'ok' : `次の 5 分の回で（exit ${p.status ?? '-'}）`}`);
   }
-  return ['done', 'failed', 'nothing', 'paid_not_ok', 'not_connected', 'result_waiting'].includes(r.code) ? 0 : 1;
+  return ['done', 'failed', 'nothing', 'paid_not_ok', 'check_ok', 'not_connected', 'result_waiting'].includes(r.code) ? 0 : 1;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

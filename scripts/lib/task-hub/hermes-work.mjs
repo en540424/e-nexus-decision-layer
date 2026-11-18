@@ -70,11 +70,11 @@ const sha = (buf) => createHash('sha256').update(buf).digest('hex');
 
 /**
  * 1 件を実行する。戻り値の code：
- *   not_connected・busy・nothing（ほか selectNext の code）・paid_not_ok・preflight_<code>・cannot_start・done・failed・result_rejected・timeout・no_result
+ *   not_connected・busy・nothing（ほか selectNext の code）・paid_not_ok・check_ok（checkOnly）・preflight_<code>・cannot_start・done・failed・result_rejected・timeout・no_result
  * sys：{ preflight(task, ctx) → { ok, code? }, exec(task, ctx) → { exit, signal, timedOut }, readUsage(ctx) → obj|null, listOutbox() → [name],
  *        readOutbox(name) → Buffer|null（symlink・FIFO・大きすぎる file は null）, quarantineOutbox(name, why), killStragglers(ctx), alive?(job) → bool }
  */
-export async function runWork({ store, config, sys, now = () => Date.now(), taskId = null, retry = false, paidOk = false, reconfirmed = new Set(), collect = collectHermesResults, waitRunLock = defaultWaitRunLock, log = () => {} }) {
+export async function runWork({ store, config, sys, now = () => Date.now(), taskId = null, retry = false, paidOk = false, checkOnly = false, reconfirmed = new Set(), collect = collectHermesResults, waitRunLock = defaultWaitRunLock, log = () => {} }) {
   const inbox = config?.hermes_inbox;
   const outbox = config?.hermes_outbox;
   if (typeof inbox !== 'string' || typeof outbox !== 'string') return { code: 'not_connected' };
@@ -95,8 +95,9 @@ export async function runWork({ store, config, sys, now = () => Date.now(), task
     const task = sel.task;
     const base = { recovered, task_id: task.task_id };
     const stale = approvalStale(task, now());
-    if (!paidOk) return { ...base, code: 'paid_not_ok', ...(stale ? { approval_stale: true } : {}) };
-    if (stale) {
+    if (!paidOk && !checkOnly) return { ...base, code: 'paid_not_ok', ...(stale ? { approval_stale: true } : {}) };
+    // checkOnly＝課金なしの確かめだけ（Hermes に依頼を実行させない＝承認の確かめ直しは要らない・記録は変えない・2026-11-18）
+    if (stale && !checkOnly) {
       if (!reconfirmed.has(task.task_id)) return { ...base, code: 'approval_stale' };
       store.audit({ task_id: task.task_id, event: 'hermes_reconfirmed' }, now()); // Human が端末で確かめ直した（値は書かない）
     }
@@ -110,6 +111,7 @@ export async function runWork({ store, config, sys, now = () => Date.now(), task
     ctx.prompt = workPrompt({ ...ctx, briefFile: ctx.briefFile ?? '(none)', taskId: task.task_id, kind: task.params?.kind ?? null });
     const pf = await sys.preflight(task, ctx);
     if (!pf?.ok) return { ...base, code: `preflight_${/^[a-z0-9_]{1,40}$/.test(pf?.code ?? '') ? pf.code : 'failed'}` };
+    if (checkOnly) return { ...base, code: 'check_ok', ...(stale ? { approval_stale: true } : {}) };
 
     if (!startJob(store, task, { at: now(), retry, runToken })) return { ...base, code: 'cannot_start' };
     const fd = openSync(markFile, 'w', 0o600); writeSync(fd, `${task.task_id}\n`); closeSync(fd); marked = true;
