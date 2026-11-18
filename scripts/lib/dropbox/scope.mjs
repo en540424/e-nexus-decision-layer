@@ -8,6 +8,7 @@
  *       "estimate_roots": ["/<見積書の原本のフォルダ>", …],  AI 作業版の元にする原本（読むだけ）
  *       "output_root":    "/<business>"                     AI の出力（App folder の中の相対 path：karte・estimates・reports・restore）
  *       "deny_roots":     ["/<読ませないフォルダ>", …]       任意（2026-11-16）：read_roots の中でも読ませない場所（給与・人事・個人など）。どの読み方でも拒否
+ *       "deny_names":     ["<名前の部品>", …]               任意（2026-11-18）：path のどの部分がこの語を含んでも読ませない（共通の下限 DENY_NAME_TERMS に足す。下限は config で外せない）
  *   } } }
  * 承認なしの一覧・検索（browse）は「read_roots の中」かつ「estimate_roots・deny_roots の外」だけ（2026-11-16 監査：広い read_roots の中に見積〈L2〉の
  * フォルダがあっても、承認なしの一覧・検索に名前も中身も出さない）。読みの資格情報は Full Dropbox なので、この表が読みの範囲を決める唯一の場所。
@@ -51,7 +52,41 @@ export const foldPath = (p) => String(p).normalize('NFKC').toLowerCase();
 const underFold = (path, root) => { const a = foldPath(path); const b = foldPath(root); return a === b || a.startsWith(`${b}/`); };
 // 断る側は、前からの比べ方（小文字）と畳んだ比べ方（NFKC・小文字）のどちらかに当たれば断る（前より狭くならない）
 const underWide = (path, root) => under(path, root) || underFold(path, root);
-const denied = (scope, p) => (scope.deny_roots ?? []).some((r) => underWide(p, r));
+
+/**
+ * 名前で読ませない（2026-11-18）：path のどの部分（フォルダ名・file 名）が下の語を含んでも、どの読み方でも断る。
+ * 実の元請のフォルダに作業員名簿・保険証・給与の file が在った（名前だけでも一覧・検索に出さない）ことから、許可フォルダの書き方に頼らず
+ * **個人の資料・給与・口座・Secret の名前を共通の下限として断る**。広げるだけの規則（読める範囲は広がらない）。比べ方は NFKC・小文字（全角半角・大文字小文字を畳む）。
+ * business ごとの追加は config の `deny_names`。許可フォルダの名前そのものがこの語を含む設定は、全部が読めなくなるだけなので config の誤りとして断る
+ */
+export const DENY_NAME_TERMS = Object.freeze([
+  '給与', '給料', '賃金', '賞与', '源泉徴収', '年末調整',
+  '人事', '履歴書', '雇用契約', '労働条件', '労働者名簿', '従業員名簿', '作業員名簿', '名簿',
+  '在留カード', '在留資格', '運転免許', '免許証', '保険証', '被保険者', '住民票', '年金', 'マイナンバー', '個人番号', '個人情報', '印鑑証明', '雇用保険', '社会保険', '健康診断', '健診', 'パスポート', '戸籍', '身分証', '資格確認書', '緊急連絡先',
+  '通帳', '口座', '暗証', 'キャッシュカード',
+  'パスワード', 'password', 'passwd', 'secret', 'シークレット', 'credential', '認証情報', '秘密鍵', 'apikey', 'api_key', 'api-key', 'access_token', 'refresh_token', 'private_key', 'id_rsa', 'id_ed25519', '.pem', '.p12', '.pfx', '.kdbx', '.env',
+  'payroll', 'salary', 'passport', 'resume',
+]);
+/**
+ * 比べる前に消す文字：空白類（全角の空白も）・見えない文字（Default_Ignorable＝零幅の接合子・異体字選択・結合の字形の制御など）・中黒。
+ * 「履　歴　書」「給‍与」のように、字の間に挟んで下限をすり抜けさせない（2026-11-18 監査）。消すのは比べる時だけ＝名前そのものは変えない（広げるだけ）
+ */
+const SQUASH = /[\p{White_Space}\p{Default_Ignorable_Code_Point}\u30fb\uff65]/gu;
+export const squash = (s) => foldPath(s).replace(SQUASH, '');
+/** 語を含むが別の意味の言葉（個人事業主・工事保険証券）。比べる前に取り除く＝その語だけで断らない（残りの部分に別の語が在れば断る） */
+const NAME_EXEMPT = ['個人事業', '保険証券'].map(squash);
+const DENY_NAME_FOLDED = DENY_NAME_TERMS.map(squash);
+/** p の部分（/ で区切った名前）のどれかが拒む語を含むか（extra：config の deny_names を squash した物） */
+export function nameDenied(p, extra = []) {
+  const ex = extra.map(squash); // 畳んでいない語（全角など）が渡されても効く
+  return String(p).split('/').some((seg) => {
+    if (seg === '') return false;
+    let x = squash(seg);
+    for (const e of NAME_EXEMPT) x = x.split(e).join('');
+    return DENY_NAME_FOLDED.some((t) => x.includes(t)) || ex.some((t) => t !== '' && x.includes(t));
+  });
+}
+const denied = (scope, p) => (scope.deny_roots ?? []).some((r) => underWide(p, r)) || nameDenied(p, scope.deny_names ?? []);
 /**
  * 承認なしの一覧・検索に出してよい path か（正規化できる・read_roots の中・見積と読ませない場所の外）。Dropbox が返した一覧・検索の結果も 1 件ずつこれで絞る
  * （広いフォルダを検索した時に、その下の見積〈L2〉・読ませない場所の file の名前を返さない）
@@ -97,9 +132,17 @@ export function loadScopes(cfg) {
     };
     const out_ = normPath(s.output_root);
     if (!out_) throw new ScopeError('dropbox_config_invalid');
-    const scope = { business: b, read_roots: list('read_roots'), schedule_files: list('schedule_files'), estimate_roots: list('estimate_roots'), deny_roots: list('deny_roots'), output_root: out_ };
+    // 名前で読ませない語の追加（任意）。畳んだ形で持つ。空・長すぎる・制御文字・多すぎるは誤り（広げるだけの設定なので、誤りは閉じる側）
+    const rawNames = s.deny_names ?? [];
+    if (!Array.isArray(rawNames) || rawNames.length > 50 || rawNames.some((x) => typeof x !== 'string' || x.trim() === '' || x.length > 40 || BAD_CHARS.test(x) || INVISIBLE.test(x) || x.includes('/'))) throw new ScopeError('dropbox_config_invalid');
+    const deny_names = rawNames.map((x) => squash(x));
+    // 空白・見えない文字だけの語・1 字の語（「.」など）は、ほぼ全部の名前に当たる。畳んで「/」になる語（全角の斜線）は名前の 1 部分に当たらない＝効かない規則なので誤り
+    if (deny_names.some((x) => [...x].length < 2 || x.includes('/'))) throw new ScopeError('dropbox_config_invalid');
+    const scope = { business: b, read_roots: list('read_roots'), schedule_files: list('schedule_files'), estimate_roots: list('estimate_roots'), deny_roots: list('deny_roots'), deny_names, output_root: out_ };
     // 読ませない場所の中に工程表・見積の原本を置く設定は矛盾（どちらを意図したか決められない）＝読み込まない
     if ([...scope.schedule_files, ...scope.estimate_roots].some((p) => scope.deny_roots.some((d) => underWide(p, d)))) throw new ScopeError('dropbox_config_invalid');
+    // 許可フォルダ・工程表・見積の原本の名前そのものが拒む語を含む設定も矛盾（下は全部が読めなくなる）。何が原因かを config の誤りと分けて示す
+    if ([...scope.read_roots, ...scope.schedule_files, ...scope.estimate_roots].some((p) => nameDenied(p, deny_names))) throw new ScopeError('dropbox_config_denied_name');
     out.set(b, Object.freeze(scope));
   }
   // 出力の場所は business ごとに分ける（重なれば他の business の karte を書き換えうる）

@@ -11,7 +11,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
 | intent | 実装 | 本番 | 外への副作用 | AI 課金 | Human 承認 | 範囲 | 返し方 |
 |---|---|---|---|---|---|---|---|
 | `status.query` | 済 | 稼働（11-13 に往復検収） | なし（読むだけ） | なし | 不要（auto） | Mac の監視の要約の水準と件数。`detail: true` で区分の水準・Task Hub と Hermes の件数 | `get_task_status` の `result` |
-| `task.status` | 済 | **EN司令塔からの一覧は再検収待ち**（11-15 に本番で 2 回失敗 → 11-16 に直し、Mac の本番の store で検収済み。§7） | なし | なし | 不要（auto） | 自分（EN司令塔）が出した e-nexus の依頼だけ。`view` で一覧（recent・承認待ち・失敗・成功・Hermes）。params なしは recent | 同上 |
+| `task.status` | 済 | **稼働（11-16 に往復検収済み）**（11-15 に本番で 2 回失敗 → 11-16 に直し、EN司令塔から `{}`・`pending`・`failed`・`hermes` の 4 件が succeeded。§7） | なし | なし | 不要（auto） | 自分（EN司令塔）が出した e-nexus の依頼だけ。`view` で一覧（recent・承認待ち・失敗・成功・Hermes）。params なしは recent | 同上 |
 | `report.morning` | 済 | 稼働 | なし | なし | 不要（auto） | e-nexus の記録（メール・予定の要約・メモ）と稼働状況・承認待ち・Hermes の件数から決まった文面 | 同上（`result.text`） |
 | `note.record` | 済 | 稼働 | Mac の手元のメモに 1 件 | なし | 不要（ai_check＝Decision Layer が candidate の時だけ無人） | e-nexus のメモ（500 字・`case_ref` 任意） | 同上（`recorded: true`） |
 | `hermes.task` | 済 | 稼働（承認の後に Human が 1 件ずつ実行） | Hermes が 1 回動く（Mac の中だけ・sandbox） | **あり**（Haiku・1 件で API 2〜4 回） | **毎回必要**（Mac の端末で全文を読んで確認コード） | 依頼の本文の範囲だけ。Hermes が読めるのは依頼の file と状態の要約だけ | 同上の `result.hermes`（waiting → running → done／failed＋summary） |
@@ -75,7 +75,7 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 |---|---|---|---|
 | Mac mini の状態 | 「Mac の状況を詳しく教えて」 | `status.query {detail:true}` | 今使える |
 | Hermes の状態 | 「Hermes の業務はどうなってる？」 | `status.query {detail:true}` の hermes・`task.status {view:"hermes"}` | 今使える |
-| 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | Mac で検収済み・EN司令塔から再検収待ち（§7。承認は Mac の端末） |
+| 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | 今使える（11-16 に EN司令塔からの往復を検収済み・§7。承認は Mac の端末） |
 | 失敗した仕事 | 「最近失敗した仕事は？」 | `task.status {view:"failed"}` | 同上 |
 | さっきの仕事 | 「さっきの仕事は終わった？」 | `get_task_status`（task_ref）・`task.status {}`（recent） | 同上 |
 | 終わった仕事 | 「終わった仕事の一覧」 | `task.status {view:"succeeded"}` | 同上 |
@@ -115,4 +115,4 @@ Human が「人間が作ったタブ 1 と 2 は触らないで」と言わな�
 
 境は変えていない：返すのは同じ依頼元・同じ business の依頼だけ、他の依頼元の承認待ちは件数だけ、依頼の題名・本文は返さない。
 
-検収：Mac の本番の store・本番の config で `{}`・`{"view":"pending"}`・`{"view":"failed"}`・`{"view":"hermes"}` が succeeded、`{"view":"approvals"}` が rejected＋hint（2026-11-16・source human-cli）。**EN司令塔からの往復（Grok → VPS → Mac → 結果）は未検収**：Human が EN司令塔に「承認待ちは？」「最近失敗した仕事は？」と聞き、Claude Code が `node scripts/task-hub.mjs list` で grok-commander の task.status が succeeded になったことを確かめるまで、本番稼働とは書かない。
+検収：Mac の本番の store・本番の config で `{}`・`{"view":"pending"}`・`{"view":"failed"}`・`{"view":"hermes"}` が succeeded、`{"view":"approvals"}` が rejected＋hint（2026-11-16・source human-cli）。**EN司令塔からの往復（Grok → VPS → Mac → 結果）は検収済み**：2026-11-16 08:26Z に grok-commander（channel vps-intake）の task.status 4 件（`{}`・`view:"pending"`・`view:"failed"`・`view:"hermes"`）が Mac の store で succeeded（2026-11-18 に Claude Code が `task-hub list` と task の記録で確認）。EN司令塔の指示文（§3）を Grok の画面に貼ったかは未確認（ledger `grok-ask-first`）。

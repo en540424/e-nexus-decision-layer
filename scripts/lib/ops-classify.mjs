@@ -37,7 +37,7 @@ const TABLE = Object.freeze([
   [/^task_hub_cycle$/, { class: 'ai', cause: 'Task Hub の回（VPS からの取得・取り込み・実行・結果の返却）の失敗か停止', next: 'Claude Code が手で 1 回回して段ごとの code を見る（VPS が止まっていても依頼は VPS に 7 日残る）', checks: ['node scripts/task-hub-cycle.mjs'] }],
   // 2026-11-16：11-13 に足した見張り（承認待ち・queue・Hermes の業務・工程表のバックアップ・ドコモの読み取り）に仕分けが無く、Human の一覧に「分類の無い項目」とだけ出ていた
   [/^task_hub_approval$/, { class: 'human', cause: 'Task Hub に承認待ちの依頼がある', next: 'Human が端末で全文を読んで承認か却下（AI は承認しない）', checks: ['node scripts/task-hub.mjs human'] }],
-  [/^task_hub_queue$/, { class: 'ai', cause: 'Task Hub の queue に実行されない依頼か途中で止まった依頼がある', next: 'Claude Code が一覧で確かめる。止まった依頼を閉じるのは Human（dismiss）', checks: ['node scripts/task-hub.mjs list', 'node scripts/task-hub.mjs list --state stopped'] }],
+  [/^task_hub_queue$/, { class: 'ai', cause: 'Task Hub の queue に実行されない依頼か途中で止まった依頼がある。または Dropbox の機能が一時止まっている（breaker-dropbox.json）', next: 'Claude Code が一覧で確かめる。止まった依頼を閉じるのは Human（dismiss）。Dropbox の一時停止は資格情報（Keychain）・Dropbox の障害を確かめる（dropbox-preflight）。Dropbox の依頼が 1 件成功すると戻る', checks: ['node scripts/task-hub.mjs list', 'node scripts/task-hub.mjs list --state stopped'] }],
   [/^hermes_jobs$/, { class: 'human', cause: 'Hermes の業務が実行されていないか、時間切れ・結果なし・中断で終わった', next: 'Human が実行かやり直しを決める（有料・AI は実行しない）', checks: ['node scripts/hermes-work.mjs status'] }],
   [/^business_backup$/, { class: 'ai', cause: '工程表の週 1 回のバックアップの失敗か未実行。Dropbox の資格情報・設定・file の取得のどれか', next: 'Claude Code が記録のコードを確かめる。資格情報の登録・更新は Human', checks: ['node scripts/business-cycle.mjs'] }],
   [/^docomo_fetch$/, { class: 'ai', cause: 'ドコモメールの読み取りの失敗が続いている。資格情報の期限・パスワードの変更・回線のどれか', next: 'Claude Code が出力のコードを確かめる。資格情報の更新は Human', checks: ['node bin/dml-fetch.mjs --allow-live（docomo-mail-lab）'] }],

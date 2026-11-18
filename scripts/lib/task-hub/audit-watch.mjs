@@ -68,6 +68,7 @@ export function taskHubCycleItem(dir, now = Date.now(), { scheduled = false } = 
  * Task Hub の仕事の見張り（2026-11-13・読むだけ・store を開かない）。docs/task-hub.md §12・§15。値は件数かコードだけ（task の id・中身は出さない）。
  *   task_hub_approval：承認待ちの件数（全 business・全依頼元）。1 件以上で warn・hold 0＝次の回に 1 通（続いている間は重ねない。0 に戻って新たに来れば次の 1 通）
  *   task_hub_queue：stalled（queued・時刻の来た retry_wait が 30 分以上動いていない＝定期の回が実行できていない）・stopped（途中で止まった task＝Human の dismiss 待ち）
+ *     suspended（2026-11-18：機能ごとの回路遮断〈Dropbox の資格情報・障害が続いた〉の印 breaker-dropbox.json が在り、止めた期限が 24 時間以内＝まだ回復していない。Task Hub 全体の PAUSE は出さなくなったので、その代わりに知らせる。Dropbox の依頼が 1 件成功すると印が消えて戻る）
  *   hermes_jobs：stuck（running のまま 20 分）・not_run（承認して渡したが 24 時間実行していない）・timeout・no_result・result_rejected・interrupted（24 時間以内。Human のやり直しの判断）。
  *     Hermes 自身の failed（「できない」の返事）は依頼元へ返る普通の結果なので知らせない
  */
@@ -97,6 +98,8 @@ export function taskHubWorkItems(dir, now = Date.now()) {
     const q = [];
     if (tasks.some((t) => (t.state === 'queued' && now - Date.parse(t.updated_at) > STALL_MS) || (t.state === 'retry_wait' && now - Date.parse(t.next_try_at) > STALL_MS))) q.push('stalled');
     if (tasks.some((t) => t.state === 'stopped')) q.push('stopped');
+    const gb = readJsonSafe(path.join(dir, 'breaker-dropbox.json'), 4096);
+    if (gb && Number.isFinite(Date.parse(gb.until)) && now - Date.parse(gb.until) < DAY_MS) q.push('suspended');
     items.push({ id: QUEUE_WATCH_ID, level: q.length ? 'warn' : 'ok', value: q.length ? q.join(',') : 'ok', kind: 'state' });
     const jobs = new Map(readDirJson(path.join(dir, 'hermes-jobs')).map((j) => [j.task_id, j]));
     const h = new Set();

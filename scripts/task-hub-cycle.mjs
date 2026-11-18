@@ -17,8 +17,10 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_STORE = path.join(homedir(), 'e-nexus-runtime', 'mac-runtime-state', 'task-hub');
 const STEP_TIMEOUT_MS = 45_000;
-/** run だけ長め：--max 5 件 × handler の timeout（最大 10 秒）＋余裕。途中で殺すと再開できない handler（hermes.task）が止まったままになる */
+/** run だけ長め。途中で殺すと再開できない handler（hermes.task）が止まったままになる */
 const RUN_TIMEOUT_MS = 120_000;
+/** run に渡す時間の予算（秒）。強制終了の枠（RUN_TIMEOUT_MS）より短くし、予算に入らない task は始めずに次の回へ回す（2026-11-18：Dropbox の handler の timeout は 30〜60 秒＝5 件が重なれば枠を越えうる） */
+export const RUN_BUDGET_SEC = 90;
 const DEFAULT_MAX = 5;
 /** 最後の回の結果（host-health が読み、続けて問題なら知らせる＝lib/task-hub/audit-watch.mjs の taskHubCycleItem）。コードと段の名前だけ */
 export const CYCLE_LAST_FILE = 'cycle-last.json';
@@ -63,7 +65,7 @@ export function cycle({ store = DEFAULT_STORE, max = DEFAULT_MAX, run = spawnSyn
   const paused = existsSync(path.join(store, 'PAUSE'));
   // runner の回路遮断（circuit_open）は Human の PAUSE と分ける＝知らせる
   const breaker = paused && pauseCodeOf(store) === 'circuit_open';
-  if (!paused) go('run', 'task-hub.mjs', ['run', '--max', String(max), ...s], RUN_TIMEOUT_MS);
+  if (!paused) go('run', 'task-hub.mjs', ['run', '--max', String(max), '--budget', String(RUN_BUDGET_SEC), ...s], RUN_TIMEOUT_MS);
   if (!hermesRunning(store)) go('collect_hermes', 'task-hub.mjs', ['collect-hermes', ...s]);
   // 業務の週 1 回のバックアップ（2026-11-13・dropbox の設定が無ければ何もしない＝休眠。時刻が来た週だけ通信する）
   // Human の PAUSE の間は業務の段も動かさない（Task Hub を止めた＝Dropbox にも触らない・監査 nit 9）

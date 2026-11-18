@@ -14,7 +14,7 @@ import { ingestInbox, submitLocal } from '../scripts/lib/task-hub/intake.mjs';
 import { runOnce } from '../scripts/lib/task-hub/runner.mjs';
 import { collectHermesResults } from '../scripts/lib/task-hub/hermes-results.mjs';
 import { taskHubCycleItem } from '../scripts/lib/task-hub/audit-watch.mjs';
-import { CYCLE_LAST_FILE, cycle, step } from '../scripts/task-hub-cycle.mjs';
+import { CYCLE_LAST_FILE, RUN_BUDGET_SEC, cycle, step } from '../scripts/task-hub-cycle.mjs';
 import { safeValue } from '../scripts/host-health.mjs';
 import { ruleOf } from '../scripts/lib/alert-policy.mjs';
 import { NOW, dropInbox, envelope, keyFor, makeEnv, seal } from './task-hub-helpers.mjs';
@@ -102,6 +102,11 @@ test('Task Hub の回：config.json が無ければ何もしない。段の結�
   const seen = [];
   cycle({ store: root, run: (node, args, o) => { seen.push([args[1], o.timeout, args[2] === '--max' ? args[3] : null]); return { status: 0, stdout: '{"code":"pulled"}\n' }; } });
   assert.deepEqual(seen.find((x) => x[0] === 'run'), ['run', 120_000, '5']);
+  // 時間の予算（2026-11-18）：run には強制終了の枠（120 秒）より短い予算を渡す＝重なった Dropbox の handler で途中で殺さない
+  const runArgs = [];
+  cycle({ store: root, run: (node, args) => { if (args[1] === 'run') runArgs.push(args.slice(2)); return { status: 0, stdout: '{"code":"pulled"}\n' }; } });
+  assert.deepEqual(runArgs[0].slice(0, 4), ['--max', '5', '--budget', String(RUN_BUDGET_SEC)]);
+  assert.ok(RUN_BUDGET_SEC * 1000 < 120_000);
   assert.equal(seen.find((x) => x[0] === 'intake')[1], 45_000);
   // 時間切れ・起動の失敗はコードだけ
   assert.deepEqual(step('pull', 'x.mjs', [], { run: () => ({ error: { code: 'ETIMEDOUT' } }) }), { step: 'pull', exit: 1, code: 'timeout' });

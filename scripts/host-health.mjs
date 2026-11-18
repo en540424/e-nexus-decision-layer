@@ -532,7 +532,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^task_hub_cycle$/, /^(?:ok|paused|paused_breaker|not_configured|stale|problem(?: (?:pull|intake|run|collect_hermes|push|business)(?:,(?:pull|intake|run|collect_hermes|push|business)){0,5})?)$/],
   [/^business_backup$/, /^(?:ok|problem|stale|config_invalid|no_credentials)$/],
   [/^task_hub_approval$/, /^\d{1,3}$/],
-  [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'check_failed')],
+  [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'suspended', 'check_failed')],
   [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],
   [/^hermes_jobs$/, codes('ok', 'stuck', 'not_run', 'timeout', 'no_result', 'result_rejected', 'interrupted')],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],

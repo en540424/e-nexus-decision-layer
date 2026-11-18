@@ -34,6 +34,7 @@ Human → Grok Bot（EN司令塔）→ Task Hub / Decision Layer（認証・権�
   "schedule_files": ["/<工程表の xlsx>"],
   "estimate_roots": ["/<見積書の原本のフォルダ>"],
   "deny_roots": ["/<読ませないフォルダ>"],
+  "deny_names": ["<名前の部品>"],
   "output_root": "/e-step"
 } } }
 ```
@@ -42,6 +43,11 @@ Human → Grok Bot（EN司令塔）→ Task Hub / Decision Layer（認証・権�
 - 読みは `read_roots`・`estimate_roots` の下と `schedule_files` だけ（大文字小文字は同じに比べる・`..`・空の部分・見えない文字〈零幅・bidi の向き〉は拒否）
 - **承認なしの一覧・検索（`dropbox.list`・`dropbox.search`）に出るのは「`read_roots` の中」かつ「`estimate_roots`・`deny_roots` の外」だけ**（2026-11-16）：現場のフォルダの中に見積のフォルダがある並びでも、広い `read_roots` をそのまま書ける（見積のフォルダは名前も出ない・Dropbox が返した結果も 1 件ずつ絞る）
 - `deny_roots`（任意）：`read_roots` の中でも読ませない場所（給与・人事・個人）。どの読み方でも拒否。その中に工程表・見積の原本を置く設定は読み込まない
+- **名前で読ませない（2026-11-18・`scope.mjs` の `DENY_NAME_TERMS`）**：path のどの部分（フォルダ名・file 名）が、給与・賃金・賞与・源泉徴収・人事・履歴書・雇用契約・作業員名簿・在留カード・免許証・保険証・住民票・年金・マイナンバー・健康診断・通帳・口座・パスワード・secret・秘密鍵（`.pem` など）などの語を含んでも、**どの読み方でも断る**（一覧・検索の結果にも名前を出さない・見積の原本にもしない）。
+  きっかけは実の元請のフォルダに作業員名簿・保険証・給与の名前の file が在ったこと（許可フォルダに足すと名前が一覧・検索に出る）。全角半角・大文字小文字・NFD を畳んで比べる。**共通の下限**で config から外せない（広げるだけ＝読める範囲は広がらない）。business ごとの追加は `deny_names`（任意・40 字まで・50 語まで）。
+  比べる時は空白類（全角の空白も）・見えない文字（零幅の接合子・異体字選択など）・中黒を取り除く（「履　歴　書」「給‍与」で下限をすり抜けさせない）。語を含むが別の意味の言葉（個人事業・保険証券）は取り除いてから見る。「名簿」は種類を問わず断る（作業員・社員・協力会社の名簿。取引先の一覧も log に出さない決まりに揃える）。`secret` は `secretary` にも当たる（広く断る側の誤り）。
+  **この語を探す検索は受けない**（`dropbox_path_not_allowed`）：結果は絞っても「件数・続きがある」の印で、隠した file の在ることが分かるため。`deny_names` は 2 字以上で、畳んで `/` になる語（全角の斜線）・空白だけの語は設定の誤り。
+  許可フォルダ・工程表・見積の原本の名前そのものがこの語を含む設定は、下が全部読めなくなるので読み込まない（`dropbox_config_denied_name`・preflight は `config_code` で出す）。「口座」と「講座」・銀行の名前の現場のように、語を含まない名前は通る
 - 書きは App folder の `<output_root>/{karte,estimates,reports,restore}/` だけ
 - **path は Dropbox の名前のとおりに書く**（§2-1）。断る側（`deny_roots`・一覧に出さない見積のフォルダ）は全角半角を畳んで比べる（広く断る）
 - 機密の段階（Vault のレビュー L）：見積・顧客・取引（L2）を AI が読むのは毎回 Human の承認＝`estimate.ai.*` は `human_required`。給与・個人・人事（L3）のフォルダは許可フォルダに入れない
@@ -180,5 +186,23 @@ EN司令塔の business は今 e-nexus だけ＝E-STEP の Dropbox を EN司令�
 - Task Hub の受け口（envelope）は依頼の文字を NFKC に揃える（2026-11-16 に確かめた）：カルテ・見積に書く文字は全角の記号が半角になって届く（§5）。全角のまま書きたいなら受け口の決まりを変える（Task Hub の関所の変更＝**Human の判断**。承認の指紋・鍵の形の検査と一緒に見直す）
 - 依頼の path を実の名前に直す時、1 段の一覧は 2000 件まで（それより多いフォルダの全角の名前は `path_not_found` か `path_ambiguous`＝止まる側）。名前の前後が空白の部分・全角の逆斜線「＼」を含む名前は依頼では指せない（`dropbox_path_invalid`）。選んだ後は戻らない＝全角の斜線「／」を含む名前は、同じ始まりの別の名前が在ると指せないことがある
 - `dropbox-preflight` は確かめのために許可フォルダの外も読む（無い path の親の一覧・同じ名前の file の検索＝Dropbox 全体）。出すのは数だけ・`--show-paths` の時も読ませない場所の中の path は出さない
+- **新旧の元請フォルダの差（2026-11-18・metadata と構造の集計だけを読んだ。本文は出していない・保存していない・コピー・移動・削除はしていない）**：
+  旧の木の元請は 651 file・今の木は 699 file。同じ path で中身も同じ 627・同じ path で中身が違う 14・旧にだけ在る 10・今にだけ在る 58。
+  - 同じ path で中身が違う 14：13 は今の木の方が新しい（file 自身の更新日。再アップロードの日ではない）。**1 つだけ旧の方が新しい**（旧で 2026-04-18 に直した見積の xlsx。3 つの sheet・149 cell のうち違うのは 1 cell〈数値〉だけ。file の大きさは旧が 3 倍＝書式・画像の差）。もう 1 つ旧で 04-18 に直した file は今の木で 10-22 に直され、2 cell が違い、旧にだけ・今にだけの cell が 1 つずつ（人が見比べる）
+  - 旧にだけ在る 10：①今の木の整理されたフォルダに同じ内容が在る 1 ②旧の中の同じ file の別置きの写し 4（旧の中の整理されたフォルダの版と同じ内容が 3・残る 1 は 2,337 ブロック中 1 ブロックだけ違う。今の木には整理されたフォルダの版が在り、編集後で内容が違う〈最も近い 1 つは 2 ブロックだけの差＝再保存程度〉）＝今の木に移す必要は無い ③取引先 1 社の安全書類のフォルダ 4 file（作業員名簿・在留カードの写し〈zip〉・車両の書類。個人の書類を含む）＝今の木には親フォルダごと無い（意図して消した可能性・移すと個人の書類が許可フォルダの近くに戻る）④画像だけの PDF の scan 1 つ（6 頁・内容は読んでいない）
+  - 今の木の元請には、名前が個人の書類らしい file が約 26 在る（作業員名簿 15・保険証 3・安全書類 11 など。10 か所のフォルダ）＝元請を許可フォルダに足す前に名前の拒否（上）で見えなくなることを確かめる。`deny_names` に安全書類・新規入場を足すかは Human（現場の安全書類を Grok に探させたいなら足さない）
+  - 名前入りの一覧は、Human が Claude Code に「旧の木にだけある file を出して」と言えば画面にだけ出す（repo・log・台帳には書かない）
 - 工程表の読み方（§4-1）は実の工程表 1 つの形で確かめた。形を変えると（日付の行を 13 行目より下へ・日付を文字で書く）日付で読めなくなり、行の読み方に戻る（`dropbox-preflight --deep` で分かる）
+
+## 8. 承認の後の最短手順（2026-11-18・準備だけ済み。どれも Human の承認が先）
+
+| 段 | 内容 | 誰 | 承認 |
+|---|---|---|---|
+| 1 | 許可フォルダ：案（`mac-runtime-state/task-hub/config.DROPBOX.E-STEP.PROPOSAL.json`・実の Dropbox に照らし済み）を本番の `config.json` の `dropbox` へ写す（前の config は `config.json.before-<日付>` に残す・0600）→ `node scripts/dropbox-preflight.mjs --deep`（problem 0・warning は同じ名前の古い写しの 1 件だけが想定）。**写すのは `dropbox` の節だけ**（sources・intents は変えない） | Claude Code | **許可フォルダの承認**（案 A でよいか・元請を足すか・保留の 5 フォルダ・`deny_names`） |
+| 2 | 読むだけの検収：human-cli の依頼で `dropbox.list`・`dropbox.search`・`schedule.read`（既定・日付・期間・query）。書かない | Claude Code | 1 の承認に含む |
+| 3 | 最初の書き込みの検収：`schedule.backup` 1 回（Mac の `business-backups` に保存・Dropbox には書かない）→ 試験のカルテ（作成・追記・報告）→ `schedule.restore`（App folder の `restore/` へ別 file）→ 試験の見積 1 件（`estimate.ai.create`・毎回 Mac で承認）を Human が Excel で修復なしに開けるか | Claude Code が実行・Human が Excel で確認 | **書き込みの承認**（ledger `dropbox-first-write-acceptance`） |
+| 4 | EN司令塔への公開：EN司令塔は business `e-nexus` だけ＝① business に `e-step` を足す（Mac の config の `grok-commander.businesses`・VPS の `--businesses e-nexus,e-step`）か ② E-STEP 用の Bot を別に作る。許可する intent は段階で足す：先に読むだけ（`dropbox.list`・`dropbox.search`・`schedule.read`・`karte.get`・`karte.search`・`karte.report`）、次に書く物（`karte.create`・`karte.append`・`schedule.backup`・`schedule.backup.list`）、最後に毎回 Mac で承認する物（`estimate.ai.create`・`estimate.ai.edit`・`schedule.restore`）。VPS は `connect-from-mac.sh --ssh <いつもの> --intake --source grok-commander --intents <今の 5 つ＋足す物> --businesses e-nexus,e-step`（鍵は作り直さない）。EN司令塔の指示文に呼び方の例を足す（`docs/grok-bot.md` §6 の表） | Human（VPS の ssh・Grok の画面）・Claude Code（Mac の config・検収） | **公開の承認**（ledger `dropbox-grok-exposure`） |
+
+- 4 の前に、許可フォルダ・名前の拒否が本番の config で効いていること（2）と、EN司令塔の鍵の businesses が `e-step` を含む時に **E-NEXUS の business は Dropbox の設定が無い＝閉じたまま**であること（`dropbox_business_not_enabled`）を確かめる
+- Dropbox の資格情報の失敗（切れた・障害）が続いても Task Hub 全体は止まらない：Dropbox の task だけ一時止まる（`docs/task-hub.md` §5「機能ごとの回路遮断」）。状況は `status.query {detail:true}` の `suspended`
 

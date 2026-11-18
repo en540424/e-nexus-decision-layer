@@ -9,7 +9,7 @@
  *   node scripts/task-hub.mjs approve <task_id> --confirm <12hex>   承認（端末が要る。記録の直前に承認する params の全文を表示する）
  *   node scripts/task-hub.mjs reject <task_id> --confirm <12hex>    却下（端末が要る）
  *   node scripts/task-hub.mjs dismiss <task_id> --confirm <12hex>   止まった task（stopped）を確認して閉じる＝failed（dismissed_by_human）。端末が要る
- *   node scripts/task-hub.mjs run [--max N]                      queue を 1 回回す
+ *   node scripts/task-hub.mjs run [--max N] [--budget SEC]       queue を 1 回回す（--budget：この回の時間の予算。入らない task は始めず次の回へ）
  *   node scripts/task-hub.mjs verify-audit                       監査 log の鎖を検証
  *   node scripts/task-hub.mjs human                              承認待ちを 1 件 1 行（承認の前に show で全文を確認する）
  *   node scripts/task-hub.mjs collect-hermes                     Hermes の結果（config の hermes_outbox）を business の記録へ取り込む（休眠：フォルダが無ければ何もしない）
@@ -44,7 +44,7 @@ const expand = (p) => (p === '~' ? homedir() : p.startsWith('~/') ? path.join(ho
 
 export function parse(argv) {
   const a = { command: argv[0], positional: [] };
-  const map = { '--store': 'store', '--config': 'config', '--inbox': 'inbox', '--file': 'file', '--state': 'state', '--business': 'business', '--confirm': 'confirm', '--max': 'max' };
+  const map = { '--store': 'store', '--config': 'config', '--inbox': 'inbox', '--file': 'file', '--state': 'state', '--business': 'business', '--confirm': 'confirm', '--max': 'max', '--budget': 'budget' };
   for (let i = 1; i < argv.length; i += 1) {
     const k = argv[i];
     if (map[k]) {
@@ -66,6 +66,7 @@ export function validate(a) {
   if (a.state !== undefined && !STATES.includes(a.state)) e.push('--state is not a known state');
   if (a.business !== undefined && !ID_RE.test(a.business)) e.push('--business is not an id');
   if (a.max !== undefined && !/^[1-9]\d{0,2}$/.test(a.max)) e.push('--max must be 1-999');
+  if (a.budget !== undefined && !/^[1-9]\d{0,2}$/.test(a.budget)) e.push('--budget must be 1-999 (seconds)');
   return e;
 }
 
@@ -186,10 +187,12 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     case 'run': {
       const p = needPolicy();
       if (!p) return 1;
-      const r = await runOnce({ store, policy: p, handlers: HANDLERS, config: { ...p.config, services: businessServices(p.config) }, now: clock, maxTasks: Number(a.max ?? 10) });
+      const r = await runOnce({ store, policy: p, handlers: HANDLERS, config: { ...p.config, services: businessServices(p.config) }, now: clock, maxTasks: Number(a.max ?? 10), budgetMs: a.budget === undefined ? null : Number(a.budget) * 1000 });
       if (r.skipped) out(`実行しない（${r.skipped}${r.skipped === 'paused' ? `：${store.pauseCode() ?? ''}` : ''}）`);
       for (const x of r.recovered) out(`復旧 ${x.task_id} → ${x.state}`);
       for (const x of r.ran) out(`${x.task_id} → ${x.state}${x.code ? ` (${x.code})` : ''}`);
+      if (r.group_suspended?.length) out(`機能の一時停止：${r.group_suspended.join('・')}（想定外の失敗が続いた＝15 分は始めない・Task Hub 全体は止めない。host-health が知らせる）`);
+      if (r.deferred) out(`先送り ${r.deferred} 件（この回の時間の予算に入らない、または機能の一時停止の間。queued か retry_wait のまま次の回以降で走る）`);
       if (r.paused) out(`PAUSE：${store.pauseCode() ?? ''}（原因を確かめてから PAUSE を消す）`);
       // 別の runner が RUN_LOCK_MAX_AGE_MS より長く持っている lock（本物の持ち主はそんなに持たない）と lock の競合は、黙って 0 にしない
       const stuck = r.skipped === 'lock_conflict' || r.skipped === 'lock_lost' || (r.skipped === 'locked' && Number.isFinite(r.lock_age_ms) && r.lock_age_ms > RUN_LOCK_MAX_AGE_MS);

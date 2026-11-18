@@ -66,6 +66,14 @@ task → [承認待ち] →(Human が端末で承認)→ queued → run → succ
 
 runner：`run` の呼び出しごとに 1 回回って終わる（常駐しない）。lock・lease・指数 backoff（30 秒から、最大 1 時間、既定 3 回まで）・AbortSignal の timeout。**同期の handler は timer が回る前に終わるので、戻った後の実時間も測り、`timeout_ms` を超えていたら timeout として扱う**（結果は捨てて再試行の道）。lease の切れた running は、handler が resumable なら checkpoint を残して queued に戻し、そうでなければ `stopped`（`interrupted_not_resumable`）。想定外の失敗が連続 3 回で `PAUSE` を書いて止まる（消すのは Human）。**連続回数は store の `breaker.json` に残り、`run` の呼び出しをまたいで数える**（`--max 1` を繰り返しても 3 回で止まる。成功で 0、PAUSE を書いたら 0 から）。休眠・未設定のような想定内の失敗は数えない。
 
+**時間の予算と機能ごとの回路遮断（2026-11-18）**：
+- `run --budget <秒>`（5 分の回は 90 秒＝強制終了の枠 120 秒より短い）：残りの時間に次の task の `timeout_ms` ＋猶予（5 秒）が入らなければ、その task は始めず queued のまま次の回へ回す（結果の `先送り N 件`・失敗ではない）。最初の 1 件は予算より長くても必ず走る。Dropbox の handler の timeout は 30〜60 秒＝`--max 5` が重なれば 120 秒の枠を越えうる。強制終了は再開できない handler の task を `stopped` にするので、始めない側で防ぐ
+- handler に `group`（`dropbox`・Dropbox に触る handler だけ。手元の写しだけを読む `schedule.backup.list` は外）が在れば、その**想定外の失敗**（資格情報の失効・Dropbox の 5xx・保存の確かめの失敗など）は Task Hub 全体の連続回数に数えず、機能ごとに数える。**別々の task が 3 回続けて失敗**した時（1 つの task の再試行 3 回は 1 回に数える＝1 つの変な依頼で機能ごと止めない）、その機能を 15 分（`GROUP_COOLDOWN_MS`）止める。**Task Hub 全体の PAUSE にしない**（Dropbox の障害で状況の確認・承認待ち・Hermes まで止めない）。
+  - 止めている間：新しく来た読む依頼などは handler を呼ばずに `failed`（`dropbox_suspended`）で返す。**Human が承認した task と、再試行の途中（retry_wait）の task は失敗にせず先送り**（承認・回数を無駄にしない・`maxTasks` の枠も使わない）
+  - 期間の後は**試す 1 件**だけ（開いた時の連続回数は 2＝その 1 件が失敗すればすぐ開き直す）。成功すれば印が消える（`breaker-dropbox.json`・store の中）。期限が「今＋期間」より先の壊れた印・時計の飛びは止めない
+  - **知らせ**：Task Hub 全体の PAUSE は出なくなったので、印が在り止めた期限が 24 時間以内の間は host-health の `task_hub_queue` が `suspended`（§15）。`status.query {detail:true}` の `suspended` と `task-hub run` の出力にも出る。他の機能（グループなし）の想定外の失敗が 3 回続けば今までどおり PAUSE。想定内の失敗（範囲の外・見つからない）はどちらにも数えない
+  - 限り：この印は business を分けない（Dropbox の資格情報は business 共通）。書きの資格情報の成功が読みの資格情報の失敗の数えを戻すことがある（失敗した依頼はそのまま依頼元に失敗として返る）
+
 ## 6. 承認とその限界
 
 - `approve`／`reject` は `awaiting_approval` だけ。**端末（stdin と stdout が TTY）でなければ拒否**（agent・自動化・パイプは承認できない）。`show` が出す確認コード（content_digest の先頭 12 桁）を打つ＝見た内容への承認。
@@ -161,7 +169,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 ## 14. 本番の回（2026-11-11）
 
 - **保存先の本番の設定**：`~/e-nexus-runtime/mac-runtime-state/task-hub/config.json`（repo の外・0600）。第 1 段（Human 指示 2026-11-11）：VPS から来る source は `grok-commander`（EN司令塔）だけ・business は `e-nexus` だけ・intents は `status.query`・`task.status`・`report.morning`・`note.record`＋`hermes.task`（2026-11-11 Human 承認。**毎回 Mac の端末での承認が要る**・承認の前に Hermes へ渡らない）。E-STEP・個人・メールの操作は含めない（VPS の `add-source` でも同じ intents に絞る＝2 重。`connect-from-mac.sh`・`vps-apply.sh` は `--source` に `--intents` を必須にする）。`human-cli` は Human の端末からの依頼
-- **1 回の回し**：`node scripts/task-hub-cycle.mjs`＝VPS から pull → intake → run → collect-hermes → push（run は 120 秒・ほかの段は 45 秒で打ち切り・既定 5 件・出力は段ごとのコードだけ。Hermes の 1 件実行の間＝印 `hermes-run.active` がある間は collect-hermes を呼ばない）。config.json が無ければ何もしない。最後の結果を `cycle-last.json` に残す
+- **1 回の回し**：`node scripts/task-hub-cycle.mjs`＝VPS から pull → intake → run → collect-hermes → push（run は 120 秒〈`--budget 90`＝§5〉・ほかの段は 45 秒で打ち切り・既定 5 件・出力は段ごとのコードだけ。Hermes の 1 件実行の間＝印 `hermes-run.active` がある間は collect-hermes を呼ばない）。config.json が無ければ何もしない。最後の結果を `cycle-last.json` に残す
 - **定期の回**：`deploy/macos/connect-task-hub.sh --apply`（LaunchAgent `com.e-nexus.task-hub`・5 分ごと・常駐しない・Background。**新しい LaunchAgent なので Human の承認の後だけ**）。host-health の中では回さない（host-health は 1 回 60 秒の期限があり、VPS への通信の遅れで監視本体を巻き込まない）
 - **見張り**：host-health は config.json がある時、`--task-hub` が無くても既定の保存先の監査の鎖（§13）と `cycle-last.json` を読む（読むだけ）。`task_hub_cycle`：ok／`paused`（Human の PAUSE の間は run を呼ばない＝失敗に数えない）／`paused_breaker`（runner の回路遮断＝warn）／`not_configured`（Keychain に VPS の URL か鍵が無い）／`problem <段>`／`stale`（30 分以上回っていない）。`not_configured`・`stale` は LaunchAgent の plist がある時だけ。warn で、45 分続いた時に 1 通
 - **Hermes の結果の返却**：`collect-hermes` は依頼元が人以外の時、結果の板へ同じ `task_ref` の新しい知らせ（`result.hermes = { status, summary }`）を書く（板は新しい `updated_at` が勝つ）。Grok Bot は `get_task_status` で Hermes の要約まで見える
@@ -174,7 +182,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 | 項目 | warn の時 | 通知 |
 |---|---|---|
 | `task_hub_approval` | 承認待ちが 1 件以上（全 business・全依頼元の件数） | 次の回に 1 通（hold 0）。続いている間は重ねない。0 に戻って新しく来たらまた 1 通 |
-| `task_hub_queue` | `stalled`（queued・時刻の来た retry_wait が 30 分動かない＝定期の回が実行できていない）・`stopped`（Human の dismiss 待ち） | 2 回分続いたら 1 通。新しいコードが増えたら知らせ直す |
+| `task_hub_queue` | `stalled`（queued・時刻の来た retry_wait が 30 分動かない＝定期の回が実行できていない）・`stopped`（Human の dismiss 待ち）・`suspended`（Dropbox の機能の回路遮断の印が在り、止めた期限が 24 時間以内＝まだ回復していない。§5） | 2 回分続いたら 1 通。新しいコードが増えたら知らせ直す |
 | `hermes_jobs` | `stuck`（running のまま 20 分）・`not_run`（承認済みで 24 時間未実行）・`timeout`・`no_result`・`result_rejected`・`interrupted`（24 時間以内） | 次の回に 1 通。新しいコードで知らせ直す。Hermes 自身の failed（「できない」）は依頼元へ返る普通の結果なので知らせない |
 | `docomo_fetch` | docomo-mail-lab の `bin/dml-fetch.mjs` が 3 回続けて失敗（`fetch-last.json` が無い間は項目なし） | 次の回に 1 通 |
 
@@ -183,3 +191,42 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 ## 16. VPS の受け口の business の制限（2026-11-13）
 
 鍵（source）ごとに `businesses` を VPS でも絞れる（`deploy/vps-task-intake/intake.mjs`：`business_not_allowed`）。Mac の config の `businesses` と 2 重で、Grok Bot の説明文（コネクタはアカウント全体で共有されうる）だけに頼らない。適用は Human の 1 コマンド（`connect-from-mac.sh … --intake --source grok-commander --intents <今と同じ> --businesses e-nexus`。登録済みの bot は鍵を作り直さず intents・businesses だけ替える）。後の保守で `--businesses` を省いても制限は外れない（今のまま）。外すのは `--businesses all` を明示した時だけ。
+
+## 17. Claude Code のクラウド連携の下準備（2026-11-18・案。実装していない・契約・課金・認証は増やしていない）
+
+公式 docs（code.claude.com の claude-code-on-the-web・routines・github-actions・headless・authentication・legal-and-compliance・agent-sdk、2026-11-18 に読んだ。ページに更新日の表示は無い）だけを根拠にする。**公式に書いてある物だけを「使える」と扱い、書いてない物は未確認と書く**。
+
+| 経路 | 起動と結果の戻り | Max の枠だけで使えるか（追加の課金なし） |
+|---|---|---|
+| クラウドのセッション（claude.ai/code・Claude アプリ・`claude --cloud "<依頼>"`。`--remote` は古い別名） | GitHub の repo を Anthropic の VM に clone して作業し、branch を push。PR は claude.ai/code から。続きの依頼は `claude -p "<文>" --cloud <session-id>`（`--output-format json` で `{ok, session_id, url}`）。**claude.ai アカウントの login が要る**（API key・Console・Bedrock などは拒否） | **使える**（Pro／Max／Team の枠に数える・「クラウドの VM に別料金なし」） |
+| スケジュール実行（旧 routines・`/schedule`） | 時刻・**API の trigger（HTTP POST・Bearer）**・GitHub の event。**research preview**＝仕様が変わりうる | 対象の plan は Max を含む。routines 固有の課金・API の endpoint の形・token の範囲・1 日の上限は**未確認** |
+| GitHub Actions（`anthropics/claude-code-action`） | secret に `ANTHROPIC_API_KEY`（Console＝従量課金）か `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token`） | API key は**従量課金＝使わない**。OAuth token は 1 人の契約に紐づく物で、会社の bot の中継が規約に合うかは**未確認**（下の規約で「中継」は禁止の側）。**この下準備では使わない** |
+| Mac の `claude -p`（ローカル） | Mac の login で動く（`ANTHROPIC_API_KEY` が在れば必ずそちらが優先＝API 課金）。クラウドではない・Mac の負荷になる | login のまま・鍵を設定しなければ Max の枠（`deploy/macos/MIGRATION.md`「`claude -p` の使い分け」） |
+| Agent SDK | 自分のホストで動く。公式の手引きは API key か外部の cloud provider | **製品・サービスには使えない**（下の規約） |
+
+**規約（公式の文）**：OAuth の認証は「購入者本人の通常の利用」のため。製品を作る開発者は API key を使う。**claude.ai の資格情報を集める・保管する・仲介してはならない**。Free／Pro／Max の資格情報で利用者の代わりに要求を通してはならない。Agent SDK でも「事前の承認がない限り、第三者が claude.ai の login や rate limit を自社製品として提供することは認めない」。→ **VPS・Grok Bot の中継・Task Hub の自動の処理に、Max の login・`setup-token` の token を置かない／渡さない**。
+
+### 17-1. 接続の候補（Task Hub → 開発）
+
+| 案 | 内容 | 要る物 | 判断 |
+|---|---|---|---|
+| A（推奨・今すぐ使える） | **人が起動する**：Mac の Terminal で Human が `claude --cloud "<依頼>"`（Human 自身の login・Human の操作）。Task Hub は何も起動しない。依頼の記録は今の `note.record`（`case_ref` に開発の記号）か、必要になれば記録だけの intent を足す | なし（追加の実装・契約・Secret なし） | Human の承認が要るのは最初の 1 回の試験だけ（Max の枠を使う） |
+| B | スケジュール実行の API trigger を Task Hub の cycle の 1 段から叩く | Mac から外への HTTP の出口・trigger の token（Secret）・endpoint の仕様の確認（**未確認が多い**・research preview） | **今は作らない**。試験の結果と公式の仕様が固まってから Human の判断 |
+| C | GitHub の issue／@claude → Actions | API key（従量課金）か OAuth token（上の規約） | **使わない** |
+
+### 17-2. 成果物・状態・負荷
+
+- **GitHub の branch と成果物**：クラウドのセッションは branch を push し、PR を人が作る・見る。**master へ直接 push させない（branch → PR → Human が merge）**。force push・reset・rebase・branch の削除は今までどおり禁止（Vault の CLAUDE.md の Git 運用）。branch の名前の付け方は公式 docs に書かれておらず**未確認**。この repo は公開＝クラウドの VM に clone される物は公開の物だけ（Mac の store・config・Vault は出さない）
+- **状態**：実行中・完了・失敗は claude.ai/code と Claude アプリで見える。ターミナルでは `/tasks`・`claude --teleport [id]`（作業を手元に引き取る。作業木が clean・同じアカウント・push 済みの branch が要る）。**承認待ち（permission の確認）の通知・push 通知は未確認**。Task Hub は外の状態を取りに行かない（handler は通信しない）＝開発の状態は Task Hub の state にしない（`task.status` に載せるなら「記録した」まで）
+- **Mac mini の負荷**：クラウドのセッションは Anthropic の VM で動く＝Mac の CPU を使わない。Remote Control は作業が手元の Mac で動くので負荷の逃がしにならない。ローカルの `claude -p` は Mac の負荷になる（Trading Lab の稼働中は `taskpolicy -b`・時間の上限をつける）。並列のセッションは同じ rate limit を分け合う。放置したセッションは期限切れで消え、背景の作業は失われる
+- **Secret**：クラウドの環境の環境変数はそのセッションから見える＝Secret を入れない。`/web-setup` は手元の `gh` の token を Claude のアカウントへ送る＝資格情報として扱う（この Mac では Human が決めるまで実行しない）
+
+### 17-3. 未確認（公式 docs に書いて無い・確かめるまで「できる」と書かない）
+
+routines の API trigger の endpoint・token の範囲・上限・課金／クラウドのセッションの branch の名前／承認待ち・完了の通知／同時に動かせる数・セッションの最大の長さ／GitHub Actions に購読の OAuth token を会社の運用の bot で使うことの可否
+
+### 17-4. 次にやること（Human の判断の後）
+
+1. 最初の手動の試験 1 回（Human の login・Max の枠を使う）：公開 repo の docs だけを直す安全な依頼を `claude --cloud` で出し、**branch の名前・PR の出方・状態の見え方・使った枠**を実測して §17-3 の未確認を減らす
+2. 結果が良ければ、依頼の記録だけの intent（Task Hub は起動しない）を足すか決める。B は公式の仕様が固まってから
+

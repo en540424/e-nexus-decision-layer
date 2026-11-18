@@ -13,6 +13,7 @@
  *   run.lock/                   runner の単独実行の印（owner.json を中に持つフォルダ。pid が居なければ古い）
  *   locks/<name>.lock/          短い排他（audit・task ごと）。同じ作り
  *   breaker.json                想定外の失敗の連続回数（runner の回をまたいで数える。成功で 0）
+ *   breaker-<機能>.json         機能ごと（dropbox）の想定外の失敗の連続回数と、その機能を止める期限（2026-11-18）
  *   PAUSE                       中身は理由のコード。あれば runner は走らない
  */
 import { createHash, randomBytes } from 'node:crypto';
@@ -526,6 +527,21 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
       if (n === this.breakerCount() && (n > 0 || !existsSync(p('breaker.json')))) return;
       if (n === 0) { try { unlinkSync(p('breaker.json')); } catch { /* 無い */ } return; }
       writeAtomic(p('breaker.json'), JSON.stringify({ consecutive: n }));
+    },
+    // ─── 機能ごとの回路遮断（2026-11-18）：Dropbox の資格情報・障害の失敗が続いても、Task Hub 全体（PAUSE）ではなく、その機能だけを一時止める ───
+    /** group（英小文字 1〜20 字）の { count：想定外の連続回数, until：この時刻までその機能の task は始めない（ISO・無ければ null）, last：最後に数えた task の id（同じ task の再試行を数え直さない・無ければ null） } */
+    groupBreaker(group) {
+      if (!/^[a-z]{1,20}$/.test(group)) return { count: 0, until: null, last: null };
+      const j = readJson(p(`breaker-${group}.json`));
+      return { count: Number.isInteger(j?.count) && j.count >= 0 && j.count < 1000 ? j.count : 0, until: typeof j?.until === 'string' && Number.isFinite(Date.parse(j.until)) ? j.until : null, last: typeof j?.last === 'string' && /^t-[0-9a-z-]{1,60}$/.test(j.last) ? j.last : null };
+    },
+    setGroupBreaker(group, { count = 0, until = null, last = null } = {}) {
+      if (!/^[a-z]{1,20}$/.test(group)) throw new StoreError('bad_group');
+      const f = p(`breaker-${group}.json`);
+      const cur = this.groupBreaker(group);
+      if (cur.count === count && cur.until === until && cur.last === last) return;
+      if (count === 0 && until === null) { try { unlinkSync(f); } catch { /* 無い */ } return; }
+      writeAtomic(f, JSON.stringify({ count, until, last }));
     },
     isPaused() {
       return existsSync(p('PAUSE'));

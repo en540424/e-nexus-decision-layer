@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveReal } from '../dropbox/resolve.mjs';
-import { browsable, foldPath, loadScopes, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
+import { browsable, foldPath, loadScopes, nameDenied, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
 import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, decodeKarte, KarteError, newKarte, provenance, sectionText, unknownSections } from '../business/karte.mjs';
 import { backupSchedule, BackupError, listGenerations, restoreGeneration } from '../business/schedule-backup.mjs';
 import { addAiSheet, estimateSheetXml, readCalendar, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
@@ -87,6 +87,8 @@ const SEARCH_MAX = 30;
 const dropboxSearch = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
+  // 名前で読ませない語（給与・名簿など）を探す検索は受けない：結果は絞っても「件数・続きがある」の印で、隠した file の在ることが分かってしまう（2026-11-18 監査）
+  if (nameDenied(task.params.query, scope.deny_names)) throw new ScopeError('dropbox_path_not_allowed');
   // path の指定は実の名前に直す（依頼の文字は受け口で NFKC に揃っている＝全角を含む名前はそのままでは Dropbox に無い）
   const root = task.params.path ? await resolveReal(svc.dropbox('read'), scope, task.params.path, 'browse', { signal }) : searchRoot(scope, null);
   const raw = await svc.dropbox('read').search(task.params.query, { path: root, max: SEARCH_MAX, signal });
@@ -335,7 +337,9 @@ export const bounded = (run, { writes = false } = {}) => async (ctx) => {
   const small = Object.fromEntries(Object.entries(out.result).filter(([, v]) => (v === null || typeof v !== 'object') && jsonBytes(v) <= 1500).slice(0, 8));
   return { ...out, result: { ...small, result_trimmed: true } };
 };
-const entry = (run, opts) => ({ resumable: true, run: bounded(run, opts) });
+const entry = (run, opts) => ({ resumable: true, group: 'dropbox', run: bounded(run, opts) }); // group：機能ごとの回路遮断（runner）。Dropbox の障害で Task Hub 全体を PAUSE にしない
+/** Dropbox に触らない handler（手元の写しだけ）。機能ごとの回路遮断の対象にしない＝動いても Dropbox の失敗の数えを戻さない */
+const localEntry = (run, opts) => ({ resumable: true, run: bounded(run, opts) });
 const W = { writes: true };
 
 export const BUSINESS_HANDLERS = Object.freeze({
@@ -343,7 +347,7 @@ export const BUSINESS_HANDLERS = Object.freeze({
   'dropbox.list': entry(dropboxList),
   'schedule.read': entry(scheduleRead),
   'schedule.backup': entry(scheduleBackup, W),
-  'schedule.backup.list': entry(scheduleBackupList),
+  'schedule.backup.list': localEntry(scheduleBackupList),
   'schedule.restore': entry(scheduleRestore, W),
   'karte.create': entry(karteCreate, W),
   'karte.get': entry(karteGet),

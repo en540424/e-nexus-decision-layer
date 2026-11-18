@@ -82,10 +82,13 @@ const statusQuery = ({ task, store, config, now }) => {
   const sections = {};
   if (r.ok) for (const [k, v] of Object.entries(r.brief.sections ?? {})) if (/^[a-z_]{1,20}$/.test(k) && LEVELS.has(v?.level)) sections[k] = v.level;
   const cycle = readJsonSafe(store.path('cycle-last.json'), 4096);
+  // 機能ごとの回路遮断（runner・2026-11-18）で止めている機能の名前だけ（Dropbox の資格情報・障害が続いた時。理由・時刻は返さない）
+  const suspended = ['dropbox'].filter((g) => { const u = store.groupBreaker(g).until; return u && Date.parse(u) > now; });
   return {
     result: {
       ...base, ...(r.ok ? { monitor: r.brief.monitor, counts: r.brief.counts, sections } : {}),
       task_hub: hubCounts(store, task.business, now), hermes: hermesCounts(store, task.business, now),
+      ...(suspended.length ? { suspended } : {}),
       cycle: cycle && typeof cycle.code === 'string' ? { code: cycle.code.slice(0, 40), at: typeof cycle.at === 'string' ? cycle.at.slice(0, 40) : null } : null,
     },
   };

@@ -64,7 +64,7 @@ async function locate(reader, p) {
 export async function preflight({ dropbox, reader, writer = null, deep = false, today = new Date().toISOString().slice(0, 10) }) {
   if (dropbox === undefined || dropbox === null) return { code: 'not_configured', problems: 0, warnings: 0, items: [] };
   let scopes;
-  try { scopes = loadScopes(dropbox); } catch { return { code: 'config_invalid', problems: 1, warnings: 0, items: [] }; }
+  try { scopes = loadScopes(dropbox); } catch (e) { return { code: 'config_invalid', config_code: String(e?.code ?? 'error').slice(0, 60), problems: 1, warnings: 0, items: [] }; }
   const items = [];
   for (const scope of scopes.values()) {
     for (const key of ['read_roots', 'estimate_roots', 'deny_roots', 'schedule_files']) {
@@ -154,7 +154,7 @@ if (isMain) {
   const argv = process.argv.slice(2);
   const opt = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
   const file = opt('--config') ? path.resolve(opt('--config')) : path.join(opt('--store') ? path.resolve(opt('--store')) : DEFAULT_STORE, 'config.json');
-  const done = (r, exit) => { console.log(JSON.stringify({ component: 'edl-dropbox-preflight', code: r.code, problems: r.problems ?? 0, warnings: r.warnings ?? 0 })); process.exitCode = exit; };
+  const done = (r, exit) => { console.log(JSON.stringify({ component: 'edl-dropbox-preflight', code: r.code, ...(r.config_code ? { config_code: r.config_code } : {}), problems: r.problems ?? 0, warnings: r.warnings ?? 0 })); process.exitCode = exit; };
   let raw = null;
   try { raw = JSON.parse(readFileSync(file, 'utf8')); } catch { /* 読めない */ }
   if (!raw) done({ code: 'config_unreadable', problems: 1 }, 1);
