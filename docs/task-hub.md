@@ -185,6 +185,7 @@ CLI を実行しなければ何も動かない（常駐なし・launchd なし�
 | `task_hub_queue` | `stalled`（queued・時刻の来た retry_wait が 30 分動かない＝定期の回が実行できていない）・`stopped`（Human の dismiss 待ち）・`suspended`（Dropbox の機能の回路遮断の印が在り、止めた期限が 24 時間以内＝まだ回復していない。§5） | 2 回分続いたら 1 通。新しいコードが増えたら知らせ直す |
 | `hermes_jobs` | `stuck`（running のまま 20 分）・`not_run`（承認済みで 24 時間未実行）・`timeout`・`no_result`・`result_rejected`・`interrupted`（24 時間以内） | 次の回に 1 通。新しいコードで知らせ直す。Hermes 自身の failed（「できない」）は依頼元へ返る普通の結果なので知らせない |
 | `docomo_fetch` | docomo-mail-lab の `bin/dml-fetch.mjs` が 3 回続けて失敗（`fetch-last.json` が無い間は項目なし） | 次の回に 1 通 |
+| `nod_desktop`（2026-11-18） | `running_long`（Nod の app が 4 時間以上動いている）・`vm_left`（app は終わったのに Nod の runtime＝VM が残った）・`check_failed`。Nod が入っていなければ項目なし。`pgrep` の固定の 2 つの形だけ（§18・`docs/nod-trial.md` §4） | 2 回分続いたら 1 通。値が変われば知らせ直す |
 
 `runtime-ops human` にも `task-hub:hermes`（Hermes の業務のコード）を足した。正常な回・完了の知らせは Discord へ送らない（完了は依頼元の Grok Bot へ返す 1 本の経路）。
 
@@ -242,3 +243,8 @@ routines の API trigger の endpoint・token の範囲・上限・課金／ク�
 | 失敗・承認待ち | Human が PR を merge しない・閉じる。Task Hub に承認の代わりを持たせない | 変えない |
 
 限り：Grok → Claude Code の自動の起動は作らない（§17 の規約・Max の login を VPS・Bot に置かない）。開発の結果を Grok が読むには、読む intent の追加（記録だけ・同じ依頼元）が要る＝Human の判断。
+
+## 18. Nod（試験導入・2026-11-18・正式採用ではない）
+
+n8n Labs の Nod（公式 Mac デスクトップ版 v0.8.4）を Mac に入れた（未起動）。v0.8.4 には外から仕事を渡す公式の手段（CLI・公開 API）が無いので、**Task Hub の intent は足していない**。
+起動・公式の Quit での完全終了・計測は `scripts/nod-desktop.mjs`（起動は Terminal の Human だけ）、長い常駐と終了の後に残った VM の見張りは host-health の `nod_desktop`（§15 と同じ回・読むだけ）。経緯・Human の初回の手順・費用の比較は `docs/nod-trial.md`。

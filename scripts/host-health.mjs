@@ -52,7 +52,7 @@ export const DEFAULT_TASK_HUB = path.join(REPO, '..', 'mac-runtime-state', 'task
 /** docomo-mail-lab の bin/dml-fetch.mjs の state（fetch-last.json がある時だけ見る・2026-11-13） */
 export const DEFAULT_DOCOMO_STATE = path.join(REPO, '..', 'mac-runtime-state', 'docomo-mail');
 export const STATE_SCHEMA = 'host-health-state/v1';
-export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', ...GUARD_BINS]);
+export const ALLOWED_BINS = Object.freeze(['/bin/df', '/usr/sbin/sysctl', '/usr/bin/pmset', '/sbin/route', '/bin/launchctl', '/bin/ps', '/usr/bin/du', '/usr/bin/pgrep', ...GUARD_BINS]);
 /** 初期値（2026-10-21。Mac mini の目安で、実測で見直す） */
 export const THRESHOLDS = Object.freeze({
   disk_free_gib: { warn: 50, crit: 20 },
@@ -535,6 +535,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^task_hub_queue$/, codes('ok', 'stalled', 'stopped', 'suspended', 'check_failed')],
   [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],
   [/^hermes_jobs$/, codes('ok', 'stuck', 'not_run', 'timeout', 'no_result', 'result_rejected', 'interrupted')],
+  [/^nod_desktop$/, /^(?:not_running|running|running_long|vm_left|check_failed)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
 export function safeValue(id, v) {
@@ -785,7 +786,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false, docomoState = null }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false, docomoState = null, nodApp = null }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -821,6 +822,12 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
     if (taskHub) { const b = await import('./lib/task-hub/audit-watch.mjs').then((m) => m.businessBackupItem(taskHub, Date.parse(at))).catch(() => null); if (b) items.push(b); }
     // ドコモメールの読み取りの最後の結果（2026-11-13・fetch-last.json がある時だけ・連続 3 回の失敗で warn）
     if (docomoState) { const d = await import('./lib/docomo-watch.mjs').then((m) => m.docomoFetchItem(docomoState)).catch(() => null); if (d) items.push(d); }
+    // Nod（試験導入・2026-11-18）：入っている時だけ。app か VM が長く動いている・終了で VM が残った（pgrep の固定の path だけ＝他の process の一覧を取らない・docs/nod-trial.md §4）
+    // 時間の予算の中だけ（全体の締め切りの中で他の項目を止めない・2026-11-18 監査 L3）。超えたら check_failed
+    if (nodApp && existsSync(nodApp)) {
+      const failed = { id: 'nod_desktop', level: 'warn', value: 'check_failed', kind: 'state' };
+      items.push(await import('./lib/nod/desktop.mjs').then((m) => Promise.race([m.observeNod({ run, installed: true }).then((o) => m.nodDesktopItem(o)), new Promise((resolve) => { setTimeout(resolve, m.OBSERVE_BUDGET_MS, failed).unref(); })])).catch(() => failed) ?? failed);
+    }
     // 判定の前に確かめる（今回の結果で知らせる）
     const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
       ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
@@ -1016,6 +1023,7 @@ async function main(argv) {
     taskHub: a.taskHub ?? (existsSync(path.join(DEFAULT_TASK_HUB, 'config.json')) ? path.resolve(DEFAULT_TASK_HUB) : null),
     taskHubScheduled: existsSync(path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', 'com.e-nexus.task-hub.plist')),
     docomoState: path.resolve(DEFAULT_DOCOMO_STATE),
+    nodApp: '/Applications/Nod.app',
   });
   clearTimeout(deadline);
   if (a.json && r.items) console.log(JSON.stringify({ component: 'edl-host-health', ...r }, null, 2));
