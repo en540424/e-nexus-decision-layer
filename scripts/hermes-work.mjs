@@ -51,7 +51,7 @@ const USAGE = `${HH}/work/work-run-usage.json`;
 const PROBE_USAGE = `${HH}/work/work-probe-usage.json`;
 const GATEWAY = 'gateway run --external-supervisor';
 const RSS_LIMIT_MIB = 2048;
-const PROBE_SECONDS = 60;
+const PROBE_SECONDS = 120; // 無効な鍵＝課金なし。in-process の起動は gateway の client より重い（taskpolicy -b・sandbox の中で __pycache__ を書けない）＝60 秒では足りない恐れ（監査 11-18 夜）
 const OUTBOX_READ_MAX = 64 * 1024;
 const SECRET_SHAPE = /sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|[0-9a-f]{64,}/g;
 /** Anthropic が鍵を拒んだ印（\b401\b＝session_id 等の数字の中の 401 を拾わない。in-process の 401 は stdout の「rejected your API key」で出る：
@@ -122,12 +122,35 @@ function keepLog(store, name, text) {
   try {
     const dir = store.path('hermes-work-logs');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(dir, `${name}.txt`), `${redact(text)}\n`, { mode: 0o600 });
+    writeFileSync(path.join(dir, `${name}.txt`), `at=${new Date().toISOString()}\n${redact(text)}\n`, { mode: 0o600 });
   } catch { /* 残せなくても実行は続ける */ }
 }
 const outputTail = (r) => `exit=${r?.status} signal=${r?.signal ?? ''}\n${String(r?.stdout ?? '').slice(-3000)}\n--- stderr ---\n${String(r?.stderr ?? '').slice(-6000)}`;
 
-/** 課金なしの確かめで止まった時：その時刻の sandbox の拒否の行（操作と path だけ）を残す＝Human にもう一度実行してもらわずに原因を読む */
+/** 同じ依頼の前の回の記録を消す（前の回の probe の記録が今回の物に見えないように・監査 11-18 夜）。store の中の自分の file だけ */
+function clearRunLogs(store, taskId) {
+  try {
+    const dir = store.path('hermes-work-logs');
+    for (const n of readdirSync(dir)) if (n.startsWith(`${taskId}-`) && /-(probe|probe-denials|probe-diag|launcher|preflight)\.txt$/.test(n)) unlinkSync(path.join(dir, n));
+  } catch { /* 無い */ }
+}
+
+/**
+ * 課金なしの確かめの起動で止まった時：業務の home の一覧と Hermes 自身の log の末尾を sandbox の外（hermes の権限）で読んで残す（上限つき・鍵の形は伏せる）。
+ * macOS は sandbox-exec の拒否を unified log に出さず（§12-8）、in-process の -z は会話の間 stdout・stderr を /dev/null にし logging も止める
+ * （oneshot.py の run_oneshot）＝原因はここで読む（監査 11-18 夜）
+ */
+function keepWorkHomeDiagnostics(store, name, run, home) {
+  const r = run(['/bin/sh', '-c', [
+    'cd "$1" || exit 0',
+    'echo "== ls"; /bin/ls -la . | /usr/bin/head -60',
+    'for d in logs sessions cache cron hooks memories skills cwd; do echo "== $d"; /bin/ls -la "$d" 2>&1 | /usr/bin/head -30; done',
+    'for f in $(/bin/ls -t logs/*.log logs/*/*.log 2>/dev/null | /usr/bin/head -4); do echo "== tail $f"; /usr/bin/tail -c 4000 "$f"; done',
+  ].join('\n'), 'sh', home], { timeout: 20_000 });
+  keepLog(store, name, `${String(r?.stdout ?? '').slice(0, 24_000)}${r?.stderr ? `\n--- stderr ---\n${String(r.stderr).slice(0, 2000)}` : ''}`);
+}
+
+/** 課金なしの確かめで止まった時：その時刻の sandbox の拒否の行（操作と path だけ）を残す。この Mac の macOS は sandbox-exec の拒否を出さない＝空のことが多い（§12-8） */
 function keepDenials(store, name, sinceMs) {
   const mins = Math.min(Math.max(Math.ceil((Date.now() - sinceMs) / 60_000) + 1, 2), 10);
   const r = spawnSync('/usr/sbin/taskpolicy', ['-b', '/usr/bin/log', 'show', '--last', `${mins}m`, '--style', 'compact', '--predicate', 'sender == "Sandbox" AND eventMessage CONTAINS "deny"'], { encoding: 'utf8', timeout: 40_000, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'] });
@@ -268,8 +291,19 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
     '/usr/bin/sandbox-exec', ...sandboxArgs(params(ctx, usage)), ...cmd];
   const readSafe = (n) => { try { return Buffer.from(readSmallFile(path.join(outbox, n), OUTBOX_READ_MAX), 'utf8'); } catch { return null; } };
   let launch = null; // Hermes の in-process の起動（preflight が sandbox の中で決める・exec はこれだけを使う）
+  const notes = [];
+  const note = (m) => { notes.push(m); log(m); };
   return {
+    /** 確かめの結果と途中の知らせ（前の profile の隔離・multiplex の固定）を毎回 store の hermes-work-logs/<task>-preflight.txt に残す（鍵・本文は入れない） */
     async preflight(task, ctx) {
+      notes.length = 0;
+      clearRunLogs(store, task.task_id);
+      let r;
+      try { r = await this.preflightSteps(task, ctx); } catch (e) { r = { ok: false, code: 'preflight_exception' }; notes.push(`exception: ${String(e?.message ?? e).slice(0, 300)}`); }
+      keepLog(store, `${task.task_id}-preflight`, JSON.stringify({ at: new Date().toISOString(), result: r, notes }, null, 1));
+      return r;
+    },
+    async preflightSteps(task, ctx) {
       launch = null; // 途中で止まった確かめの後に前の起動を残さない（監査 5）
       const host = L.hostCheck(sh, ok);
       if (host) return { ok: false, code: host };
@@ -285,14 +319,15 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
       if (!ok(asHermes(['/bin/sh', '-c', 'f="$1/active_profile"; test ! -e "$f" && test ! -L "$f" || { test -f "$f" && test "$(/usr/bin/head -c 64 "$f" | /usr/bin/tr -d "[:space:]")" = default; }', 'sh', L.root]))) return { ok: false, code: 'hermes_active_profile_set' };
       // 前の業務の home（profiles/work）を、消さず・常駐を止めずに serve から外す（parked → 外れたと読めたら e-nexus-legacy/ へ移す・§12-9）
       const iso = await isolateLegacyProfile(asHermes, L.root, { waitSeconds: L.legacyWaitSeconds, pollSeconds: L.legacyPollSeconds });
-      if (iso.state === 'moved') log(`前の業務の home（~/.hermes/profiles/work）を常駐の serve から外し、消さずに ~/.hermes/${LEGACY_ARCHIVE_DIR}/${path.basename(iso.to)} へ移した（常駐の gateway は止めていない）`);
-      else if (iso.state === 'parked') log(`前の業務の home（~/.hermes/profiles/work）に gateway.parked を置いた（常駐の serve と cron から外れる・データはそのまま）。移すのは次の実行で（${iso.reason}）`);
-      else if (iso.state === 'skipped') log(`注意：前の業務の home を隔離しなかった（${iso.reason}）。Claude Code に伝える`);
+      notes.push(`legacy_isolation: ${JSON.stringify(iso)}`);
+      if (iso.state === 'moved') note(`前の業務の home（~/.hermes/profiles/work）を常駐の serve から外し、消さずに ~/.hermes/${LEGACY_ARCHIVE_DIR}/${path.basename(iso.to)} へ移した（常駐の gateway は止めていない）`);
+      else if (iso.state === 'parked') note(`前の業務の home（~/.hermes/profiles/work）に gateway.parked を置いた（常駐の serve と cron から外れる・データはそのまま）。移すのは次の実行で（${iso.reason}）`);
+      else if (iso.state === 'skipped') note(`注意：前の業務の home を隔離しなかった（${iso.reason}）。Claude Code に伝える`);
       // 常駐が multiplex の形へ移った時、Hermes は root の config.yaml に gateway.multiplex_profiles: true を書く（gateway_multiplex_mode.py の persist_resolved_default）。
       // 在れば再起動の後も multiplex で起きる。読むだけで知らせる（戻すかは Human の判断・AI は常駐の設定を変えない）
       {
         const mp = asHermes(['/usr/bin/grep', '-E', '^[[:space:]]*multiplex_profiles:[[:space:]]*(true|yes|on|1)[[:space:]]*$', `${L.root}/config.yaml`]);
-        if (mp.status === 0) log('常駐の root の config.yaml に gateway.multiplex_profiles: true が在る（常駐は再起動の後も複数の profile の形で起きる）。戻すかは Human の判断（docs/hermes-work.md §12-9・変えていない）');
+        if (mp.status === 0) note('常駐の root の config.yaml に gateway.multiplex_profiles: true が在る（常駐は再起動の後も複数の profile の形で起きる）。戻すかは Human の判断（docs/hermes-work.md §12-9・変えていない）');
       }
       // 鍵が root の .env に在る（値は見ない：loader が長さだけ確かめる）
       if (!ok(asHermes([...envFor(ctx, false), '/usr/bin/perl', '-e', LOADER, `${L.root}/.env`, '10', `${L.workHome}/cwd`, '/bin/sh', '-c', 'test "${#ANTHROPIC_API_KEY}" -ge 20']))) return { ok: false, code: 'key_missing' };
@@ -310,7 +345,7 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
       const cmd = ok(rc) ? inProcessCommand(rc.stdout, L.root) : null;
       if (!cmd) { keepLog(store, `${task.task_id}-launcher`, outputTail(rc)); return { ok: false, code: 'hermes_launcher_unexpected' }; }
       // Hermes 本体を sandbox の中で起動（無効な鍵＝Anthropic は 401 を返し課金されない）。起動・依存・state の場所が sandbox で壊れないことを確かめる
-      log('課金なしの起動の確かめ（無効な鍵で Hermes を sandbox の中で起動。最大 60 秒）');
+      log(`課金なしの起動の確かめ（無効な鍵で Hermes を sandbox の中で起動。最大 ${L.probeSeconds} 秒）`);
       const since = Date.now();
       const pr = asHermes(boxed(ctx, L.probeSeconds, ['/usr/sbin/taskpolicy', '-b', ...cmd, '-z', `Reply with the single word OK. (probe ${ctx.runToken})`, '-t', 'file', '--usage-file', L.probeUsage]), { timeout: (L.probeSeconds + 20) * 1000 });
       if (pr.signal || pr.error) asHermes(['/usr/bin/pkill', '-KILL', '-f', `probe ${ctx.runToken}`]);
@@ -319,7 +354,11 @@ export function macSys({ store, log, outbox, layout = productionLayout() }) {
       keepLog(store, `${task.task_id}-probe`, `${outputTail(pr)}\n--- usage ---\n${usageText}`);
       asHermes(['/bin/rm', '-f', L.probeUsage]);
       const code = classifyProbe(pr, usageText);
-      if (code) { if (L.keepDenials) keepDenials(store, `${task.task_id}-probe-denials`, since); return { ok: false, code }; }
+      if (code) {
+        keepWorkHomeDiagnostics(store, `${task.task_id}-probe-diag`, asHermes, L.workHome);
+        if (L.keepDenials) keepDenials(store, `${task.task_id}-probe-denials`, since);
+        return { ok: false, code };
+      }
       // 起動の確かめの間に sandbox の外（同じ uid の常駐など）から置かれた物が無いか、実行の直前にもう一度（監査 L3）
       const again = prepareWorkHome(asHermes, L.workHome);
       if (again) return { ok: false, code: again };

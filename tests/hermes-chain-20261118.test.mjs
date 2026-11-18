@@ -67,6 +67,9 @@ def _usage(path, d):
 def _run_and_exit_oneshot(prompt, *, model=None, provider=None, toolsets=None, skills=None, usage_file=None, resume=None, reasoning=None):
     tries = _init_home()
     sys.stderr.write('tries=' + json.dumps(tries, sort_keys=True) + '\n')
+    if MODE == 'crash':
+        (Path(os.environ['HERMES_HOME']) / 'logs' / 'agent.log').write_text('agent: boom while building tools\n')
+        raise RuntimeError('boom')
     if 'invalid' in os.environ.get('ANTHROPIC_API_KEY', ''):
         _usage(usage_file, {'completed': False, 'failed': True, 'api_calls': 1, 'session_id': '20261118_140155_ab'})
         sys.stdout.write("Anthropic rejected your API key, so the model can't be reached. Update it in Settings.\n")
@@ -106,17 +109,17 @@ function world() {
   const root = path.join(H, '.hermes');
   const code = path.join(root, 'hermes-agent');
   const d = (p) => { mkdirSync(p, { recursive: true, mode: 0o700 }); return p; };
-  for (const p of [path.join(code, 'hermes_cli'), path.join(root, 'tools/py/bin'), path.join(root, 'installs'), path.join(root, 'plugins'), path.join(root, 'profiles/work/cron'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(R, 'vf')]) d(p);
+  for (const p of [path.join(code, 'hermes_cli'), path.join(root, 'tools/python-3.14.7+20260901-darwin-arm64/bin'), path.join(root, 'installs'), path.join(root, 'plugins'), path.join(root, 'profiles/work/cron'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(R, 'vf')]) d(p);
   writeFileSync(path.join(code, 'hermes_bootstrap.py'), '');
   writeFileSync(path.join(code, 'hermes_cli/__init__.py'), '');
   writeFileSync(path.join(code, 'hermes_cli/main.py'), FAKE_MAIN);
   writeFileSync(path.join(code, 'fake_mode'), 'ok');
-  symlinkSync(PYTHON, path.join(root, 'tools/py/bin/python3'));
+  symlinkSync(PYTHON, path.join(root, 'tools/python-3.14.7+20260901-darwin-arm64/bin/python3'));
   writeFileSync(path.join(root, '.env'), `ANTHROPIC_API_KEY=sk-ant-${'k'.repeat(40)}\n`, { mode: 0o600 });
   writeFileSync(path.join(root, 'state.db'), 'gateway state');
   writeFileSync(path.join(root, 'config.yaml'), '{}');
   writeFileSync(path.join(root, 'profiles/work/SOUL.md'), 'old'); // 前の home（常駐が serve していた）
-  const py = path.join(root, 'tools/py/bin/python3');
+  const py = path.join(root, 'tools/python-3.14.7+20260901-darwin-arm64/bin/python3');
   writeFileSync(path.join(H, '.local/bin/rc.json'), `${JSON.stringify([py, '-I', '-c', runtimeBootstrap(root)])}\n`);
   writeFileSync(path.join(H, '.local/bin/hermes'), '#!/bin/sh\n[ "$1" = "--print-runtime-command" ] && exec /bin/cat "$(dirname "$0")/rc.json"\necho "Error: Gateway inaccessible: authorization" >&2\nexit 1\n', { mode: 0o755 });
   const shared = d(path.join(U, 'Shared/w'));
@@ -181,6 +184,10 @@ test('模擬 E2E（本番の確かめと実行の code・本物の sandbox）：
     assert.ok(!existsSync(x.layout.probeUsage), 'probe の usage は片付ける');
     assert.ok(logs.some((l) => /前の業務の home.*gateway\.parked を置いた/.test(l)), '前の home は parked にする（常駐の記録が無いので移すのは次）');
     assert.equal(readFileSync(path.join(x.root, 'profiles/work/gateway.parked'), 'utf8'), '');
+    // 確かめの結果と途中の知らせは毎回 file に残る（Human に表示を聞き直さない）
+    const trace = readTrace(env, id);
+    assert.deepEqual(trace.result, { ok: true });
+    assert.ok(trace.notes.some((n) => /^legacy_isolation: \{"state":"parked","reason":"state_unreadable"\}$/.test(n)), JSON.stringify(trace.notes));
     assert.equal(readFileSync(path.join(x.root, 'profiles/work/SOUL.md'), 'utf8'), 'old', '前の home の中身は変えない');
 
     // 2) 2 回目の --check-only：前の回の物（sessions・state.db・logs）が在っても同じに通る＝確かめ自身が作った物を次に拒まない
@@ -252,10 +259,26 @@ test('模擬 E2E（本番の確かめと実行の code・本物の sandbox）：
     r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
     assert.equal(r.code, 'check_ok');
 
+    // 5c) 起動の途中で Hermes が落ちた → probe_hermes_crashed・業務の home の一覧と Hermes の log の末尾を残す・前の回の probe の記録は消えている
+    writeFileSync(env.store.path(`hermes-work-logs/${second.id}-probe-denials.txt`), 'stale');
+    x.mode('crash');
+    r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
+    assert.equal(r.code, 'preflight_probe_hermes_crashed', JSON.stringify(r));
+    const diag = readFileSync(env.store.path(`hermes-work-logs/${second.id}-probe-diag.txt`), 'utf8');
+    assert.match(diag, /^at=/);
+    assert.match(diag, /== tail logs\/agent\.log\nagent: boom while building tools/);
+    assert.match(diag, /== sessions/);
+    assert.equal(existsSync(env.store.path(`hermes-work-logs/${second.id}-probe-denials.txt`)), false, '前の回の記録は確かめの初めに消す（今回は拒否の行を読まない layout）');
+    x.mode('ok');
+    for (const dname of WORK_LOCKED_DIRS) assert.deepEqual(readdirSync(path.join(work, dname)), [], `落ちた後も ${dname} は空`);
+    r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
+    assert.equal(r.code, 'check_ok', '落ちた後の再実行も同じに通る');
+
     // 6) Hermes が gateway へ渡す形に戻った（差し替えが効かない launcher）→ 鍵の 401 と読まずに止まる
-    writeFileSync(path.join(x.H, '.local/bin/rc.json'), `${JSON.stringify([path.join(x.root, 'tools/py/bin/python3'), '-I', '-c', `${runtimeBootstrap(x.root)}; x`])}\n`);
+    writeFileSync(path.join(x.H, '.local/bin/rc.json'), `${JSON.stringify([path.join(x.root, 'tools/python-3.14.7+20260901-darwin-arm64/bin/python3'), '-I', '-c', `${runtimeBootstrap(x.root)}; x`])}\n`);
     r = await runWork({ store: env.store, config, sys: sysFor(), now: () => env.tick(10), checkOnly: true, waitRunLock: noWait });
     assert.equal(r.code, 'preflight_hermes_launcher_unexpected');
+    assert.equal(readTrace(env, second.id).result.code, 'hermes_launcher_unexpected', '止まった段も file に残る');
     assert.equal(env.store.verifyAudit().ok, true);
   } finally {
     rmSync(x.R, { recursive: true, force: true });
@@ -265,4 +288,11 @@ test('模擬 E2E（本番の確かめと実行の code・本物の sandbox）：
 
 function readLogs(env) {
   try { const dir = env.store.path('hermes-work-logs'); return readdirSync(dir).map((n) => `\n== ${n}\n${readFileSync(path.join(dir, n), 'utf8')}`).join(''); } catch { return ''; }
+}
+
+/** 確かめの記録（1 行目は at=<時刻>・残りは JSON） */
+function readTrace(env, taskId) {
+  const t = readFileSync(env.store.path(`hermes-work-logs/${taskId}-preflight.txt`), 'utf8');
+  assert.match(t, /^at=\d{4}-\d\d-\d\dT/);
+  return JSON.parse(t.split('\n').slice(1).join('\n'));
 }

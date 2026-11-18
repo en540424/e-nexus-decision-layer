@@ -1,6 +1,6 @@
 # Hermes に業務を渡す時の決まり（案・2026-11-10・MA-24）
 
-**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。初回の課金なしの確かめの停止を直した（§12-6）。続く `--check-only` の停止（Hermes の `-z` が sandbox の外の常駐の gateway へ渡そうとした）を、Hermes を sandbox の中の同じ process で動かす形に直した（§12-7）。続く `work_home_has_cron`・`work_home_has_plugins` の根本（業務の home を常駐の gateway が serve する `profiles/` の下に置いていた）を、業務の home を `~/.hermes/e-nexus-work` へ移して直した（§12-8・**今の形**）。前の home は消さず・常駐を止めずに確かめの中で自動で隔離する（§12-9）。Hermes 本体での確かめは Human の 1 回の `--check-only` 待ち。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
+**状態（2026-11-18）：受け渡し・実行の記録・sandbox・結果の返却まで実装済み（§11）・承認の期限・実用の依頼の種類・結果の一覧（§12）。初回の課金なしの確かめの停止を直した（§12-6）。続く `--check-only` の停止（Hermes の `-z` が sandbox の外の常駐の gateway へ渡そうとした）を、Hermes を sandbox の中の同じ process で動かす形に直した（§12-7）。続く `work_home_has_cron`・`work_home_has_plugins` の根本（業務の home を常駐の gateway が serve する `profiles/` の下に置いていた）を、業務の home を `~/.hermes/e-nexus-work` へ移して直した（§12-8・**今の形**）。前の home は消さず・常駐を止めずに確かめの中で自動で隔離する（§12-9）。起動の確かめを実物の launcher の出力と常駐の launcher に照らして直した（§12-10）。Hermes 本体での確かめは Human の 1 回の `--check-only` 待ち。有料の実行は 1 件ずつ Human が Mac の端末で承認して起動する。実機の業務の実行の実績はまだ無い。** §1〜§9 は 2026-11-10 の設計、§10 は 2026-11-11 の形、§11・§12 が今の形。
 Hermes は常駐している（gateway だけ・messaging platform なし・cron の job なし）。今の役目は監視の要約を読むことだけ（`docs/runtime-monitoring.md`）。
 
 ## 1. 渡す仕事の形（往きと還り）
@@ -280,4 +280,20 @@ A・B・D・E の一覧は既存の無料の intent で足りる＝Hermes の種
 - **試験**（本物と模擬を分ける）：
   - **本物の Hermes の code**：`tests/hermes-legacy-isolate-20261118.test.mjs`。4d04303 の `hermes_cli/profiles.py` の `profiles_to_serve` と依存の 10 file（git の blob の sha で固定）を本番と同じ Python 3.14.7 で動かす：今は serve＝[default, work]・再起動の判定＝[default, work] → 印の後 serve＝[default]・再起動＝[default, work] → 移した後 両方とも [default]。新しい業務の home はどれにも出ない。`ruamel.yaml` と `gateway.config._bool_token` だけは空の代わり（この道では呼ばれない）。`HERMES_SRC` を渡した時だけ
   - **模擬**：記録が無い・古い・まだ serve・形が違う・JSON でない間は移さない、外れたと読めたら移す（中身はそのまま・印が増えるだけ）、待つ間に外れれば同じ実行で移す、link・移す先が在る時は触らない、2 回目は何もしない。通し試験（`tests/hermes-chain-20261118.test.mjs`）でも、確かめの中で parked → 次の確かめで移す、確かめの結果は変わらない
+
+### 12-10. `--check-only` が `preflight_hermes_launcher_unexpected` で止まった（2026-11-18 19:46 JST）
+
+- **起きたこと**：§12-9 の後の Human の `--check-only` が、Hermes の launcher の runtime command を読む段で止まった（課金の前・試行 0）。前の profile には `gateway.parked` が置かれた（その回の隔離の段）
+- **原因**（store の `hermes-work-logs/<task>-launcher.txt` の実物の出力で確かめた）：bootstrap は 4d04303 の `runtime_command` の文と**全文で同じ**。止めたのは python の path：本番の store の python は `~/.hermes/tools/python-3.14.7+20260901-darwin-arm64/bin/python3`（python-build-standalone の版の名前に `+`）で、`inProcessCommand` の path の字の許しが `+` を拒んだ。試験の偽物は `tools/py/bin/python3` で、実物の名前を通していなかった（11-18 夕方に `ps` で実物の path を見ていたのに照らさなかった）
+- **直し**：python の path だけ `+` を許す（argv にだけ使い sandbox の profile に埋めない。空白・引用符・`$`・`\``・`;`・改行・`..` は拒む・置き場所は Hermes の root の hermes-agent・tools・installs だけ・名前の頭が `.` の段は拒む＝前と同じ）。sandbox の規則は変えない
+- **実物との照合**（sudo 不要・`tests/hermes-real-install-20261118.test.mjs`）：
+  - 実物の出力：本番の launcher が出した runtime command（上の記録の 1 行）をそのまま試験に入れ、受け入れることを確かめる
+  - 実物の常駐：今動いている常駐の gateway の command line（`ps` で読める。hermes の home は読まない）の launcher の script が、4d04303 の `hermes_cli/_launchers.py` の `_launcher_script` の出力と**全文で同じ**（6802 byte）＝入っている Hermes の launcher は 4d04303。その python の path を確かめが受け入れる。常駐が見えない時と `HERMES_SRC` が無い時は skip
+  - 通し試験（`tests/hermes-chain-20261118.test.mjs`）の偽物の python の置き場所も実物と同じ名前（`+` 入り）にし、本物の sandbox の中で動くことを確かめる
+- **確かめの記録**：確かめの結果と途中の知らせ（前の profile の隔離の段の結果・`multiplex_profiles: true` の知らせ）を毎回 store の `hermes-work-logs/<task>-preflight.txt` に残す（鍵・本文は入れない）。止まった時に Human へ表示を聞き直さない
+- **sudo なしで実物に照らす手順**（Claude Code が Human に頼む前に毎回）：`HERMES_SRC=<4d04303 の file の dir> node --test tests/hermes-real-install-20261118.test.mjs tests/hermes-legacy-isolate-20261118.test.mjs tests/hermes-home-layout-20261118.test.mjs tests/hermes-chain-20261118.test.mjs`。`HERMES_SRC` の file は `gh api -H "Accept: application/vnd.github.raw" "repos/NousResearch/hermes-agent/contents/<path>?ref=4d04303818b61bf3aa09278af48356315515965b"` で取り、試験が git の blob の sha で照らす
+- **再実行と再起動の時の状態**：業務の home（`e-nexus-work`）は 19:46 の回に作られ、中は空のフォルダと決まった SOUL.md だけ（probe は動いていない）＝次の確かめもそのまま通る（2 回目以降の確かめは試験で確かめた）。前の profile は parked のまま＝常駐が再起動しても serve しない。次の確かめで（印は前の回の物なので待たずに 1 回だけ）常駐の記録と `lsof` を見て、外れていれば `e-nexus-legacy/` へ移す。常駐の gateway・`multiplex_profiles` は変えない
+- **止まった時の手がかり**（監査 11-18 夜・4 回目）：probe で止まったら、業務の home の一覧と Hermes 自身の log の末尾を sandbox の外（hermes の権限・上限つき・鍵の形は伏せる）で読み `<task>-probe-diag.txt` に残す（拒否の行は macOS が出さない・in-process の -z は会話の間 stdout と logging を止める）。確かめの初めに同じ依頼の前の回の記録を消し、記録の頭に時刻（`at=`）を書く。probe の時間は 120 秒（無効な鍵＝課金なし・in-process の起動は重い）
+- **独立監査**（2026-11-18 夜・4 回目・1 名）：実物の 1 行で古い・新しい確かめを比べ原因を確かめた。`+` の許しは argv だけで安全。launcher より後の段（active_profile・`_prepare_agent_startup`・鍵の解決〈auth.json の書きの EPERM は全部の呼び手で抑えられ、環境変数の鍵に落ちる〉・401 の文・2 回目の `prepareWorkHome`）を 4d04303 の code で歩き、次の `--check-only` は launcher を必ず通り、401 まで届くのが約 65%（残りは Anthropic の SDK の有無・時間・拾えない拒否）と見積もった。指摘 medium 2・low 1 を全部直した（手がかり・120 秒・前の回の記録）
+- **まだ確かめていないこと**（実機）：本物の Hermes の in-process の起動が sandbox の中で 401 まで届くか（Anthropic の SDK が in-process の python の依存に入っているか・時間）。これより先は入っている Hermes の依存（hermes の home・700）を読めないと手元で動かせない
 

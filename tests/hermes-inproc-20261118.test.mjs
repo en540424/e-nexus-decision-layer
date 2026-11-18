@@ -61,11 +61,11 @@ function world(main = FAKE_MAIN) {
   const root = path.join(H, '.hermes');
   const work = path.join(root, 'e-nexus-work');
   const code = path.join(root, 'hermes-agent');
-  for (const p of [path.join(code, 'hermes_cli'), path.join(root, 'tools/py/bin'), path.join(root, 'installs'), path.join(work, 'cwd'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(U, 'Shared/w/inbox'), path.join(U, 'Shared/w/outbox')]) mkdirSync(p, { recursive: true });
+  for (const p of [path.join(code, 'hermes_cli'), path.join(root, 'tools/python-3.14.7+20260901-darwin-arm64/bin'), path.join(root, 'installs'), path.join(work, 'cwd'), path.join(H, '.local/bin'), path.join(H, 'work'), path.join(U, 'Shared/w/inbox'), path.join(U, 'Shared/w/outbox')]) mkdirSync(p, { recursive: true });
   writeFileSync(path.join(code, 'hermes_bootstrap.py'), '');
   writeFileSync(path.join(code, 'hermes_cli/__init__.py'), '');
   writeFileSync(path.join(code, 'hermes_cli/main.py'), main);
-  const py = path.join(root, 'tools/py/bin/python3');
+  const py = path.join(root, 'tools/python-3.14.7+20260901-darwin-arm64/bin/python3');
   if (PYTHON) symlinkSync(PYTHON, py);
   writeFileSync(path.join(U, 'Shared/w/inbox', `${TASK}.json`), 'req');
   const params = { USERS_ROOT: U, HERMES_ROOT: root, WORK_HOME: work, LOCAL_BIN: path.join(H, '.local/bin'), USAGE_FILE: path.join(H, 'work/u.json'), REQUEST: path.join(U, 'Shared/w/inbox', `${TASK}.json`), BRIEF: path.join(U, 'Shared/w/brief.json'), RESULT: path.join(U, 'Shared/w/outbox', `${TASK}.json`), SYSTEM_TMP: '/private/var/folders' };

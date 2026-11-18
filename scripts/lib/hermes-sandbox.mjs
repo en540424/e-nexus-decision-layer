@@ -192,7 +192,13 @@ export function runtimeBootstrap(hermesRoot) {
     + "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', str(__import__('hermes_constants').get_default_hermes_root())); "
     + RUNTIME_ENTRY;
 }
-const PY_SEG = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+/**
+ * python の path の字（sandbox の profile に埋めない＝argv だけ）。Hermes の store の python は python-build-standalone の版の名前の dir に在り、
+ * 版の名前に + が入る（本番の launcher が出した path：~/.hermes/tools/python-3.14.7+20260901-darwin-arm64/bin/python3。
+ * 2026-11-18 夜の --check-only は + を拒んで hermes_launcher_unexpected で止まった）。空白・引用符・$・` など shell と SBPL で意味の在る字は許さない
+ */
+const PY_PATH = /^\/[A-Za-z0-9._+/-]{1,400}$/;
+const PY_SEG = /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/;
 export function inProcessCommand(printed, hermesRoot) {
   const line = String(printed ?? '').split('\n').map((l) => l.trim()).filter(Boolean).pop();
   let cmd;
@@ -200,7 +206,7 @@ export function inProcessCommand(printed, hermesRoot) {
   if (!Array.isArray(cmd) || cmd.length !== 4 || !cmd.every((x) => typeof x === 'string')) return null;
   const [py, iso, dashC, boot] = cmd;
   if (iso !== '-I' || dashC !== '-c') return null;
-  if (!SAFE_PATH.test(py) || !SAFE_PATH.test(hermesRoot) || !py.startsWith(`${hermesRoot}/`)) return null;
+  if (!PY_PATH.test(py) || !SAFE_PATH.test(hermesRoot) || !py.startsWith(`${hermesRoot}/`)) return null;
   const segs = py.slice(hermesRoot.length + 1).split('/');
   if (!['hermes-agent', 'tools', 'installs'].includes(segs[0]) || segs.length < 2 || !segs.every((x) => PY_SEG.test(x)) || !/^python3(\.\d+)?$/.test(segs.at(-1))) return null;
   if (boot !== runtimeBootstrap(hermesRoot)) return null;
