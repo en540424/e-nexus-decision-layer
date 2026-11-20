@@ -337,15 +337,25 @@ export const bounded = (run, { writes = false } = {}) => async (ctx) => {
   const small = Object.fromEntries(Object.entries(out.result).filter(([, v]) => (v === null || typeof v !== 'object') && jsonBytes(v) <= 1500).slice(0, 8));
   return { ...out, result: { ...small, result_trimmed: true } };
 };
-const entry = (run, opts) => ({ resumable: true, group: 'dropbox', run: bounded(run, opts) }); // group：機能ごとの回路遮断（runner）。Dropbox の障害で Task Hub 全体を PAUSE にしない
+function requireFullAccess(run) {
+  return (ctx) => {
+    if (ctx.config?.dropbox?.businesses?.[ctx.task.business]?.read_only === true) {
+      throw fail('dropbox_read_only', { expected: true });
+    }
+    return run(ctx);
+  };
+}
+
+const readEntry = (run) => ({ resumable: true, group: 'dropbox', run: bounded(run) });
+const entry = (run, opts) => ({ resumable: true, group: 'dropbox', run: bounded(requireFullAccess(run), opts) }); // group：機能ごとの回路遮断（runner）。Dropbox の障害で Task Hub 全体を PAUSE にしない
 /** Dropbox に触らない handler（手元の写しだけ）。機能ごとの回路遮断の対象にしない＝動いても Dropbox の失敗の数えを戻さない */
-const localEntry = (run, opts) => ({ resumable: true, run: bounded(run, opts) });
+const localEntry = (run, opts) => ({ resumable: true, run: bounded(requireFullAccess(run), opts) });
 const W = { writes: true };
 
 export const BUSINESS_HANDLERS = Object.freeze({
-  'dropbox.search': entry(dropboxSearch),
-  'dropbox.list': entry(dropboxList),
-  'schedule.read': entry(scheduleRead),
+  'dropbox.search': readEntry(dropboxSearch),
+  'dropbox.list': readEntry(dropboxList),
+  'schedule.read': readEntry(scheduleRead),
   'schedule.backup': entry(scheduleBackup, W),
   'schedule.backup.list': localEntry(scheduleBackupList),
   'schedule.restore': entry(scheduleRestore, W),

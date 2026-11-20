@@ -130,6 +130,7 @@ export function loadScopes(cfg) {
       if (!Array.isArray(v) || v.length > 50) throw new ScopeError('dropbox_config_invalid');
       return v.map((x) => { const n = normPath(x); if (!n) throw new ScopeError('dropbox_config_invalid'); return n; });
     };
+    if (s.read_only !== undefined && typeof s.read_only !== 'boolean') throw new ScopeError('dropbox_config_invalid');
     const out_ = normPath(s.output_root);
     if (!out_) throw new ScopeError('dropbox_config_invalid');
     // 名前で読ませない語の追加（任意）。畳んだ形で持つ。空・長すぎる・制御文字・多すぎるは誤り（広げるだけの設定なので、誤りは閉じる側）
@@ -143,6 +144,7 @@ export function loadScopes(cfg) {
     if ([...scope.schedule_files, ...scope.estimate_roots].some((p) => scope.deny_roots.some((d) => underWide(p, d)))) throw new ScopeError('dropbox_config_invalid');
     // 許可フォルダ・工程表・見積の原本の名前そのものが拒む語を含む設定も矛盾（下は全部が読めなくなる）。何が原因かを config の誤りと分けて示す
     if ([...scope.read_roots, ...scope.schedule_files, ...scope.estimate_roots].some((p) => nameDenied(p, deny_names))) throw new ScopeError('dropbox_config_denied_name');
+    if (s.read_only === true) scope.read_only = true;
     out.set(b, Object.freeze(scope));
   }
   // 出力の場所は business ごとに分ける（重なれば他の business の karte を書き換えうる）

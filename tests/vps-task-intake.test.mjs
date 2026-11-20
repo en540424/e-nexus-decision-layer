@@ -918,3 +918,97 @@ test('CLI の pull：時計が進まなくても（同じ ms）ページと ack 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('E2E: scoped Dropbox requests return only allowed results to the originating Bot', async () => {
+  const { ingestInbox } = await import('../scripts/lib/task-hub/intake.mjs');
+  const { runOnce } = await import('../scripts/lib/task-hub/runner.mjs');
+  const { makeEnv } = await import('./task-hub-helpers.mjs');
+  const { calendarWorkbook } = await import('./xlsx-calendar-fixture.mjs');
+  const date = '2026-11-09';
+  const calendar = calendarWorkbook({ sheets: [{ name: 'Test', start: date, days: 7,
+    labels: [{ r: 3, a: '試験班' }], items: [{ date, r: 3, text: '模擬予定' }] }] });
+  const intents = ['dropbox.list', 'dropbox.search', 'schedule.read'];
+  const env = await boot({ sources: {
+    'bot-front': { key_sha256: sha(BOT_A), businesses: ['biz-a'], intents },
+    'bot-back': { key_sha256: sha(BOT_B), businesses: ['biz-b'], intents },
+  } });
+  const mac = makeEnv({ config: {
+    sources: {
+      'bot-front': { channels: [CHANNEL], businesses: ['biz-a'], intents },
+      'bot-back': { channels: [CHANNEL], businesses: ['biz-b'], intents },
+    },
+    dropbox: { businesses: { 'biz-a': {
+      read_only: true,
+      read_roots: ['/sites'],
+      schedule_files: ['/calendar.xlsx'],
+      deny_roots: ['/sites/estimates'],
+      deny_names: ['元請'],
+      output_root: '/output',
+    } } },
+  } });
+  try {
+    const task = (id, intent, params, business = 'biz-a') => submitArgs(id, { intent, business, params });
+    const good = task(801, 'dropbox.list', { path: '/sites' });
+    const excluded = task(802, 'dropbox.list', { path: '/sites/元　請/child' });
+    const search = task(803, 'dropbox.search', { query: 'active' });
+    const schedule = task(806, 'schedule.read', { date });
+    for (const req of [good, excluded, search, schedule]) {
+      assert.equal((await tool(env, BOT_A, 'submit_task', req)).data.state, 'received');
+    }
+    assert.equal((await tool(env, BOT_A, 'submit_task', task(804, 'karte.create', {}))).data.error, 'intent_not_allowed');
+    assert.equal((await tool(env, BOT_A, 'submit_task', task(805, 'dropbox.list', { path: '/sites' }, 'biz-b'))).data.error, 'business_not_allowed');
+
+    const now = () => (env.clock.t += 1000);
+    const keychain = (name) => ({ [KEYCHAIN_URL]: env.url, [keychainKeyTarget(CHANNEL)]: KEY_HEX })[name] ?? null;
+    const pulled = await runSync({ argv: ['pull', '--inbox', mac.inbox], keychain, fetchImpl: globalThis.fetch, now });
+    assert.equal(pulled.written, 4);
+    await ingestInbox(mac.inbox, { store: mac.store, policy: mac.policy, keyFor: () => KEY, now: now() });
+    const entries = [
+      { path: '/sites/active.txt', name: 'active.txt', tag: 'file' },
+      { path: '/sites/元　請/hidden.txt', name: 'hidden.txt', tag: 'file' },
+      { path: '/sites/estimates/restricted.txt', name: 'restricted.txt', tag: 'file' },
+      { path: '/outside/unrelated.txt', name: 'unrelated.txt', tag: 'file' },
+    ];
+    const reader = {
+      download: async (file) => {
+        assert.equal(file, '/calendar.xlsx');
+        return { bytes: calendar, meta: { rev: 'test-revision' } };
+      },
+      list: async (folder) => {
+        assert.equal(folder, '/sites');
+        return { entries: [...entries] };
+      },
+      search: async (query, options) => {
+        assert.equal(query, 'active');
+        assert.equal(options.path, '/sites');
+        return entries;
+      },
+    };
+    const services = { dropbox: (role) => {
+      assert.equal(role, 'read');
+      return reader;
+    } };
+    await runOnce({ ...mac, now, config: { ...mac.config, services } });
+    const pushed = await runSync({ argv: ['push', '--outbox', path.join(mac.root, 'store', 'outbox'),
+      '--sent', path.join(mac.root, 'store', 'outbox-sent')], keychain, fetchImpl: globalThis.fetch, now });
+    assert.equal(pushed.code, 'pushed');
+    const status = async (bearer, req) => (await tool(env, bearer, 'get_task_status', { task_ref: req.idempotency_key })).data;
+    const listed = await status(BOT_A, good);
+    assert.equal(listed.state, 'succeeded');
+    assert.deepEqual(listed.result.result.entries.map(({ name }) => name), ['active.txt']);
+    const found = await status(BOT_A, search);
+    assert.equal(found.state, 'succeeded');
+    assert.deepEqual(found.result.result.files.map(({ name }) => name), ['active.txt']);
+    const scheduled = await status(BOT_A, schedule);
+    assert.equal(scheduled.state, 'succeeded');
+    assert.equal(scheduled.result.result.mode, 'calendar');
+    assert.match(JSON.stringify(scheduled.result.result), /模擬予定/);
+    const denied = await status(BOT_A, excluded);
+    assert.equal(denied.state, 'failed');
+    assert.equal(denied.result.code, 'dropbox_path_not_allowed');
+    assert.equal((await status(BOT_B, good)).state, 'unknown');
+  } finally {
+    rmSync(mac.root, { recursive: true, force: true });
+    await cleanup(env);
+  }
+});

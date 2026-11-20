@@ -32,7 +32,7 @@ export async function businessCycle({ store = DEFAULT_STORE, now = Date.now(), s
   // dropbox の節が壊れている＝config_invalid（休眠と区別して見張りに出す・監査 nit 8）。他の誤りは Task Hub の側が知らせる
   try { cfg = validateConfig(raw); } catch (e) { return /dropbox/.test(String(e?.message)) ? write(store, { code: 'config_invalid', exit: 1 }, now) : { code: 'not_configured', exit: 0 }; }
   const scopes = loadScopes(cfg.dropbox);
-  const targets = [...scopes.values()].filter((s) => s.schedule_files.length);
+  const targets = [...scopes.values()].filter((s) => !s.read_only && s.schedule_files.length);
   if (!targets.length) return { code: 'not_configured', exit: 0 };
   const svc = services(cfg);
   const prev = readJson(path.join(store, BUSINESS_LAST)) ?? {};
