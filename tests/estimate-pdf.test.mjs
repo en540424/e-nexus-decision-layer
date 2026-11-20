@@ -33,7 +33,7 @@ test('real renderer preserves the workbook and combines selected printed pages i
     }));
     writeFileSync(source, input);
     const selection = [{ sheet: '内訳', page: 2, expected_text: 'DETAIL-TWO' },
-      { sheet: '見積', page: 1, expected_text: '300000' }, { sheet: '内訳', page: 1, expected_text: 'DETAIL-ONE' }];
+      { sheet: '見積', page: 1, expected_text: '現場A 足場工事' }, { sheet: '内訳', page: 1, expected_text: 'DETAIL-ONE' }];
     writeFileSync(selected, JSON.stringify(selection));
     const run = (target) => spawnSync(python, [script, source, selected, target], { encoding: 'utf8', timeout: 50_000 });
     const render = run(output);
@@ -44,6 +44,7 @@ test('real renderer preserves the workbook and combines selected printed pages i
     const pages = JSON.parse(content.stdout);
     assert.match(pages[0], /DETAIL-TWO/, JSON.stringify(pages));
     assert.match(pages[1], /300000/);
+    assert.match(pages[1], /現場A 足場工事/);
     assert.match(pages[2], /DETAIL-ONE/);
     assert.deepEqual(readFileSync(source), input);
     writeFileSync(selected, JSON.stringify([{ sheet: '内訳', page: 99, expected_text: 'DETAIL-TWO' }]));

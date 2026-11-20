@@ -8,6 +8,7 @@ import re
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import unicodedata
 from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
@@ -58,6 +59,26 @@ def check_renderer(soffice):
         raise ValueError('sheet_range_unsupported')
 
 
+def renderer_environment(work):
+    env = os.environ.copy()
+    if sys.platform != 'darwin' or env.get('FONTCONFIG_FILE'):
+        return env
+    # Bundled headless LibreOffice can miss Japanese fallback on macOS.
+    fontconfig = etree.Element('fontconfig')
+    for directory in ('/System/Library/Fonts', '/Library/Fonts', str(Path.home() / 'Library/Fonts')):
+        etree.SubElement(fontconfig, 'dir').text = directory
+    etree.SubElement(fontconfig, 'cachedir').text = str(work / 'font-cache')
+    for family in ('sans-serif', '游ゴシック', 'メイリオ'):
+        alias = etree.SubElement(fontconfig, 'alias')
+        etree.SubElement(alias, 'family').text = family
+        fallback = etree.SubElement(alias, 'accept')
+        etree.SubElement(fallback, 'family').text = 'Arial Unicode MS'
+    config = work / 'fonts.conf'
+    config.write_bytes(etree.tostring(fontconfig, encoding='UTF-8', xml_declaration=True))
+    env['FONTCONFIG_FILE'] = str(config)
+    return env
+
+
 def parse_selection(selection):
     if not isinstance(selection, list) or not 1 <= len(selection) <= MAX_PAGES:
         raise ValueError('invalid_selection')
@@ -78,6 +99,7 @@ def convert(source, destination, selection, soffice):
     with TemporaryDirectory(prefix='estimate-print-') as directory, ZipFile(source) as archive:
         work = Path(directory)
         visible = inspect_workbook(archive)
+        env = renderer_environment(work)
         if any(entry['sheet'] not in visible for entry in selection):
             raise ValueError('sheet_not_available')
         rendered = {}
@@ -94,7 +116,7 @@ def convert(source, destination, selection, soffice):
                      '--headless', '--norestore', '--convert-to', pdf_filter,
                      '--outdir', str(work), str(workbook)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=45, check=False,
+                    stderr=subprocess.DEVNULL, timeout=45, check=False, env=env,
                 )
                 pdf = workbook.with_suffix('.pdf')
                 if process.returncode != 0 or not pdf.is_file() or pdf.stat().st_size > 32 * 1024 * 1024:

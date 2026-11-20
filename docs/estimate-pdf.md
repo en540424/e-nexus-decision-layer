@@ -19,4 +19,4 @@ python3 scripts/lib/pdf/estimate-pages.py estimate.xlsx selection.json output.pd
 [{"sheet":"表紙","page":1,"expected_text":"見積番号 A123"},{"sheet":"詳細","page":1,"expected_text":"項目A"},{"sheet":"詳細","page":2,"expected_text":"項目B"}]
 ```
 
-Pythonのlxmlとpypdf、LibreOfficeが必要。試験データで順序、計算値、原本のバイト不変性、存在しないページの拒否を確認。実際のExcelとLibreOfficeの印刷差（フォント、改ページ、倍率、書式など）は残る。Macの試験環境では標準の模擬ブックで一部の日本語字形が描画されなかった。承認済みひな形と元の印刷結果による照合と、無人実行の隔離・レイアウト確認を終えるまでは本番の自動返却に使わない。
+Pythonのlxmlとpypdf、LibreOfficeが必要。試験データで順序、計算値、原本のバイト不変性、存在しないページの拒否を確認。実際のExcelとLibreOfficeの印刷差（フォント、改ページ、倍率、書式など）は残る。macOSでは変換プロセス専用のFontconfigを使用する。既定の描画で欠けていた日本語は模擬帳票で確認できるようになった。日本語フォントの代替は元の印刷と同じ字幅を保証しない。実帳票コピーで、表紙の分割と内訳の印刷範囲による1ページ出力を確認した。承認済みひな形と元の印刷結果による照合と、無人実行の隔離・レイアウト確認を終えるまでは本番の自動返却に使わない。
