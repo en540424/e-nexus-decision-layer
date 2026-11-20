@@ -106,7 +106,7 @@ export function browsable(scope, path) {
 export function matchRoot(scope, path, kind = 'any') {
   const p = normPath(path);
   if (!p) return null;
-  const roots = kind === 'browse' ? scope.read_roots : kind === 'estimate' ? scope.estimate_roots : [...scope.read_roots, ...scope.estimate_roots];
+  const roots = kind === 'browse' ? scope.read_roots : kind === 'estimate' ? scope.estimate_roots : kind === 'pdf' ? scope.pdf_roots ?? [] : [...scope.read_roots, ...scope.estimate_roots];
   const literal = roots.filter((r) => under(p, r)).sort((x, y) => y.length - x.length)[0];
   if (literal) return { root: literal, rest: p.split('/').slice(literal.split('/').length) };
   const f = foldPath(p);
@@ -144,6 +144,10 @@ export function loadScopes(cfg) {
     if ([...scope.schedule_files, ...scope.estimate_roots].some((p) => scope.deny_roots.some((d) => underWide(p, d)))) throw new ScopeError('dropbox_config_invalid');
     // 許可フォルダ・工程表・見積の原本の名前そのものが拒む語を含む設定も矛盾（下は全部が読めなくなる）。何が原因かを config の誤りと分けて示す
     if ([...scope.read_roots, ...scope.schedule_files, ...scope.estimate_roots].some((p) => nameDenied(p, deny_names))) throw new ScopeError('dropbox_config_denied_name');
+    if (s.pdf_roots !== undefined) {
+      scope.pdf_roots = list('pdf_roots');
+      if (scope.pdf_roots.some((p) => denied(scope, p))) throw new ScopeError('dropbox_config_invalid');
+    }
     if (s.read_only === true) scope.read_only = true;
     out.set(b, Object.freeze(scope));
   }
@@ -169,6 +173,7 @@ export function assertReadable(scope, path, kind = 'any') {
     any: () => scope.read_roots.some((r) => under(p, r)) || scope.estimate_roots.some((r) => under(p, r)) || scope.schedule_files.some((f) => f.toLowerCase() === p.toLowerCase()),
     schedule: () => scope.schedule_files.some((f) => f.toLowerCase() === p.toLowerCase()),
     estimate: () => scope.estimate_roots.some((r) => under(p, r)),
+    pdf: () => (scope.pdf_roots ?? []).some((r) => under(p, r)),
     browse: () => browsable(scope, p),
   }[kind]?.();
   if (!ok) throw new ScopeError('dropbox_path_not_allowed');

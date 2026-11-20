@@ -77,6 +77,18 @@
       "usage": "params: {\"title\":\"<1-120 chars>\",\"body\":\"<1-2000 chars>\",\"kind\":\"<optional: ops_review = Hermes reviews Task Hub states, failures and waiting items>\"}. No other keys. It runs only after a human approves it on the Mac.",
       "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
     },
+    "dropbox.pdf.fetch": {
+      "class": "human_required", "handler": "dropbox.pdf.fetch", "timeout_ms": 60000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["path", "rev"], "additionalProperties": false, "properties": { "path": { "type": "string", "minLength": 5, "maxLength": 1024, "pattern": "^/" }, "rev": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9]+$" } } },
+      "note": "Mac local CLI only. Stages a Human-approved PDF revision locally; no attachment or link is sent."
+    },
+    "dropbox.pdf.search": {
+      "class": "auto", "handler": "dropbox.pdf.search", "timeout_ms": 30000,
+      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "params_schema": { "type": "object", "required": ["query", "path"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 200 }, "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "note": "Mac local CLI only. Searches explicitly configured PDF roots by filename and returns candidates for selection."
+    },
     "dropbox.search": {
       "class": "auto", "handler": "dropbox.search", "timeout_ms": 30000, "max_params_bytes": 14000,
       "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },

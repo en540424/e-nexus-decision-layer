@@ -38,7 +38,11 @@ test('read-only Dropbox allows scoped reads and blocks every other business hand
   assert.deepEqual(read.result.entries.map((item) => item.name), ['active']);
   for (const [intent, handler] of Object.entries(BUSINESS_HANDLERS)) {
     if (['dropbox.list', 'dropbox.search', 'schedule.read'].includes(intent)) continue;
-    await assert.rejects(async () => handler.run(context), { code: 'dropbox_read_only' }, intent);
+    const pdfIntent = intent.startsWith('dropbox.pdf.');
+    const local = { ...context, task: { ...context.task, source: 'human-cli' } };
+    await assert.rejects(async () => handler.run(local), {
+      code: pdfIntent ? 'dropbox_pdf_not_configured' : 'dropbox_read_only',
+    }, intent);
   }
   const invalid = structuredClone(dropbox);
   invalid.businesses['e-step'].read_only = 'true';

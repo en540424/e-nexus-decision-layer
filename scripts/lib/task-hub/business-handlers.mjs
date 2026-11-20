@@ -14,11 +14,11 @@
  *   日本語の名前は 1 文字 3 bytes＝一覧 100 件・カルテ 6000 字・工程表の 30 行はどれも越える。読む handler は bytes で数えて手前で切り（truncated）、
  *   それでも越えた結果は想定内の result_too_large で終える（依頼 1 つの大きさで Task Hub 全体を止めない）
  */
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveReal } from '../dropbox/resolve.mjs';
-import { browsable, foldPath, loadScopes, nameDenied, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
+import { assertReadable, browsable, foldPath, loadScopes, nameDenied, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
 import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, decodeKarte, KarteError, newKarte, provenance, sectionText, unknownSections } from '../business/karte.mjs';
 import { backupSchedule, BackupError, listGenerations, restoreGeneration } from '../business/schedule-backup.mjs';
 import { addAiSheet, estimateSheetXml, readCalendar, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
@@ -106,6 +106,58 @@ const dropboxList = ({ task, config, signal }) => guarded(async () => {
   // 名前だけ返す（path は依頼の path＋名前＝同じ文字を 100 回返さない）。bytes の上限の手前で切る（切ったら truncated）
   const { kept, cut } = fitList(r.entries.slice(0, 100).map((e) => ({ tag: e.tag, name: e.name, ...(e.tag === 'file' ? { size: e.size, server_modified: e.server_modified } : {}) })));
   return { result: { path: p, count: r.entries.length, truncated: r.truncated || r.entries.length > kept.length, entries: kept, ...(r.entries.length > kept.length ? { returned: kept.length } : {}) } };
+});
+
+const pdfSearch = ({ task, config, signal }) => guarded(async () => {
+  // Until a requester-bound delivery channel is approved, even the file names stay on the Mac.
+  if (task.source !== 'human-cli') throw new ScopeError('dropbox_pdf_local_only');
+  const scope = scopeOf(scopesOf(config), task.business);
+  if (!scope.pdf_roots?.length) throw new ScopeError('dropbox_pdf_not_configured');
+  const { path: requested, query } = task.params;
+  if (nameDenied(query, scope.deny_names)) throw new ScopeError('dropbox_path_not_allowed');
+  const client = services(config).dropbox('read');
+  const root = await resolveReal(client, scope, requested, 'pdf', { signal });
+  const hits = await client.search(query, { path: root, max: SEARCH_MAX, filenameOnly: true, signal });
+  const candidates = hits.flatMap((hit) => {
+    if (typeof hit.path !== 'string' || !/\.pdf$/i.test(hit.path) || !withinRoot(root, hit.path)) return [];
+    try { assertReadable(scope, hit.path, 'pdf'); } catch (error) {
+      if (error instanceof ScopeError) return [];
+      throw error;
+    }
+    return [{ path: hit.path, rev: hit.rev, size: hit.size, server_modified: hit.server_modified }];
+  });
+  const { kept, cut } = fitList(candidates);
+  return { result: { candidates: kept, selection_required: true, truncated: cut > 0 || candidates.length >= SEARCH_MAX } };
+});
+
+const pdfFetch = ({ task, config, signal }) => guarded(async () => {
+  if (task.source !== 'human-cli') throw new ScopeError('dropbox_pdf_local_only');
+  const scope = scopeOf(scopesOf(config), task.business);
+  if (!scope.pdf_roots?.length) throw new ScopeError('dropbox_pdf_not_configured');
+  const { path: requested, rev } = task.params;
+  if (!/\.pdf$/i.test(requested) || !/^[a-zA-Z0-9]{1,64}$/.test(rev)) throw new ScopeError('dropbox_pdf_selection_invalid');
+  const svc = services(config);
+  const reader = svc.dropbox('read');
+  const file = await resolveReal(reader, scope, requested, 'pdf', { signal });
+  const { bytes, meta } = await reader.download(file, { maxBytes: 24 * 1024 * 1024, signal });
+  if (meta.rev !== rev || assertReadable(scope, meta.path, 'pdf') !== file) throw new ScopeError('dropbox_pdf_revision_changed');
+  if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw new ScopeError('dropbox_pdf_invalid');
+  const key = createHash('sha256').update(task.task_id).digest('hex');
+  const dir = path.join(svc.backupDir, task.business, 'pdf-staging');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const target = path.join(dir, `${key}.pdf`);
+  const partial = path.join(dir, `.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(partial, bytes, { mode: 0o600, flag: 'wx' });
+    try { linkSync(partial, target); } catch (error) {
+      if (error.code !== 'EEXIST' || !readFileSync(target).equals(bytes)) throw error;
+    }
+  } finally {
+    try { unlinkSync(partial); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return { result: { staged: true, size: bytes.length, local_ref: `${key}.pdf` } };
 });
 
 // ─── 工程表（読むだけ・バックアップ・別の file への復元）───
@@ -354,6 +406,8 @@ const W = { writes: true };
 
 export const BUSINESS_HANDLERS = Object.freeze({
   'dropbox.search': readEntry(dropboxSearch),
+  'dropbox.pdf.search': readEntry(pdfSearch),
+  'dropbox.pdf.fetch': readEntry(pdfFetch),
   'dropbox.list': readEntry(dropboxList),
   'schedule.read': readEntry(scheduleRead),
   'schedule.backup': entry(scheduleBackup, W),
