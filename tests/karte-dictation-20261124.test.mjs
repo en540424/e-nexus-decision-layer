@@ -107,3 +107,30 @@ test('書き出し：dictation-input-v1 の形（必須の項目・余分な項�
     assert.equal(toDictationInput({ id: 'x', text: 'a' }), null, '現場の手がかりが無い行は書き出さない');
   } finally { s.cleanup(); }
 });
+
+test('--out-dir（APP 側の dictation-diff の --input の形）：1 口述＝1 file の JSON（dictation-diff と同じ読み方で読める）・2 回目は上書きしない・--out と --out-dir はどちらか 1 つ', async () => {
+  const s = setup();
+  try {
+    await s.human(dict());
+    await s.human({ kind: 'dictation', text: '搬入は西側', case_ref: 'case-x1' });
+    const dir = path.join(mkdtempSync(path.join(tmpdir(), 'dict-dir-')), 'inputs');
+    const store = path.join(s.env.root, 'store');
+    assert.equal(main(['--business', 'biz-a', '--out-dir', dir, '--store', store], { out: () => {}, err: () => {} }), 0);
+    const { readdirSync } = await import('node:fs');
+    const files = readdirSync(dir).sort();
+    assert.equal(files.length, 2);
+    for (const f of files) {
+      const x = JSON.parse(readFileSync(path.join(dir, f), 'utf8').replace(new RegExp(`^${String.fromCharCode(0xfeff)}`), '')); // dictation-diff の readJson と同じ
+      assert.equal(x.schema, 'dictation-input-v1');
+      assert.equal(`${x.input_id}.json`, f);
+      assert.equal(statSync(path.join(dir, f)).mode & 0o777, 0o600);
+    }
+    const before = readFileSync(path.join(dir, files[0]), 'utf8');
+    const msgs = [];
+    assert.equal(main(['--business', 'biz-a', '--out-dir', dir, '--store', store], { out: (m) => msgs.push(m), err: () => {} }), 0);
+    assert.equal(readFileSync(path.join(dir, files[0]), 'utf8'), before);
+    assert.ok(msgs.some((m) => m.includes('上書きしない')));
+    assert.equal(main(['--business', 'biz-a', '--out', path.join(dir, 'a.jsonl'), '--out-dir', dir], { out: () => {}, err: () => {} }), 2);
+    assert.equal(main(['--business', 'biz-a'], { out: () => {}, err: () => {} }), 2);
+  } finally { s.cleanup(); }
+});

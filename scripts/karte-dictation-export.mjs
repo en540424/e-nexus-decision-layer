@@ -3,7 +3,10 @@
  * 現場の口述の記録（Task Hub の note.record kind "dictation"）を、APP 側（karte-adapter の dictation-diff）の入力の形 `dictation-input-v1` の JSONL に書き出す
  * （2026-11-24・Human 決定 E）。読むだけ（Task Hub の記録）・通信なし・Dropbox に書かない。
  *
- *   node scripts/karte-dictation-export.mjs --business <b> --out <file> [--since YYYY-MM-DD] [--store <dir>]
+ *   node scripts/karte-dictation-export.mjs --business <b> (--out <file.jsonl> | --out-dir <dir>) [--since YYYY-MM-DD] [--store <dir>]
+ *
+ * --out-dir（2026-11-24）：1 つの口述＝1 つの <input_id>.json（APP 側の dictation-diff の --input は 1 file に 1 つの JSON を読む＝JSONL は読めない）。
+ * 同じ名前の file が在れば書かない（上書きしない・前に書き出した口述はそのまま）
  *
  * - Mac は構造化しない・確定しない（寸法の候補・出所の段階・確認は APP 側と Human）。原文はそのまま渡す
  *   （ただし Task Hub の受け口は文字を NFKC に揃える＝全角の数字・記号は半角になっている。台帳 task-hub-nfkc-text）
@@ -13,7 +16,7 @@
  * exit：0＝書いた／2＝引数・記録の誤り
  */
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,17 +50,23 @@ export function exportDictations(store, business, { since = null } = {}) {
 }
 
 export function main(argv = process.argv.slice(2), { out = console.log, err = console.error } = {}) {
-  const a = { business: null, out: null, since: null, store: DEFAULT_STORE };
+  const a = { business: null, out: null, 'out-dir': null, since: null, store: DEFAULT_STORE };
   for (let i = 0; i < argv.length; i += 2) {
     const k = argv[i];
     const v = argv[i + 1];
-    if (!['--business', '--out', '--since', '--store'].includes(k) || v === undefined) { err('usage: karte-dictation-export.mjs --business <b> --out <file> [--since YYYY-MM-DD] [--store <dir>]'); return 2; }
+    if (!['--business', '--out', '--out-dir', '--since', '--store'].includes(k) || v === undefined) { err('usage: karte-dictation-export.mjs --business <b> (--out <file.jsonl> | --out-dir <dir>) [--since YYYY-MM-DD] [--store <dir>]'); return 2; }
     a[k.slice(2)] = v;
   }
-  if (!a.business || !/^[a-z0-9][a-z0-9-]{1,47}$/.test(a.business) || !a.out || (a.since && !/^\d{4}-\d{2}-\d{2}$/.test(a.since))) { err('usage: karte-dictation-export.mjs --business <b> --out <file> [--since YYYY-MM-DD] [--store <dir>]'); return 2; }
+  if (!a.business || !/^[a-z0-9][a-z0-9-]{1,47}$/.test(a.business) || Boolean(a.out) === Boolean(a['out-dir']) || (a.since && !/^\d{4}-\d{2}-\d{2}$/.test(a.since))) { err('usage: karte-dictation-export.mjs --business <b> (--out <file.jsonl> | --out-dir <dir>) [--since YYYY-MM-DD] [--store <dir>]'); return 2; }
   const store = openStore(a.store);
   const r = exportDictations(store, a.business, { since: a.since });
-  writeFileSync(a.out, r.inputs.map((x) => `${JSON.stringify(x)}\n`).join(''), { mode: 0o600 });
+  if (a.out) writeFileSync(a.out, r.inputs.map((x) => `${JSON.stringify(x)}\n`).join(''), { mode: 0o600 });
+  else {
+    mkdirSync(a['out-dir'], { recursive: true, mode: 0o700 });
+    let kept = 0;
+    for (const x of r.inputs) { const f = path.join(a['out-dir'], `${x.input_id}.json`); if (existsSync(f)) { kept += 1; continue; } writeFileSync(f, `${JSON.stringify(x, null, 2)}\n`, { mode: 0o600, flag: 'wx' }); }
+    if (kept) out(`前に書き出した ${kept} 件はそのまま（上書きしない）`);
+  }
   out(`書き出し ${r.inputs.length} 件${r.skipped ? `（形の合わない記録 ${r.skipped} 件は飛ばした）` : ''}`);
   return 0;
 }

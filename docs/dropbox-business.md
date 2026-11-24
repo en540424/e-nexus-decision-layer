@@ -247,7 +247,7 @@ Grok・Mac の端末から話した・書いた現場の内容は、`note.record
 - Mac は**構造化も確定もしない**。寸法の候補・出所の段階（rough／assumed など）・確認は APP 側の `karte-adapter`（`dictation-input-v1` → `dictation-extraction-v1` → `karte-diff-v1`）と Human の担当。「約 6m」は原文のまま残り、Mac が数値にしない＝APP-039 の正式な計算に混ざらない
 - 同じ現場・同じ日・同じ文の出し直しは 1 件（`duplicate: true`）。訂正は新しい口述として足す（前の行を消さない＝変更の前と後が両方残る）。版の照合・古い版での上書きの拒否は `karte-diff-v1` の側（APP-040）
 - 結果に内部の ID（task・記録）と原文を返さない。返すのは `recorded`・現場名・日付だけ（決定 G）
-- APP 側への渡し方：`node scripts/karte-dictation-export.mjs --business <b> --out <file>` が `dictation-input-v1` の JSONL を書く（`input_id` は Mac の記録から作る固定の値・`case_id` は case_ref か現場名＝H-17 が決まるまでの仮）。置き場所（H-3・H-15）が決まるまで、自動では渡さない
+- APP 側への渡し方：`node scripts/karte-dictation-export.mjs --business <b> --out-dir <dir>` が 1 口述＝1 file の `dictation-input-v1`（`<input_id>.json`・karte-adapter の `dictation-diff.ts --input` がそのまま読む形・2 回目は上書きしない）を書く。`--out <file>` は JSONL（一覧用）（`input_id` は Mac の記録から作る固定の値・`case_id` は case_ref か現場名＝H-17 が決まるまでの仮）。置き場所（H-3・H-15）が決まるまで、自動では渡さない
 - **原文と解析用の文（2026-11-24 に直した）**：受け口は params を NFKC に揃える（鍵の形・見た目の同じ文字の検査のため）。`params.text` が揃えで変わった時は、受け取ったままの文を task の `raw_text` に別に残し、口述の記録は `text`＝原文・`text_normalized`＝揃えた形。承認の digest と params は変えない。見えない文字を含む原文は残さない。書き出し（`dictation-input-v1`）は原文
 - EN司令塔からの e-step の口述は、今は `business_intents` の外＝毎回 Mac で承認（公開は台帳 `dropbox-grok-exposure` の次の段）
 
@@ -258,7 +258,7 @@ Grok・Mac の端末から話した・書いた現場の内容は、`note.record
 | 決定 | 内容 | Mac Runtime の今 |
 |---|---|---|
 | A 原本の完全保護 | 工程表・元請・図面・見積・請求・現場資料を AI が変更・上書き・移動・削除しない。原本の資格情報は読み取り専用 | 実装済み・実機で確認済み：読みの資格情報（scope は metadata.read・content.read だけ）と client（書く呼び出しが無い）の 2 重・本番の書き込み 0 件 |
-| B 読む範囲の拡大・外へ渡す範囲の別管理 | 「元請」の名前だけで全部を断る方針を見直す。Mac で読める範囲と Grok へ渡せる範囲を分ける。給与・名簿・個人情報・認証情報・機密の契約は個別に | **実装済み・模擬で検証済み**：`scope.external`（`allow_roots`・`deny_roots`・`deny_names`。狭めるだけ）で、human-cli 以外の依頼元へ返す名前・中身を絞る（在るか無いかも同じ答え・工程表は丸ごと）。共通の下限（給与・名簿・保険証・Secret など）は Mac でも外でも効く。**本番の config は変えていない**＝元請は今も deny（拡げるのは Human の承認：台帳 `dropbox-read-expansion`） |
+| B 読む範囲の拡大・外へ渡す範囲の別管理 | 「元請」の名前だけで全部を断る方針を見直す。Mac で読める範囲と Grok へ渡せる範囲を分ける。給与・名簿・個人情報・認証情報・機密の契約は個別に | **2026-11-24 に Human 承認・本番に適用・Mac で検収済み**：先に外へ返す範囲（スキャンの全体・作業員の書類の名前）を書き、preflight の後に Mac の読む範囲へ元請・自社の見積と請求書・予定表・資材の単価のフォルダを足した（労務・雇用・資金繰り・社内の契約と書類・重要書類・会社・業者との契約は deny のまま・中身を確かめていない協力会社は足していない）。以下は前の記述：`scope.external`（`allow_roots`・`deny_roots`・`deny_names`。狭めるだけ）で、human-cli 以外の依頼元へ返す名前・中身を絞る（在るか無いかも同じ答え・工程表は丸ごと）。共通の下限（給与・名簿・保険証・Secret など）は Mac でも外でも効く。**本番の config は変えていない**＝元請は今も deny（拡げるのは Human の承認：台帳 `dropbox-read-expansion`） |
 | C AI の一時コピー | 原本はコピーの上で加工。PDF・画像化は Mac の隔離された一時コピー・Excel は作業コピー | 既に在る形：PDF は承認の後に Mac の `pdf-staging`（0600・rev と content_hash を照合）、見積は App folder の AI 作業版（Human の部品は 1 byte も変えない）。`ai-copy` の場所と自動の削除（範囲・保持の期間・失敗の時）は未実装＝Human の承認の後 |
 | D AI 業務フォルダ | EN-AI-Output（karte・estimates・reports・restore）を再利用、ai-copy を候補 | 書きの資格情報は App folder だけ（EN-Reader と別）。`output_root` の下の種類は今の 4 つ。ai-copy は足していない。最初の書き込みは台帳 `dropbox-first-write-acceptance` の後 |
 | E カルテは AI 主体 | 口述の原文・日時・候補・確定値と未確認値・訂正・履歴・参照。1 案件 1 カルテ | 受け付けと原文の記録まで実装（§5-2）。構造化・版・差分は APP 側の karte-adapter を使う（二重に作らない）。Mac の Markdown のカルテは H-3・H-15 まで機能を足さない（§5-1） |
@@ -269,5 +269,5 @@ Grok・Mac の端末から話した・書いた現場の内容は、`note.record
 
 - 一番上にスキャンのフォルダが 2 つ：今使っている側（約 330 file・PDF が 9 割・約 150 MiB・2026-11 まで更新）と、2026-03 に写した前の写し（中身の 98% が今の側と同じ＝足さない）
 - 中は作業員の資格証・安全書類・提出書類が多く、約 1/3 は名前の共通の下限に当たる。**資格証は下限の語に無い**＝名前で絞れない個人の書類が中心
-- 案（未適用・台帳 `dropbox-scan-folder`）：今の側を e-step の read_roots に足し、`external.deny_roots` で同じフォルダを外へ返さない＝Mac の端末（human-cli）だけが一覧・検索できる。PDF の取り出しは `pdf_roots` の別の承認と、毎回の Mac での承認
+- **2026-11-24 に Human 承認・適用**：今の側を e-step の read_roots と pdf_roots に足し、`external.deny_roots` で同じフォルダを外へ返さない＝Mac の端末（human-cli）だけが一覧・検索・PDF の写しの取り出し（毎回 Mac で承認）をできる。前の写しは足していない。Mac の検収：一覧 succeeded・外の依頼元は在る場所も無い場所も `dropbox_path_not_allowed`（本番の config と実の Dropbox で handler を直に呼んで確かめた）
 - 画像だけの PDF の文字の検索（OCR）は、この Mac の今の道具に無い。新しい有料の OCR は入れない（必要なら別の判断）

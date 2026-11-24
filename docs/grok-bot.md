@@ -141,9 +141,9 @@ Human が「人間が作ったタブ 1 と 2 は触らないで」と言わな�
 
 `get_task_status` の結果（Mac が返す板の本文）にも、失敗（failed・rejected・expired・stopped・blocked）と承認待ち（awaiting_approval）の時は `next`（同じ表の決まった文）を付けた。Bot は `get_task_status` 1 回で、誰が何をするか・出し直してよいかが分かる。承認待ちの `next` は「Mac で Human の承認を待っている・出し直さない」。VPS の道具の説明にも `result.next` の読み方を足した（**VPS への反映は Human の connect-from-mac.sh の 1 回**＝§9 と同じ回でよい）。Mac の側は working tree から 5 分ごとの回が読むので、その場で本番に効く。
 
-## 9. 承認の単位：EN司令塔に E-STEP の Dropbox の読むだけを開き、実機で往復を検収する（2026-11-24・**未承認・未適用**）
+## 9. 承認の単位：EN司令塔に E-STEP の Dropbox の読むだけを開き、実機で往復を検収する（2026-11-24・**Human 承認済み・Mac の側は適用済み・VPS と Grok の検収は未実施**）
 
-台帳の行 `dropbox-grok-exposure` の 1 つ目の段。Human が「承認」と言うまで、Mac の config・VPS・Grok のどれも変えない。
+台帳の行 `dropbox-grok-exposure` の 1 つ目の段。2026-11-24 に Human が承認し、Mac の config を段に分けて適用した（外へ返す範囲 → Mac の読む範囲 → EN司令塔の business_intents の順・各段の前の config を残す・各段で preflight）。**VPS の鍵の intents・businesses を変える 1 コマンドと、Grok の画面での検収は Human**（下の表）。VPS が変わるまでは、EN司令塔の Dropbox の依頼は VPS で `intent_not_allowed` になる＝まだ Grok からは使えない。
 
 | 項目 | 内容 |
 |---|---|
