@@ -187,8 +187,9 @@ test('Node HTTP transport: environment mismatch, rate limit, timeout, non-JSON a
 });
 
 test('Python HTTP transport: same contract against the real local Gateway (skipped when python is unavailable)', async (t) => {
-  const probe = spawnSync('python', ['--version'], { encoding: 'utf8' });
-  if (probe.status !== 0) { t.skip('python not available'); return; }
+  // macOS には python が無く python3 だけのことが多い（2026-11-23：この skip で Mac では一度も動いていなかった）
+  const py = ['python', 'python3'].find((bin) => spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 10_000 }).status === 0);
+  if (!py) { t.skip('python not available'); return; }
   const server = await startGatewayServer({ gateway: devGateway(), port: 0, token: TOKEN });
   const port = server.address().port;
   try {
@@ -204,7 +205,7 @@ test('Python HTTP transport: same contract against the real local Gateway (skipp
     ].join('\n');
     const { spawn } = await import('node:child_process');
     const out = await new Promise((resolve) => {
-      const child = spawn('python', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(py, ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] });
       const chunks = [];
       child.stdout.on('data', (c) => chunks.push(c));
       child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));

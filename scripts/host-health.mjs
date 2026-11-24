@@ -536,6 +536,7 @@ const VALUE_SHAPES = Object.freeze([
   [/^docomo_fetch$/, /^(?:ok|unreadable|failed [a-z_]{1,40})$/],
   [/^hermes_jobs$/, codes('ok', 'stuck', 'not_run', 'timeout', 'no_result', 'result_rejected', 'interrupted')],
   [/^nod_desktop$/, /^(?:not_running|running|running_long|vm_left|check_failed)$/],
+  [/^dev_sessions$/, /^(?:ok|vanished|check_failed)$/],
   [/^delivery_test$/, /^配送試験 異常ではありません$/],
 ]);
 export function safeValue(id, v) {
@@ -786,7 +787,7 @@ export async function runQuarterly({ stateDir, prev, at, paused, webhook, webhoo
 }
 
 /** 1 回分。run・uid・post・now を差し替えて test する */
-export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false, docomoState = null, nodApp = null }) {
+export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [path.join(REPO, 'data')], hermesUser = null, guard = null, github = null, statusDir = null, heartbeat = null, webhookCheck = null, webhook = null, webhookFormat = 'json', run, uid, now = () => new Date(), post = postAlerts, taskHub = null, taskHubScheduled = false, docomoState = null, nodApp = null, devSessions = null }) {
   const at = now().toISOString();
   try {
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -828,6 +829,8 @@ export async function runHostHealth({ stateDir = DEFAULT_STATE_DIR, dataDirs = [
       const failed = { id: 'nod_desktop', level: 'warn', value: 'check_failed', kind: 'state' };
       items.push(await import('./lib/nod/desktop.mjs').then((m) => Promise.race([m.observeNod({ run, installed: true }).then((o) => m.nodDesktopItem(o)), new Promise((resolve) => { setTimeout(resolve, m.OBSERVE_BUDGET_MS, failed).unref(); })])).catch(() => failed) ?? failed);
     }
+    // Cursor 非依存の作業の job（2026-11-23・docs/dev-session.md）：保存先がある時だけ。exit の記録が無いまま screen が消えた job（logout・再起動・強制終了）を件数なしで知らせる
+    if (devSessions) { const d = await import('./lib/dev-session.mjs').then((m) => m.devSessionsItem(devSessions)).catch(() => ({ id: 'dev_sessions', level: 'warn', value: 'check_failed', kind: 'state' })); if (d) items.push(d); }
     // 判定の前に確かめる（今回の結果で知らせる）
     const webhookState = !webhookCheck ? null : webhookCheckDue(prev?.webhook_check, at)
       ? { at, code: await Promise.race([webhookCheck(), new Promise((resolve) => { setTimeout(resolve, WEBHOOK_CHECK_BUDGET_MS, 'unreachable').unref(); })]).catch(() => 'unreachable') }
@@ -1024,6 +1027,7 @@ async function main(argv) {
     taskHubScheduled: existsSync(path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents', 'com.e-nexus.task-hub.plist')),
     docomoState: path.resolve(DEFAULT_DOCOMO_STATE),
     nodApp: '/Applications/Nod.app',
+    devSessions: path.join(process.env.HOME ?? '', 'e-nexus-runtime', 'mac-runtime-state', 'dev-sessions'),
   });
   clearTimeout(deadline);
   if (a.json && r.items) console.log(JSON.stringify({ component: 'edl-host-health', ...r }, null, 2));

@@ -41,6 +41,7 @@ const TABLE = Object.freeze([
   [/^hermes_jobs$/, { class: 'human', cause: 'Hermes の業務が実行されていないか、時間切れ・結果なし・中断で終わった', next: 'Human が実行かやり直しを決める（有料・AI は実行しない）', checks: ['node scripts/hermes-work.mjs status'] }],
   [/^business_backup$/, { class: 'ai', cause: '工程表の週 1 回のバックアップの失敗か未実行。Dropbox の資格情報・設定・file の取得のどれか', next: 'Claude Code が記録のコードを確かめる。資格情報の登録・更新は Human', checks: ['node scripts/business-cycle.mjs'] }],
   [/^docomo_fetch$/, { class: 'ai', cause: 'ドコモメールの読み取りの失敗が続いている。資格情報の期限・パスワードの変更・回線のどれか', next: 'Claude Code が出力のコードを確かめる。資格情報の更新は Human', checks: ['node bin/dml-fetch.mjs --allow-live（docomo-mail-lab）'] }],
+  [/^dev_sessions$/, { class: 'human', cause: 'dev-session の job が終わりの記録なしに消えた（logout・再起動・強制終了）か、確かめられない', next: 'recover の一覧を見て、やり直すか（start）片づけるか（forget）を決める。自動では再実行しない', checks: ['node scripts/dev-session.mjs status', 'node scripts/dev-session.mjs recover'] }],
   [/^nod_desktop$/, { class: 'human', cause: 'Nod（試験導入）が長く動いているか、終了で VM が残った（または確かめられない）', next: 'Human が使っているかを決めて、使っていなければ公式の Quit（nod-desktop stop か menu の Quit Nod）。Claude Code は status で確かめるだけで、Human の作業中の Nod を止めない（強制の停止はしない）', checks: ['node scripts/nod-desktop.mjs status'] }],
   [/^task_hub_audit$/, { class: 'human', cause: 'Task Hub の監査の鎖の異常（2 つの書き手の分岐・消えた行・改ざんのどれか）', next: 'Human が verify-audit で確かめるまで承認しない（docs/task-hub.md §13）', checks: ['node scripts/task-hub.mjs verify-audit'] }],
   [/^monitor_/, { class: 'human', cause: '監視そのものの異常か定義の変更', next: '心当たりがなければ Human が確かめる', checks: ['node scripts/runtime-ops.mjs acceptance'] }],
