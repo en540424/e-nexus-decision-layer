@@ -20,6 +20,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeSync, fstatSync } from 'node:fs';
 import path from 'node:path';
 import { BUSINESS_RE, isHint } from './envelope.mjs';
+import { nextStepOf } from './next-step.mjs';
 import { openPlain, readJsonSafe, readSmallFile } from './safe-read.mjs';
 import { MAX_BODY_BYTES, RECORD_MAX_AGE_MS, STATES } from './wire.mjs';
 
@@ -41,6 +42,7 @@ export const RECORD_KINDS = Object.freeze(['mail', 'calendar', 'notes']);
 export const TERMINAL = Object.freeze(['succeeded', 'failed', 'rejected', 'blocked', 'expired', 'stopped']);
 /** 依頼元へ返す state（待っていることも伝える） */
 const OUTBOX_STATES = new Set([...TERMINAL, 'awaiting_approval']);
+const NEXT_STATES = new Set(['failed', 'blocked', 'stopped', 'expired', 'rejected', 'awaiting_approval']);
 const TRANSITIONS = Object.freeze({
   received: ['awaiting_approval', 'queued', 'blocked', 'rejected'],
   awaiting_approval: ['queued', 'rejected', 'expired'],
@@ -428,7 +430,9 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
     // ─── outbox（依頼元＝人以外へ返す）───
     _outbox(task, at) {
       if (task.source === HUMAN_SOURCE || !OUTBOX_STATES.has(task.state)) return null;
-      const make = (withResult) => JSON.stringify({ task_id: task.task_id, state: task.state, intent: task.intent, ...(task.error?.code && task.state !== 'succeeded' ? { code: task.error.code, ...(isHint(task.error.hint) ? { hint: task.error.hint } : {}) } : {}), ...(withResult && task.state === 'succeeded' ? { result: task.result } : { ...(task.state === 'succeeded' ? { result_truncated: true } : {}) }) });
+      // 失敗・承認待ちの知らせには「次にやること」の決まった文（2026-11-24・next-step.mjs）。依頼元は get_task_status 1 回で、誰が何をするか・出し直してよいかが分かる
+      const next = NEXT_STATES.has(task.state) ? { next: nextStepOf(task.error?.code, task.state) } : {};
+      const make = (withResult) => JSON.stringify({ task_id: task.task_id, state: task.state, intent: task.intent, ...(task.error?.code && task.state !== 'succeeded' ? { code: task.error.code, ...(isHint(task.error.hint) ? { hint: task.error.hint } : {}) } : {}), ...next, ...(withResult && task.state === 'succeeded' ? { result: task.result } : { ...(task.state === 'succeeded' ? { result_truncated: true } : {}) }) });
       let body = make(true);
       if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) body = make(false);
       const file = p('outbox', `${sha(`${task.source}|${task.idempotency_key}|${task.state}`)}.json`);

@@ -40,27 +40,34 @@ function gate(store, id, { confirm, isTTY }, from = 'awaiting_approval') {
   return { ok: true, task };
 }
 
+/**
+ * via（2026-11-24・スマホからの承認の準備）：承認・却下・閉じたのが Mac の前の端末（local）か、SSH の端末（ssh＝例：iPhone から Tailscale 経由）か。
+ * 記録であって本人の確かめではない（TTY と確認コードの関所は同じ）。接続元の IP・host 名は残さない。決まった 2 語の他は記録しない
+ */
+const VIA = new Set(['local', 'ssh']);
+const viaOf = (via) => (VIA.has(via) ? { via } : {});
+
 /** beforeRecord(task)：記録する直前（TTY・確認コードが通った後）に、承認する task を Human に見せる口。ここで見せた内容が承認の対象 */
-export function approve(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now(), beforeRecord = null } = {}) {
+export function approve(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now(), beforeRecord = null, via } = {}) {
   const g = gate(store, id, { confirm, isTTY });
   if (!g.ok) return g;
   beforeRecord?.(g.task);
-  const approval = { by: actor, at: new Date(now).toISOString(), digest: g.task.content_digest, expires_at: new Date(now + APPROVAL_TTL_MS).toISOString() };
+  const approval = { by: actor, at: new Date(now).toISOString(), digest: g.task.content_digest, expires_at: new Date(now + APPROVAL_TTL_MS).toISOString(), ...viaOf(via) };
   const t = store.transition(id, 'queued', { event: 'approved', patch: { approval }, at: now });
   return { ok: true, task: t };
 }
 
-export function reject(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now() } = {}) {
+export function reject(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now(), via } = {}) {
   const g = gate(store, id, { confirm, isTTY });
   if (!g.ok) return g;
-  const t = store.transition(id, 'rejected', { event: 'rejected_by_human', code: 'rejected_by_human', patch: { rejection: { by: actor, at: new Date(now).toISOString() } }, at: now });
+  const t = store.transition(id, 'rejected', { event: 'rejected_by_human', code: 'rejected_by_human', patch: { rejection: { by: actor, at: new Date(now).toISOString(), ...viaOf(via) } }, at: now });
   return { ok: true, task: t };
 }
 
 /** 止まった task（stopped＝中断で再開不可）を Human が確認して閉じる：stopped → failed（dismissed_by_human）。再実行はしない（出し直すなら新しい idempotency_key）。端末と確認コードが要る */
-export function dismiss(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now() } = {}) {
+export function dismiss(store, id, { confirm, actor = userInfo().username, isTTY = false, now = store.now(), via } = {}) {
   const g = gate(store, id, { confirm, isTTY }, 'stopped');
   if (!g.ok) return g;
-  const t = store.transition(id, 'failed', { event: 'dismissed_by_human', code: 'dismissed_by_human', patch: { dismissal: { by: actor, at: new Date(now).toISOString() } }, at: now });
+  const t = store.transition(id, 'failed', { event: 'dismissed_by_human', code: 'dismissed_by_human', patch: { dismissal: { by: actor, at: new Date(now).toISOString(), ...viaOf(via) } }, at: now });
   return { ok: true, task: t };
 }

@@ -65,6 +65,7 @@ export const CAPABILITIES_TEXT = [
   'Tools: submit_task (propose a task with a stable idempotency_key), get_task_status (look up your own task by task_ref), list_capabilities.',
   'Do not put secrets, passwords or personal data in params or summary. You can only see tasks submitted with your own key.',
   'If a task comes back with state "rejected" or "failed", read result.code; when result.hint is present it states the params that intent expects. Fix the params and submit again with a NEW idempotency_key.',
+  'result.next.retry tells you whether to resubmit: "new_key" once with a new idempotency_key, "later" once after a few minutes, "no" never (a human must act). Report result.next.text as it is.',
 ].join('\n');
 
 /** list_capabilities の本文：決まった説明＋その鍵（source）に許された intent・business（自分の範囲だけ。params の形は VPS は知らない＝Mac が result.hint で返す・2026-11-16） */
@@ -94,7 +95,7 @@ export const TOOLS = Object.freeze([
   {
     name: 'get_task_status',
     title: 'Get task status',
-    description: 'Look up the status of a task you submitted, by task_ref. Returns state "unknown" if there is none. On state "rejected" or "failed", result.code is the reason and result.hint (when present) states the expected params.',
+    description: 'Look up the status of a task you submitted, by task_ref. Returns state "unknown" if there is none. On state "rejected" or "failed", result.code is the reason and result.hint (when present) states the expected params. result.next (also on "awaiting_approval") says who acts (requester, human or wait) and whether to resubmit (new_key, later or no).',
     inputSchema: { type: 'object', required: ['task_ref'], properties: { task_ref: { type: 'string' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },

@@ -126,7 +126,7 @@ export const showView = (t) => ({
 });
 export const humanLine = (t, now) => `[承認待ち] ${t.business} ${t.intent} ${t.task_id} （${Math.max(0, Math.floor((now - Date.parse(t.created_at)) / 3_600_000))} 時間前・承認の前に show ${t.task_id} で params の全文を確認）`;
 
-export async function main(argv, { out = (s) => console.log(s), err = (s) => console.error(s), keyFor = keychainKeyFor, isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY), now: nowArg } = {}) {
+export async function main(argv, { out = (s) => console.log(s), err = (s) => console.error(s), keyFor = keychainKeyFor, isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY), via = process.env.SSH_CONNECTION || process.env.SSH_TTY ? 'ssh' : 'local', now: nowArg } = {}) {
   const now = nowArg ?? Date.now();
   const clock = nowArg === undefined ? () => Date.now() : () => nowArg; // run は実時間で測る（lease を起動時の時刻で固定しない）。試験は時刻を固定して渡す
   let a;
@@ -180,7 +180,7 @@ export async function main(argv, { out = (s) => console.log(s), err = (s) => con
     case 'dismiss': {
       // approve は記録の直前に承認する params の全文を見せる（端末と確認コードが通った時だけ）
       const shown = (t) => out(`承認する内容（params の全文）：${t.business} ${t.intent} ${t.task_id}\n${fullParams(t)}`);
-      const r = a.command === 'approve' ? approve(store, a.positional[0], { confirm: a.confirm, isTTY, now, beforeRecord: shown }) : (a.command === 'reject' ? reject : dismiss)(store, a.positional[0], { confirm: a.confirm, isTTY, now });
+      const r = a.command === 'approve' ? approve(store, a.positional[0], { confirm: a.confirm, isTTY, now, beforeRecord: shown, via }) : (a.command === 'reject' ? reject : dismiss)(store, a.positional[0], { confirm: a.confirm, isTTY, now, via });
       out(r.ok ? `${{ approve: '承認しました', reject: '却下しました', dismiss: '確認して閉じました' }[a.command]} ${r.task.task_id} → ${r.task.state}` : `できません（${r.code}）`);
       return r.ok ? 0 : 1;
     }

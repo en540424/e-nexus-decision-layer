@@ -14,6 +14,7 @@ import { VIEW_ALIASES, VIEW_NAMES } from '../scripts/lib/task-hub/handlers.mjs';
 import { ingestInbox, submitLocal } from '../scripts/lib/task-hub/intake.mjs';
 import { loadCatalog } from '../scripts/lib/task-hub/policy.mjs';
 import { runOnce } from '../scripts/lib/task-hub/runner.mjs';
+import { nextStepOf } from '../scripts/lib/task-hub/next-step.mjs';
 import { dropInbox, envelope, keyFor, makeEnv, seal } from './task-hub-helpers.mjs';
 
 const cleanup = (env) => rmSync(env.root, { recursive: true, force: true });
@@ -92,7 +93,7 @@ test('形の誤りで断った時は、台帳の usage が hint として依頼�
   assert.ok(isHint(USAGE) && USAGE.includes('awaiting_approval') && USAGE.includes('task_ref'));
   for (const params of [{ view: 'approvals' }, { status: 'pending' }, { view: 'recent', limit: '10' }, { view: ['failed'] }]) {
     const q = await ask(params);
-    assert.deepEqual([task(q.task_id).state, board(q.task_id)], ['rejected', { task_id: q.task_id, state: 'rejected', intent: 'task.status', code: 'params_invalid', hint: USAGE }], JSON.stringify(params));
+    assert.deepEqual([task(q.task_id).state, board(q.task_id)], ['rejected', { task_id: q.task_id, state: 'rejected', intent: 'task.status', code: 'params_invalid', hint: USAGE, next: nextStepOf('params_invalid') }], JSON.stringify(params));
   }
   const both = await ask({ view: 'recent', task_ref: 'abcdefgh' });
   assert.deepEqual([task(both.task_id).state, board(both.task_id).code, board(both.task_id).hint], ['failed', 'params_task_ref_or_view', USAGE]);
@@ -119,7 +120,7 @@ test('hint は台帳の決まった文だけ：依頼の中身は混ざらない
   assert.deepEqual(['hint' in board(ok.task_id), task(ok.task_id).error], [false, null]);
   // usage の無い intent は hint なしで今までと同じ
   const m = await fromBot(envelope({ intent: 'mail.digest.ingest', params: { items: 'x' } }));
-  assert.deepEqual(board(m.task_id), { task_id: m.task_id, state: 'rejected', intent: 'mail.digest.ingest', code: 'params_invalid' });
+  assert.deepEqual(board(m.task_id), { task_id: m.task_id, state: 'rejected', intent: 'mail.digest.ingest', code: 'params_invalid', next: nextStepOf('params_invalid') });
   const before = env.store.listOutbox().length;
   await submitLocal(envelope({ intent: 'task.status', params: { view: 'nope' } }), { store: env.store, policy: env.policy, now: env.clock.t });
   assert.equal(env.store.listOutbox().length, before, '人の端末の依頼は結果の板へ出さない');

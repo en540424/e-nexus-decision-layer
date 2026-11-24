@@ -136,3 +136,28 @@ Human が「人間が作ったタブ 1 と 2 は触らないで」と言わな�
 - 自動の再実行はしない。Human の承認の境（`hermes.task` など）も変えていない
 
 検収：合成の store の試験（`tests/task-hub-next-step-20261124.test.mjs`）と、Mac の本番の store で source human-cli の依頼（2026-11-24）。**EN司令塔からの往復は未検収**（Human が「失敗の原因と対応は？」と聞いて、結果の `next_steps` を確かめる）。§3 の指示文の候補に 1 行足した（Grok の画面で貼るのは Human）。
+
+### 8-1. 結果の板の `next`（2026-11-24 の 2 回目）
+
+`get_task_status` の結果（Mac が返す板の本文）にも、失敗（failed・rejected・expired・stopped・blocked）と承認待ち（awaiting_approval）の時は `next`（同じ表の決まった文）を付けた。Bot は `get_task_status` 1 回で、誰が何をするか・出し直してよいかが分かる。承認待ちの `next` は「Mac で Human の承認を待っている・出し直さない」。VPS の道具の説明にも `result.next` の読み方を足した（**VPS への反映は Human の connect-from-mac.sh の 1 回**＝§9 と同じ回でよい）。Mac の側は working tree から 5 分ごとの回が読むので、その場で本番に効く。
+
+## 9. 承認の単位：EN司令塔に E-STEP の Dropbox の読むだけを開き、実機で往復を検収する（2026-11-24・**未承認・未適用**）
+
+台帳の行 `dropbox-grok-exposure` の 1 つ目の段。Human が「承認」と言うまで、Mac の config・VPS・Grok のどれも変えない。
+
+| 項目 | 内容 |
+|---|---|
+| 許す操作 | EN司令塔（source `grok-commander`）が business `e-step` で、`dropbox.list`・`dropbox.search`・`schedule.read`・`task.status` を無人で出せる（4 つとも読むだけ・課金なし） |
+| 許さない（e-step では毎回 Human の承認のまま） | `note.record`・`report.morning`・`status.query`・`hermes.task`・カルテ（`karte.*`）・PDF（`dropbox.pdf.*`）・見積・工程表のバックアップと復元。Mac の config の `business_intents`（`docs/task-hub.md` §19）で e-step の無人の intent を上の 4 つに絞る。カルテは `read_only` のため承認しても `dropbox_read_only`、PDF は `dropbox_pdf_local_only`（Grok には返らない） |
+| e-nexus | 今の 5 つのまま（`business_intents` の e-nexus に今の 5 つを書く＝Dropbox の intent は e-nexus では承認待ち） |
+| 読める範囲 | 本番の e-step の許可フォルダの中だけ（今の config：read_roots 5・工程表 1・deny_roots 9・deny_names 1・見積の原本 0・PDF 0・`read_only: true`）。元請は deny で、どの読み方でも拒否。給与・名簿・保険証などは名前の共通の下限で、一覧・検索に名前も出ない。任意の path・`..`・`id:`・Dropbox の全体は拒否（`tests/grok-estep-read-exposure-20261124.test.mjs`） |
+| **Grok（外部のサービス）に渡る物** | 許可フォルダの中の **フォルダ名・file 名・path・大きさ・更新時刻**（一覧・検索）と、**工程表の中身**（日付・現場名・作業・班の名前などのセルの文字）。file の中身（PDF・Excel）は渡らない。これらは xAI の Grok の会話に残る |
+| Mac の config の変更 | 案：`mac-runtime-state/task-hub/config.GROK-ESTEP-READ.PROPOSAL.json`（本番の config から作った・未適用）。`grok-commander` の businesses に `e-step`、intents に 3 つ、`business_intents` に e-nexus＝今の 5 つ・e-step＝上の 4 つ。適用は Claude Code（`_proposal` を消して、前の config を `config.before-grok-estep-read-<時刻>.json` に残す） |
+| VPS の変更（Human の 1 コマンド） | `bash deploy/vps-task-intake/connect-from-mac.sh --ssh <いつもの> --intake --source grok-commander --intents status.query,task.status,report.morning,note.record,hermes.task,dropbox.list,dropbox.search,schedule.read --businesses e-nexus,e-step`（鍵は作り直さない）。同じ回で、前から残っている business の制限（行 `vps-business-scope`）と、道具の説明の更新（hint・next）も入る |
+| Grok の画面（Human） | 指示文に e-step の呼び方を足す（下の候補） |
+| 影響 | 常駐・課金・書き込みは増えない。Dropbox の読みの回数が増える（5 分ごとの回の中・回路遮断あり）。Mac・VPS が止まっても他の業務には影響しない |
+| 戻し方 | Mac：前の `config.json` に戻す（その場で e-step の依頼は `business_not_allowed`）。VPS：前の `--intents`・`--businesses` で connect-from-mac.sh をもう 1 回。Grok：指示文の行を消す |
+| 検収（承認の後） | ① 適用の前後に `node scripts/task-hub-exposure.mjs --source grok-commander` で、e-step の無人が 4 つだけ・e-nexus が前と同じことを確かめる ② `node scripts/task-intake-edge-check.mjs`（入口） ③ Human が EN司令塔に「E-STEP の現場管理のフォルダを一覧して」「今週の工程表は？」「名簿を探して」の 3 つを頼む ④ Claude Code が Mac の store で、grok-commander・e-step の 3 件（2 件が succeeded・名簿は `dropbox_path_not_allowed`）と、結果の板に許可の外の名前が無いことを確かめる ⑤ Grok の答えに `next` の文がそのまま出ているか（拒否の 1 件） |
+
+指示文の候補（承認の後に Human が貼る）：
+> E-STEP の資料・工程表を聞かれた時は business を "e-step" にする。フォルダの一覧は intent "dropbox.list"、params {"path":"<許可フォルダの path>"}（最初は list_capabilities と、前の一覧の結果の path を使う）。file 名の検索は intent "dropbox.search"、params {"query":"<語>"}。工程表は intent "schedule.read"、params {}（今日から 7 日）か {"date":"YYYY-MM-DD"}。結果の名前と予定をそのまま伝え、推測で補わない。断られた時は result.next の text をそのまま伝え、retry が "no" なら出し直さない。e-step のメモ・Hermes の依頼・カルテ・見積は Mac で Human の承認が要ると伝える。

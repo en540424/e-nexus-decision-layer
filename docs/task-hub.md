@@ -248,3 +248,29 @@ routines の API trigger の endpoint・token の範囲・上限・課金／ク�
 
 n8n Labs の Nod（公式 Mac デスクトップ版 v0.8.4）を Mac に入れた（未起動）。v0.8.4 には外から仕事を渡す公式の手段（CLI・公開 API）が無いので、**Task Hub の intent は足していない**。
 起動・公式の Quit での完全終了・計測は `scripts/nod-desktop.mjs`（起動は Terminal の Human だけ）、長い常駐と終了の後に残った VM の見張りは host-health の `nod_desktop`（§15 と同じ回・読むだけ）。経緯・Human の初回の手順・費用の比較は `docs/nod-trial.md`。
+
+## 19. 依頼元ごと・business ごとの絞り（business_intents）と届く範囲の表（2026-11-24）
+
+`sources.<id>.intents` と `businesses` は掛け算：EN司令塔の businesses に `e-step` を足すと、e-step でもメモ・朝の報告・Hermes を受けてしまう。
+`sources.<id>.business_intents: { <business>: [intent…] }`（任意）で、その business で無人の class を保てる intent を絞る。外の intent は少なくとも `human_required`（`intents` と同じ扱い・理由 `intent_not_in_business_allowlist`）。
+
+- 書けるのは、その依頼元の businesses の中の business と、`intents` の中の intent だけ（広げる道にしない＝config の検査で拒否）
+- 無人で動かす前の再確認（`recheck`）も同じ判定＝承認の前に絞れば、取り込み済みの task は `policy_changed` で止まる
+- 書いていない business は今までどおり `intents` だけ（今の本番の形はそのまま）
+
+届く範囲の表：`node scripts/task-hub-exposure.mjs [--config <file>] [--source <id>] [--json]`（読むだけ・通信なし）。依頼元×business ごとに auto・ai_check（無人で動きうる）と、承認の要る数、Dropbox の範囲の件数（フォルダの名前は出さない）。Gateway はさらに厳しくすることがある（緩めない）＝表の auto は上限。公開の前後に案と本番を比べる（`docs/grok-bot.md` §9）。
+
+## 20. スマホからの Human 承認（案 A・2026-11-24・**準備だけ・未接続**）
+
+新しい承認の仕組み・台帳は作らない。今の承認（`show` で全文 → `approve <id> --confirm <12hex>`・端末が要る・digest の照合・7 日の期限）を、iPhone から SSH の端末で使う。
+
+| 点 | 今の形で満たすか |
+|---|---|
+| 本人の確かめ | Tailscale の機器と account の認証（Tailscale SSH は tailnet の ID で入る・ACL の `ssh` の規則で iPhone から Mac のこの OS user だけ・`check` mode で定期の再認証）。Remote Login を使う時は SSH の鍵（iPhone の端末 app の中・Face ID で開ける設定）でパスワードは切る |
+| 届く範囲 | Tailscale の ACL で、iPhone から Mac の 22 番だけ（他の機器・他の port へは行かない）。インターネットに port は開けない |
+| 承認の関所 | 変えない。SSH の端末は TTY なので通る・確認コードは全文を見た上でしか分からない（`show` が出す）。Grok・Claude Code は TTY が無いので承認できない（`tty_required`） |
+| 監査 | 承認・却下・閉じた記録に `via: "ssh"`（Mac の前なら `"local"`）を残す（2026-11-24）。接続元の IP・host 名は残さない。誰か（OS の user）・時刻・digest は今までどおり |
+| 操作 | `cd ~/e-nexus-runtime/e-nexus-decision-layer && node scripts/task-hub.mjs human`（承認待ち 1 件 1 行）→ `show <id>` → `approve <id> --confirm <コード>`。Hermes の依頼は `sh deploy/macos/hermes-work-run.sh`（承認から実行まで） |
+| 残る弱さ | Mac の同じ OS user で動く物は同じ承認ができる（今と同じ・台帳 `dropbox-keychain-same-user` と同じ種類）。iPhone を失くした時は Tailscale の機器を外し、SSH の鍵を `authorized_keys` から消す |
+
+Human の操作（未実施）：Tailscale は 2026-10-22 に導入を承認済みだが未導入（Trading Lab の保守の窓と ACL の決定を待つ・MAC-RUNTIME-INSTALL-PLAN-2026-10-22 の順）。入れる時は前からの計画どおり `tailscaled`（open source 版）＋ Tailscale SSH、`--accept-dns=false --accept-routes=false`、前後に `scripts/network-baseline.mjs` の写し。Tailscale SSH を使えば macOS の Remote Login は開けなくてよい（使わない時は鍵だけの Remote Login＋ACL で 22 番だけ）。iPhone は Tailscale の app に同じ account で login する。どれも保守の窓で（台帳 `phone-approval-path`・`iphone-tailscale`）。

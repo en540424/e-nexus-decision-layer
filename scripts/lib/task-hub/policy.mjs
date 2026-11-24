@@ -3,7 +3,9 @@
  * Gateway は同じ process の SDK で呼ぶ（src/cli.mjs の gateway decide と同じ組み立て・通信なし・env は空＝EDL_ALLOW_NETWORK も環境の指定も読まない）。
  * Decision Layer は承認しない：candidate は「無人で走らせてよい候補」の読みであって許可ではない。許可は intents.json の class（人が決めた台帳）と Human の承認だけ。
  *
- * local config（repo に置かない）：{ sources: { <id>: { channels: [..], businesses: [..], intents?: [..] } }, businesses: [..], hermes_inbox?, brief_path?, utc_offset_minutes? }
+ * local config（repo に置かない）：{ sources: { <id>: { channels: [..], businesses: [..], intents?: [..], business_intents?: { <business>: [..] } } }, businesses: [..], hermes_inbox?, brief_path?, utc_offset_minutes? }
+ * business_intents（2026-11-24）：その依頼元のその business で無人の class を保てる intent だけ（intents と同じく、外の intent は少なくとも human_required）。
+ *   intents と businesses の掛け算では「e-step は読むだけ」を書けない（e-step を足すと note.record・report.morning・hermes.task も e-step で受ける）ための、business ごとの絞り
  */
 import { readFileSync, statSync } from 'node:fs';
 import { loadScopes } from '../dropbox/scope.mjs';
@@ -63,6 +65,15 @@ export function validateConfig(c) {
     if (!Array.isArray(s.channels) || !s.channels.length || s.channels.some((x) => !ID_RE.test(x))) bad(`${id}.channels`);
     if (!Array.isArray(s.businesses) || !s.businesses.length || s.businesses.some((b) => !c.businesses.includes(b))) bad(`${id}.businesses`);
     if (s.intents !== undefined && (!Array.isArray(s.intents) || s.intents.some((x) => !INTENT_RE.test(x)))) bad(`${id}.intents`);
+    if (s.business_intents !== undefined) {
+      const bi = s.business_intents;
+      if (!bi || typeof bi !== 'object' || Array.isArray(bi)) bad(`${id}.business_intents`);
+      for (const [b, list] of Object.entries(bi)) {
+        if (!s.businesses.includes(b)) bad(`${id}.business_intents.${b}`); // 依頼元の businesses の外の business は書けない（広げる道にしない）
+        if (!Array.isArray(list) || list.some((x) => typeof x !== 'string' || !INTENT_RE.test(x))) bad(`${id}.business_intents.${b}`);
+        if (s.intents && list.some((x) => !s.intents.includes(x))) bad(`${id}.business_intents.${b}`); // intents の外は書けない（絞るだけ）
+      }
+    }
   }
   for (const k of ['hermes_inbox', 'hermes_outbox', 'brief_path']) if (c[k] !== undefined && (typeof c[k] !== 'string' || !c[k].startsWith('/'))) bad(k);
   if (c.utc_offset_minutes !== undefined && !(Number.isInteger(c.utc_offset_minutes) && c.utc_offset_minutes >= -720 && c.utc_offset_minutes <= 840)) bad('utc_offset_minutes');
@@ -123,6 +134,8 @@ export function createPolicy({ catalog = loadCatalog(), config, gateway = defaul
     let cls = entry?.class ?? 'human_required';
     if (!entry) reasons.push('unknown_intent');
     if (s.intents && !s.intents.includes(envelope.intent)) { cls = tighter(cls, 'human_required'); reasons.push('intent_not_in_source_allowlist'); }
+    const perBusiness = s.business_intents && Object.hasOwn(s.business_intents, envelope.business) ? s.business_intents[envelope.business] : null;
+    if (perBusiness && !perBusiness.includes(envelope.intent)) { cls = tighter(cls, 'human_required'); reasons.push('intent_not_in_business_allowlist'); }
     return { ok: true, class: cls, handler: entry?.handler ?? null, reasons, entry };
   }
 
@@ -130,6 +143,13 @@ export function createPolicy({ catalog = loadCatalog(), config, gateway = defaul
     catalog,
     config,
     entry: entryOf,
+    /** 届く範囲（2026-11-24・scripts/task-hub-exposure.mjs）：その依頼元がその business でその intent を出した時の、台帳と config だけで決まる class（Gateway の前・厳しくなることはあっても緩くはならない） */
+    reach({ source, business, intent }) {
+      const s = config.sources[source];
+      if (!s || !Object.hasOwn(config.sources, source)) return { ok: false, code: 'unknown_source' };
+      const b = base({ source, channel: s.channels[0], envelope: { business, intent } });
+      return b.ok ? { ok: true, class: b.class, reasons: b.reasons } : b;
+    },
     /** 無人で走らせる時にもう一度（Gateway なしで）確かめる：config／台帳が変わっていたら止める */
     recheck(task) {
       const b = base({ source: task.source, channel: task.channel, envelope: { business: task.business, intent: task.intent } });

@@ -12,7 +12,7 @@
 const STEP = (who, retry, text) => Object.freeze({ who, retry, text });
 
 const TABLE = Object.freeze([
-  [/^params_/, STEP('requester', 'new_key', 'params の形の誤り。result.hint の形に直して、新しい idempotency_key で 1 回だけ出し直す')],
+  [/^params_/, STEP('requester', 'new_key', 'params の形の誤り。result.hint があればその形に直して、新しい idempotency_key で 1 回だけ出し直す')],
   [/^(?:replay|idempotency_conflict)$/, STEP('requester', 'new_key', '同じ idempotency_key がもう使われていた。新しい key で出し直す')],
   [/^dropbox_id_invalid$/, STEP('requester', 'new_key', 'file の ID の形の誤り（id: で始まる Dropbox の ID）。正しい ID で、新しい key で出し直す')],
   [/^dropbox_path_(?:not_found|ambiguous|invalid)$/, STEP('requester', 'new_key', 'path が見つからないか 1 つに決まらない。dropbox.list で上の階層の名前を確かめてから、新しい key で出し直す')],
@@ -20,6 +20,7 @@ const TABLE = Object.freeze([
   [/^dropbox_(?:id_not_readable|path_not_allowed|read_only|pdf_local_only|business_not_enabled|config_denied_name|output_kind)$/, STEP('human', 'no', '許可の範囲の外（読ませない場所・書かない設定・Mac だけの処理）。広げるには Human の承認が要る（出し直さない）')],
   [/^rejected_by_human$/, STEP('human', 'no', 'Mac で Human が却下した。同じ依頼は出し直さず、理由を Human に聞く')],
   [/^dismissed_by_human$/, STEP('human', 'no', '止まった依頼を Human が確認して閉じた。必要なら Human に確かめてから新しい key で出す')],
+  [/^awaiting_approval$/, STEP('human', 'no', 'Mac で Human の承認を待っている。承認されるまで実行しない。出し直さず、後で get_task_status で状態を見る')],
   [/^(?:awaiting_expired|approval_timeout|expired)$/, STEP('human', 'new_key', '承認の期限が切れた（7 日）。まだ必要なら新しい idempotency_key で出し直し、Mac での承認を Human に頼む')],
   [/^dropbox_suspended$/, STEP('wait', 'later', 'Dropbox の読みを失敗が続いたため 15 分止めている。15 分後に新しい key で 1 回だけ出し直す')],
   [/^(?:timeout|dropbox_timeout|dropbox_network|dropbox_unavailable|dropbox_rate_limited|lock_conflict|aborted)$/, STEP('wait', 'later', '一時的な失敗（時間切れ・回線・混雑）。数分おいて新しい key で 1 回だけ出し直す。続く時は status.query {detail:true} で Mac の状態を見る')],

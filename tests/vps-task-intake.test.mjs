@@ -1012,3 +1012,50 @@ test('E2E: scoped Dropbox requests return only allowed results to the originatin
     await cleanup(env);
   }
 });
+
+test('E2E（2026-11-24）：business_intents で読むだけに絞った business・失敗と承認待ちの next が VPS を通って Bot に返る', async () => {
+  const { ingestInbox } = await import('../scripts/lib/task-hub/intake.mjs');
+  const { runOnce } = await import('../scripts/lib/task-hub/runner.mjs');
+  const { makeEnv } = await import('./task-hub-helpers.mjs');
+  const { nextStepOf } = await import('../scripts/lib/task-hub/next-step.mjs');
+  const intents = ['note.record', 'task.status', 'dropbox.list'];
+  const env = await boot({ sources: { 'bot-front': { key_sha256: sha(BOT_A), businesses: ['biz-a', 'biz-b'], intents } } });
+  const mac = makeEnv({ config: {
+    sources: { 'bot-front': { channels: [CHANNEL], businesses: ['biz-a', 'biz-b'], intents, business_intents: { 'biz-a': ['note.record', 'task.status'], 'biz-b': ['task.status', 'dropbox.list'] } } },
+    dropbox: { businesses: { 'biz-b': { read_only: true, read_roots: ['/sites'], output_root: '/output' } } },
+  } });
+  const reader = { list: async () => ({ entries: [{ path: '/sites/active.txt', name: 'active.txt', tag: 'file' }] }) };
+  const services = { dropbox: () => reader };
+  const now = () => (env.clock.t += 1000);
+  const keychain = (name) => ({ [KEYCHAIN_URL]: env.url, [keychainKeyTarget(CHANNEL)]: KEY_HEX })[name] ?? null;
+  const round = async () => {
+    await runSync({ argv: ['pull', '--inbox', mac.inbox], keychain, fetchImpl: globalThis.fetch, now });
+    await ingestInbox(mac.inbox, { store: mac.store, policy: mac.policy, keyFor: () => KEY, now: now() });
+    await runOnce({ ...mac, now, config: { ...mac.config, services } });
+    const pushed = await runSync({ argv: ['push', '--outbox', path.join(mac.root, 'store', 'outbox'), '--sent', path.join(mac.root, 'store', 'outbox-sent')], keychain, fetchImpl: globalThis.fetch, now });
+    assert.equal(pushed.code, 'pushed');
+  };
+  const status = async (req) => (await tool(env, BOT_A, 'get_task_status', { task_ref: req.idempotency_key })).data;
+  try {
+    const list = submitArgs(901, { business: 'biz-b', intent: 'dropbox.list', params: { path: '/sites' } });
+    const outside = submitArgs(902, { business: 'biz-b', intent: 'dropbox.list', params: { path: '/other' } });
+    const noteB = submitArgs(903, { business: 'biz-b', intent: 'note.record', params: { text: 'a' } });
+    const noteA = submitArgs(904, { business: 'biz-a', intent: 'note.record', params: { text: 'a' } });
+    for (const req of [list, outside, noteB, noteA]) assert.equal((await tool(env, BOT_A, 'submit_task', req)).data.state, 'received');
+    await round();
+    assert.deepEqual((await status(list)).result.result.entries.map((e) => e.name), ['active.txt']);
+    const denied = await status(outside);
+    assert.deepEqual([denied.state, denied.result.code, denied.result.next], ['failed', 'dropbox_path_not_allowed', nextStepOf('dropbox_path_not_allowed')]);
+    const waiting = await status(noteB);
+    assert.deepEqual([waiting.state, waiting.result.next.who, waiting.result.next.retry], ['awaiting_approval', 'human', 'no'], 'biz-b のメモは business_intents の外＝承認待ち（無人で書かない）');
+    assert.equal((await status(noteA)).state, 'succeeded', 'biz-a のメモは今までどおり');
+    const failedView = submitArgs(905, { business: 'biz-b', intent: 'task.status', params: { view: 'failed' } });
+    await tool(env, BOT_A, 'submit_task', failedView);
+    await round();
+    const fv = (await status(failedView)).result.result;
+    assert.deepEqual([fv.total, Object.keys(fv.next_steps)], [1, ['dropbox_path_not_allowed']]);
+  } finally {
+    rmSync(mac.root, { recursive: true, force: true });
+    await cleanup(env);
+  }
+});
