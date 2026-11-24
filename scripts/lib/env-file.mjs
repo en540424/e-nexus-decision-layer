@@ -7,9 +7,10 @@
  * macOS Keychain）から起動時に読む（有料 provider 鍵と同じ境界：User / Machine 環境変数や平文ファイルに置かない。技術スタック正本§7）。
  * 値はログ・エラー文へ出さない（エラーは行番号と NAME だけ）。
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { findOp, loadProviderMap, readOnePassword, routeOf } from './credential-provider.mjs';
 
 export const EDL_CREDENTIAL_PATTERN = /^E-NEXUS\/edl\/[a-z0-9-]{1,64}$/;
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -56,8 +57,12 @@ function windowsReadCommand(target) {
 }
 
 /** OS 資格情報ストアから 1 つ読む。無ければ null */
-export function readCredential(target, { platform = process.platform, execFileImpl = execFile, timeoutMs = 15000 } = {}) {
+export function readCredential(target, { platform = process.platform, execFileImpl = execFile, timeoutMs = 15000, providerMap, opPath } = {}) {
   if (!EDL_CREDENTIAL_PATTERN.test(String(target))) return Promise.reject(new Error('credential target outside E-NEXUS/edl/*'));
+  // 将来の 1Password（2026-11-24・credential-provider.mjs）：対応表に書いた target だけ。対応表が無ければ今までどおり OS の資格情報ストア
+  let route;
+  try { route = routeOf(target, providerMap ?? loadProviderMap()); } catch (e) { return Promise.reject(e); }
+  if (route.provider === '1password') return readOnePassword(route.ref, { execFileImpl, opPath: opPath === undefined ? findOp({ exists: existsSync }) : opPath, timeoutMs });
   const minimalEnv = {};
   for (const k of ['SystemRoot', 'windir', 'SystemDrive', 'PATH', 'Path', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'PSModulePath', 'HOME']) {
     if (process.env[k] !== undefined) minimalEnv[k] = process.env[k];

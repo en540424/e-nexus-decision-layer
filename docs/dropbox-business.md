@@ -239,3 +239,28 @@ EN司令塔の business は今 e-nexus だけ＝E-STEP の Dropbox を EN司令�
 - 拒否の 2 件は想定内の失敗（回路遮断に数えない）。ただし、その回の `task-hub-cycle` の記録は 1 回だけ `problem`（run の段が失敗の task を含む時の決まり）。host-health の通知は 2 回続いた時だけなので、通知は出ない
 - 同じ回の後に human-cli の `task.status {view:"failed"}` が、拒否の 2 件と `next_steps`（`dropbox_path_not_allowed`＝who human・retry no）を返した（`docs/grok-bot.md` §8）。次の回の記録は `ok` に戻った
 - 段 1（許可フォルダの承認）は、台帳の `dropbox-folders` が open のまま（config は 2026-11-20 に適用済み）。閉じてよいかは Human が決める
+
+### 5-2. 現場の口述の受け付け（2026-11-24・Human 決定 E）
+
+Grok・Mac の端末から話した・書いた現場の内容は、`note.record` の `kind: "dictation"`（`site`＝現場名・`recorded_on`・`channel`）で Task Hub の口述の記録（business ごと・追記だけ・prune で詰めない）に残す。新しい intent・新しいカルテの正本は作らない。
+
+- Mac は**構造化も確定もしない**。寸法の候補・出所の段階（rough／assumed など）・確認は APP 側の `karte-adapter`（`dictation-input-v1` → `dictation-extraction-v1` → `karte-diff-v1`）と Human の担当。「約 6m」は原文のまま残り、Mac が数値にしない＝APP-039 の正式な計算に混ざらない
+- 同じ現場・同じ日・同じ文の出し直しは 1 件（`duplicate: true`）。訂正は新しい口述として足す（前の行を消さない＝変更の前と後が両方残る）。版の照合・古い版での上書きの拒否は `karte-diff-v1` の側（APP-040）
+- 結果に内部の ID（task・記録）と原文を返さない。返すのは `recorded`・現場名・日付だけ（決定 G）
+- APP 側への渡し方：`node scripts/karte-dictation-export.mjs --business <b> --out <file>` が `dictation-input-v1` の JSONL を書く（`input_id` は Mac の記録から作る固定の値・`case_id` は case_ref か現場名＝H-17 が決まるまでの仮）。置き場所（H-3・H-15）が決まるまで、自動では渡さない
+- **原文の注意**：Task Hub の受け口は依頼の文字を NFKC に揃える＝全角の数字・「：」などは半角になる（`dictation-input-v1` の「原文は改変しない」と食い違う。台帳 `task-hub-nfkc-text` で判断）
+- EN司令塔からの e-step の口述は、今は `business_intents` の外＝毎回 Mac で承認（公開は台帳 `dropbox-grok-exposure` の次の段）
+
+## 9. 2026-11-24 の Human 決定（A〜G）と実装の対応
+
+正本は Vault の側（Windows が反映する）。ここは Mac Runtime の実装の対応だけ。
+
+| 決定 | 内容 | Mac Runtime の今 |
+|---|---|---|
+| A 原本の完全保護 | 工程表・元請・図面・見積・請求・現場資料を AI が変更・上書き・移動・削除しない。原本の資格情報は読み取り専用 | 実装済み・実機で確認済み：読みの資格情報（scope は metadata.read・content.read だけ）と client（書く呼び出しが無い）の 2 重・本番の書き込み 0 件 |
+| B 読む範囲の拡大・外へ渡す範囲の別管理 | 「元請」の名前だけで全部を断る方針を見直す。Mac で読める範囲と Grok へ渡せる範囲を分ける。給与・名簿・個人情報・認証情報・機密の契約は個別に | **実装済み・模擬で検証済み**：`scope.external`（`allow_roots`・`deny_roots`・`deny_names`。狭めるだけ）で、human-cli 以外の依頼元へ返す名前・中身を絞る（在るか無いかも同じ答え・工程表は丸ごと）。共通の下限（給与・名簿・保険証・Secret など）は Mac でも外でも効く。**本番の config は変えていない**＝元請は今も deny（拡げるのは Human の承認：台帳 `dropbox-read-expansion`） |
+| C AI の一時コピー | 原本はコピーの上で加工。PDF・画像化は Mac の隔離された一時コピー・Excel は作業コピー | 既に在る形：PDF は承認の後に Mac の `pdf-staging`（0600・rev と content_hash を照合）、見積は App folder の AI 作業版（Human の部品は 1 byte も変えない）。`ai-copy` の場所と自動の削除（範囲・保持の期間・失敗の時）は未実装＝Human の承認の後 |
+| D AI 業務フォルダ | EN-AI-Output（karte・estimates・reports・restore）を再利用、ai-copy を候補 | 書きの資格情報は App folder だけ（EN-Reader と別）。`output_root` の下の種類は今の 4 つ。ai-copy は足していない。最初の書き込みは台帳 `dropbox-first-write-acceptance` の後 |
+| E カルテは AI 主体 | 口述の原文・日時・候補・確定値と未確認値・訂正・履歴・参照。1 案件 1 カルテ | 受け付けと原文の記録まで実装（§5-2）。構造化・版・差分は APP 側の karte-adapter を使う（二重に作らない）。Mac の Markdown のカルテは H-3・H-15 まで機能を足さない（§5-1） |
+| F 写真・書類の紐付け | 実体は今の場所・ID と参照で結ぶ・LINK の写真は LINK の file-gateway | `resolveById`（Dropbox の ID → 実の path → 許可の判定）は準備済み・未接続。写真の upload の仕組みは Mac に作らない |
+| G 内部 ID の通常の非表示 | 現場 ID・写真 ID・Dropbox ID・task ID は画面・PDF・カルテの本文に出さない。聞かれた時だけ | 口述の結果は ID を返さない。結果の板の上の段の `task_id` は受け渡しの契約として残す（Grok の指示文で「聞かれない限り出さない」・docs/grok-bot.md §10）。ID を隠すことを機密の保護の代わりにはしない |

@@ -8,9 +8,10 @@
  */
 import { closeSync, constants, existsSync, fchmodSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { readJsonSafe } from './safe-read.mjs';
+import { RECORDS_FILE_MAX } from './store.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readBriefFile } from '../runtime-brief.mjs';
 import { analyzeEvents, keepEvent, keepMail, morningReport, parseTime } from './digest.mjs';
 import { jobStatus, RETRYABLE } from './hermes-jobs.mjs';
@@ -190,7 +191,28 @@ const reportMorning = ({ task, store, config, now }) => {
   return { result: morningReport({ business: task.business, mails, events, awaiting, now, offsetMin: config.utc_offset_minutes ?? 0, system, hermes: hermesCounts(store, task.business, now), notes }) };
 };
 
+/**
+ * 現場の口述（2026-11-24・Human 決定 E）：原文・現場名・日付・入力の経路を、business の口述の記録（追記だけ・prune で消さない）へ。
+ * Mac は構造化しない（寸法の抽出・確定は APP 側の karte-adapter の dictation-diff と Human）。同じ現場・同じ日・同じ文の出し直しは 1 件（duplicate）。
+ * 結果に内部の ID（task の ID・記録の ID）を出さない（Human 決定 G）。返すのは現場名と日付だけ
+ */
+const DICTATION_FULL_BYTES = Math.floor(RECORDS_FILE_MAX * 0.8);
+function recordDictation({ task, store, now }) {
+  const p = task.params;
+  const shown = { kind: 'dictation', ...(p.site ? { site: p.site } : {}), ...(p.recorded_on ? { recorded_on: p.recorded_on } : {}) };
+  if (!p.site && !p.case_ref) throw fail('params_dictation_site', { expected: true });
+  try { if (statSync(store._recordFile(task.business, 'dictation')).size > DICTATION_FULL_BYTES) throw fail('dictation_store_full'); } catch (e) { if (e instanceof HandlerError) throw e; }
+  const digest = createHash('sha256').update(`${p.case_ref ?? ''}\n${p.site ?? ''}\n${p.recorded_on ?? ''}\n${p.text}`, 'utf8').digest('hex');
+  const have = store.readRecords(task.business, 'dictation');
+  if (have.has(task.task_id)) return { result: { recorded: true, ...shown } };
+  if ([...have.values()].some((r) => r.digest === digest)) return { result: { recorded: true, duplicate: true, ...shown } };
+  store.appendRecords(task.business, 'dictation', [{ id: task.task_id, at: iso(now), source: task.source, text: p.text, digest, channel: p.channel ?? 'unknown', ...(p.site ? { site: p.site } : {}), ...(p.case_ref ? { case_ref: p.case_ref } : {}), ...(p.recorded_on ? { recorded_on: p.recorded_on } : {}) }]);
+  return { result: { recorded: true, ...shown } };
+}
+
 const noteRecord = ({ task, store, now }) => {
+  if (task.params.kind === 'dictation') return recordDictation({ task, store, now });
+  if (task.params.site !== undefined || task.params.recorded_on !== undefined || task.params.channel !== undefined) throw fail('params_dictation_only', { expected: true }); // 口述の項目はメモでは使わない（どちらのつもりか決められない）
   const have = store.readRecords(task.business, 'notes');
   if (!have.has(task.task_id)) store.appendRecords(task.business, 'notes', [{ id: task.task_id, at: iso(now), text: task.params.text, ...(task.params.case_ref ? { case_ref: task.params.case_ref } : {}) }]); // task_id が id：再実行しても 1 件
   return { result: { recorded: true } };

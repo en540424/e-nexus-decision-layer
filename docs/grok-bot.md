@@ -161,3 +161,16 @@ Human が「人間が作ったタブ 1 と 2 は触らないで」と言わな�
 
 指示文の候補（承認の後に Human が貼る）：
 > E-STEP の資料・工程表を聞かれた時は business を "e-step" にする。フォルダの一覧は intent "dropbox.list"、params {"path":"<許可フォルダの path>"}（最初は list_capabilities と、前の一覧の結果の path を使う）。file 名の検索は intent "dropbox.search"、params {"query":"<語>"}。工程表は intent "schedule.read"、params {}（今日から 7 日）か {"date":"YYYY-MM-DD"}。結果の名前と予定をそのまま伝え、推測で補わない。断られた時は result.next の text をそのまま伝え、retry が "no" なら出し直さない。e-step のメモ・Hermes の依頼・カルテ・見積は Mac で Human の承認が要ると伝える。
+
+### 9-1. Human 決定 B（2026-11-24）との整合
+
+§9 の案（`config.GROK-ESTEP-READ.PROPOSAL.json`）は今の本番の許可フォルダのまま（元請は deny）。決定 B で Mac の読む範囲に元請を足す時は、**先に e-step の `external`（外へ返す範囲）を書いてから** read_roots を拡げる（`docs/dropbox-business.md` §9。順を逆にすると、拡げた範囲がそのまま Grok に返る）。§9 の検収の ① の表に外へ返す範囲の件数が出る。
+
+## 10. Grok の指示文に足す候補（2026-11-24・Human が貼る）
+
+- 内部の番号（task_id・現場 ID・Dropbox の ID・記録の ID）は、Human が「管理番号は？」と聞いた時だけ答える。普段は現場名・日付・書類名・状態で答える
+- 現場の口述は、e-step の公開の承認の後に intent "note.record"、params {"kind":"dictation","text":"<話した文そのまま>","site":"<現場名>","recorded_on":"YYYY-MM-DD","channel":"voice_transcript"}。数字を言い換えない・「約」を落とさない・確定した値として扱わない
+
+### 10-1. EN-Knowledge-Vault を Grok が読む（GitHub の接続・Mac の側は作らない）
+
+Grok の GitHub の接続で Vault（private の repo）を直接読む形を使う。Mac に Vault の検索の server・index は作らない。接続できているかは Grok の画面でしか確かめられない（Human）。読み方の指示文の候補と、外部サービス台帳への記載の案は relay で Windows に送った（GitHub の接続は repo 単位の読み＝フォルダで絞れない・「Secret を読まない」は Grok への指示でしか守れない＝台帳 `grok-vault-github`）。

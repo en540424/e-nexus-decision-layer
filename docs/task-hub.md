@@ -274,3 +274,18 @@ n8n Labs の Nod（公式 Mac デスクトップ版 v0.8.4）を Mac に入れ�
 | 残る弱さ | Mac の同じ OS user で動く物は同じ承認ができる（今と同じ・台帳 `dropbox-keychain-same-user` と同じ種類）。iPhone を失くした時は Tailscale の機器を外し、SSH の鍵を `authorized_keys` から消す |
 
 Human の操作（未実施）：Tailscale は 2026-10-22 に導入を承認済みだが未導入（Trading Lab の保守の窓と ACL の決定を待つ・MAC-RUNTIME-INSTALL-PLAN-2026-10-22 の順）。入れる時は前からの計画どおり `tailscaled`（open source 版）＋ Tailscale SSH、`--accept-dns=false --accept-routes=false`、前後に `scripts/network-baseline.mjs` の写し。Tailscale SSH を使えば macOS の Remote Login は開けなくてよい（使わない時は鍵だけの Remote Login＋ACL で 22 番だけ）。iPhone は Tailscale の app に同じ account で login する。どれも保守の窓で（台帳 `phone-approval-path`・`iphone-tailscale`）。
+
+## 21. 資格情報の provider（将来の 1Password・2026-11-24・**1Password は未有効化・未接続**）
+
+既定は今の OS の資格情報ストア（macOS Keychain）。`scripts/lib/credential-provider.mjs` が、対応表 `~/.enexus/credential-provider.json`（Secret を含まない・**今は作っていない**）に書いた target だけを 1Password の参照から読む。`readCredential`（env file・監視・VPS の受け渡し）と Dropbox の資格情報の読みの両方が同じ判定を使う。
+
+```json
+{ "v": 1, "onepassword": { "references": { "E-NEXUS/edl/<name>": "op://<vault>/<item>/<field>" } } }
+```
+
+- 対応表が無い＝今までとまったく同じ。対応表に無い target は Keychain のまま（サービス単位で段階的に移す）
+- 対応表に書いた target は 1Password だけ（Keychain に黙って戻らない）。CLI が無い＝`provider_not_connected`、読めない＝`provider_read_failed`（値・参照を出さない）。Dropbox の読みは null（未設定と同じ＝止まる側）
+- op は決まった場所（`/opt/homebrew/bin/op`・`/usr/local/bin/op`）だけ。子 process の env は最低限（親の `OP_SERVICE_ACCOUNT_TOKEN` を継がない）
+- 承認（Human Gate）と資格情報の取り出しは別。Grok・ChatGPT に master password・Secret Key・生の値を渡さない（Mac の許された処理が実行の時に読むだけ）
+- **1Password の事実（公式の docs・2026-11-24）**：個人（Individual・Families）の account にも service account の行がある（読みの上限：token ごとに 1 時間 1,000 回・account ごとに 1 日 1,000 回）。desktop app の連携（Touch ID で CLI を開く）は人が居る時だけ＝無人の job には向かない。**5 分ごとの job（Task Hub・host-health）が読む資格情報は Keychain のまま**にする（1 日の上限を越える）。追加の料金の要る方式は選ばない。CLI の `op read --no-newline` は有効化の時に実機で確かめる
+- 有効化の時の検収（Human の承認の後）：1Password の account を始める → CLI を入れる → 試験用の 1 項目だけ対応表に書く → `node -e` で読めることを boolean だけで確かめる → 1 日の読みの回数を見る → 移す target を 1 つずつ足す。ブラウザの自動入力・二段階認証・サービス側の承認は別の話（1Password だけで無人の login にはならない）

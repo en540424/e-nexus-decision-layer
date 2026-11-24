@@ -149,6 +149,20 @@ export function loadScopes(cfg) {
       if (scope.pdf_roots.some((p) => denied(scope, p))) throw new ScopeError('dropbox_config_invalid');
     }
     if (s.read_only === true) scope.read_only = true;
+    // 外へ返す範囲（2026-11-24・Human 決定 B）：Mac で読める範囲と、外のサービス（Grok など human-cli 以外の依頼元）へ名前・中身を返してよい範囲を分ける。
+    // 狭めるだけ（allow_roots は read_roots の中・deny は足すだけ）。無ければ今までどおり（外へも browse の範囲）
+    if (s.external !== undefined) {
+      const e = s.external;
+      if (!e || typeof e !== 'object' || Array.isArray(e) || Object.keys(e).some((k) => !['allow_roots', 'deny_roots', 'deny_names'].includes(k))) throw new ScopeError('dropbox_config_invalid');
+      const sub = (k) => { const v = e[k] ?? []; if (!Array.isArray(v) || v.length > 50) throw new ScopeError('dropbox_config_invalid'); return v.map((x) => { const n = normPath(x); if (!n) throw new ScopeError('dropbox_config_invalid'); return n; }); };
+      const allow = e.allow_roots === undefined ? null : sub('allow_roots');
+      if (allow && allow.some((p) => !scope.read_roots.some((r) => under(p, r)))) throw new ScopeError('dropbox_config_invalid'); // 外へは Mac の範囲より広くしない
+      const names = e.deny_names ?? [];
+      if (!Array.isArray(names) || names.length > 50 || names.some((x) => typeof x !== 'string' || x.trim() === '' || x.length > 40 || BAD_CHARS.test(x) || INVISIBLE.test(x) || x.includes('/'))) throw new ScopeError('dropbox_config_invalid');
+      const folded = names.map((x) => squash(x));
+      if (folded.some((x) => [...x].length < 2 || x.includes('/'))) throw new ScopeError('dropbox_config_invalid');
+      scope.external = Object.freeze({ allow_roots: allow, deny_roots: sub('deny_roots'), deny_names: folded });
+    }
     out.set(b, Object.freeze(scope));
   }
   // 出力の場所は business ごとに分ける（重なれば他の business の karte を書き換えうる）
@@ -156,6 +170,19 @@ export function loadScopes(cfg) {
   // 同じ場所・重なる場所は拒否（index で比べる＝同じ文字列の 2 つも拒否・監査 F1）
   roots.forEach((a, i) => roots.forEach((b, j) => { if (i !== j && (under(a, b) || under(b, a))) throw new ScopeError('dropbox_config_invalid'); }));
   return out;
+}
+
+/**
+ * 外のサービス（human-cli 以外の依頼元＝Grok など）へ、この path の名前・中身を返してよいか（2026-11-24・Human 決定 B）。
+ * Mac で読めること（browsable・assertReadable）の上に重ねて使う。external が無ければ true（今までどおり）
+ */
+export function externalVisible(scope, path) {
+  const p = normPath(path);
+  if (!p) return false;
+  const e = scope.external;
+  if (!e) return true;
+  if (e.allow_roots && !e.allow_roots.some((r) => under(p, r))) return false;
+  return !e.deny_roots.some((r) => underWide(p, r)) && !nameDenied(p, e.deny_names);
 }
 
 export function scopeOf(scopes, business) {

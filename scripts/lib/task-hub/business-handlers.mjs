@@ -18,7 +18,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveReal } from '../dropbox/resolve.mjs';
-import { assertReadable, browsable, foldPath, loadScopes, nameDenied, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
+import { assertReadable, browsable, externalVisible, foldPath, loadScopes, nameDenied, normPath, outputPath, scopeOf, searchRoot, ScopeError, withinRoot } from '../dropbox/scope.mjs';
 import { appendToKarte, CARTE_SECTIONS, CASE_ID_RE, decodeKarte, KarteError, newKarte, provenance, sectionText, unknownSections } from '../business/karte.mjs';
 import { backupSchedule, BackupError, listGenerations, restoreGeneration } from '../business/schedule-backup.mjs';
 import { addAiSheet, estimateSheetXml, readCalendar, readSheetRows, replaceAiSheet, summarizeAiSheet, XlsxError } from '../xlsx/workbook.mjs';
@@ -83,16 +83,24 @@ function karteHistory(svc, business, caseId) {
 }
 
 // ─── 資料（読むだけ）───
+/** 外のサービスの依頼か（2026-11-24・Human 決定 B）。human-cli（Mac の端末）だけが内。外の依頼は externalVisible の範囲だけ返す */
+const outward = (task) => task.source !== 'human-cli';
+/** 外の依頼の path を、Dropbox に聞く前と後（実の名前）の両方で確かめる。外に見せない場所は在るか無いかも教えない（同じ code） */
+function assertOutward(task, scope, p) { if (outward(task) && (!normPath(p) || !externalVisible(scope, p))) throw new ScopeError('dropbox_path_not_allowed'); }
+const visibleTo = (task, scope) => (p) => browsable(scope, p) && (!outward(task) || externalVisible(scope, p));
 const SEARCH_MAX = 30;
 const dropboxSearch = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   // 名前で読ませない語（給与・名簿など）を探す検索は受けない：結果は絞っても「件数・続きがある」の印で、隠した file の在ることが分かってしまう（2026-11-18 監査）
   if (nameDenied(task.params.query, scope.deny_names)) throw new ScopeError('dropbox_path_not_allowed');
+  if (outward(task) && scope.external && nameDenied(task.params.query, scope.external.deny_names)) throw new ScopeError('dropbox_path_not_allowed');
+  if (task.params.path) assertOutward(task, scope, task.params.path);
   // path の指定は実の名前に直す（依頼の文字は受け口で NFKC に揃っている＝全角を含む名前はそのままでは Dropbox に無い）
   const root = task.params.path ? await resolveReal(svc.dropbox('read'), scope, task.params.path, 'browse', { signal }) : searchRoot(scope, null);
+  assertOutward(task, scope, root);
   const raw = await svc.dropbox('read').search(task.params.query, { path: root, max: SEARCH_MAX, signal });
-  const hits = raw.filter((h) => withinRoot(root, h.path) && browsable(scope, h.path)); // 範囲の中だけ（見積・読ませない場所の file は名前も返さない）
+  const hits = raw.filter((h) => withinRoot(root, h.path) && visibleTo(task, scope)(h.path)); // 範囲の中だけ（見積・読ませない場所の file は名前も返さない）
   const { kept, cut } = fitList(hits.slice(0, SEARCH_MAX).map((h) => ({ name: h.name, path: h.path, size: h.size, server_modified: h.server_modified })));
   // truncated：Dropbox が上限の件数を返した（もっと在るかもしれない）か、bytes の上限で切った。無ければ「これで全部」
   return { result: { count: hits.length, files: kept, ...(cut || raw.length >= SEARCH_MAX ? { truncated: true } : {}) } };
@@ -100,9 +108,11 @@ const dropboxSearch = ({ task, config, signal }) => guarded(async () => {
 const dropboxList = ({ task, config, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
+  assertOutward(task, scope, task.params.path);
   const p = await resolveReal(svc.dropbox('read'), scope, task.params.path, 'browse', { signal }); // 実の名前に直す。見積（L2）のフォルダは承認なしの一覧に出さない
+  assertOutward(task, scope, p);
   const r = await svc.dropbox('read').list(p, { limit: 200, signal });
-  r.entries = r.entries.filter((e) => browsable(scope, e.path)); // 一覧の中の見積のフォルダ・読ませない場所は名前も出さない（2026-11-16 監査）
+  r.entries = r.entries.filter((e) => visibleTo(task, scope)(e.path)); // 一覧の中の見積のフォルダ・読ませない場所は名前も出さない（2026-11-16 監査）
   // 名前だけ返す（path は依頼の path＋名前＝同じ文字を 100 回返さない）。bytes の上限の手前で切る（切ったら truncated）
   const { kept, cut } = fitList(r.entries.slice(0, 100).map((e) => ({ tag: e.tag, name: e.name, ...(e.tag === 'file' ? { size: e.size, server_modified: e.server_modified } : {}) })));
   return { result: { path: p, count: r.entries.length, truncated: r.truncated || r.entries.length > kept.length, entries: kept, ...(r.entries.length > kept.length ? { returned: kept.length } : {}) } };
@@ -178,6 +188,7 @@ const scheduleRead = ({ task, config, now, signal }) => guarded(async () => {
   const svc = services(config);
   const scope = scopeOf(scopesOf(config), task.business);
   const file = scheduleFile(scope, task.params.file);
+  assertOutward(task, scope, file); // 工程表の中身は名前で絞れない＝外に見せない工程表は丸ごと断る
   const p = task.params;
   for (const k of ['date', 'from', 'to']) if (p[k] !== undefined && !validDay(p[k])) throw new XlsxError('schedule_date_invalid');
   if ((p.date && (p.from || p.to)) || (p.to && !p.from) || (p.from && p.to && p.to < p.from)) throw new XlsxError('schedule_date_invalid');

@@ -93,3 +93,6 @@ node scripts/reboot-check.mjs          # 読むだけ。起動・書き込み・
 - 判定：`ok`・`waiting`（起動から次の回の時間がまだ経っていない）・`problem`。起動の前の記録のままの job は、新しさの範囲の中でも ok にしない（`not_run_since_boot`）。
 - LaunchAgent は GUI の login の後にしか動かない。login が要るかどうかは、この Mac の設定で決まる。その設定値（自動の login・ディスクの暗号化）は公開 repo に書かない。確かめ方と Human の判断は Vault の MA-22 ランブックの側に置く。
 - 再起動そのもの（実機の検証）は Human が保守の窓で行う。同じ Mac で別の本番が動いているため、Claude Code は再起動しない。
+- 2026-11-23 の再起動（Human が夜間のソフトウェア更新を指示していた）：起動の 1 分後に GUI の login、host-health が 6 分後に `rebooted` を検知して Discord へ通知、Task Hub・watchdog・バックアップ・Hermes が戻り、約 20 時間後の `reboot-check` は全項目 ok。＝login があれば LaunchAgent の job は自動で戻ることを実機で確かめた（login が無い時の運用は台帳 `reboot-login-recovery`）
+- 自動で戻すのは E-NEXUS の job（LaunchAgent・Hermes の LaunchDaemon）だけ。**Trading Lab（実資金）・Parallels は reboot-check の対象にも自動の復旧の対象にも入れない**（LIVE の起動・再アーム・発注・kill switch の解除は人の手順）。dev-session の job も自動では再実行しない（`recover` が一覧を出すだけ）
+- FileVault・自動の login の設定値はこの公開 repo に書かない（Vault の MA-22 ランブック）

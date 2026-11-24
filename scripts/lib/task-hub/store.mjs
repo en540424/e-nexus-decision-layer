@@ -30,14 +30,14 @@ export const HUMAN_SOURCE = 'human-cli';
 export const NONCE_RETENTION_MS = RECORD_MAX_AGE_MS + 86_400_000;
 const TASK_FILE_MAX = 256 * 1024;
 const OUTBOX_FILE_MAX = 64 * 1024;
-const RECORDS_FILE_MAX = 32 * 1024 * 1024;
+export const RECORDS_FILE_MAX = 32 * 1024 * 1024;
 export const AUDIT_FILE_MAX = 256 * 1024 * 1024;
 /** 記録の保持の上限（件）。retention（日数）とは別に、file を有限に保つ */
-export const RECORD_MAX_ROWS = Object.freeze({ mail: 5000, calendar: 5000, notes: 2000 });
+export const RECORD_MAX_ROWS = Object.freeze({ mail: 5000, calendar: 5000, notes: 2000, dictation: 100000 });
 export const LOCK_STALE_MS = 60_000; // owner.json が無い lock（普通は作れない形）と、短い排他（audit・task ごと）の持ち主の最長
 /** run.lock の持ち主の最長（本物の runner がこれ以上持つことはない）。pid が再利用されて「生きて見える」lock をこれで古いとする */
 export const RUN_LOCK_MAX_AGE_MS = 30 * 60_000;
-export const RECORD_KINDS = Object.freeze(['mail', 'calendar', 'notes']);
+export const RECORD_KINDS = Object.freeze(['mail', 'calendar', 'notes', 'dictation']); // dictation（2026-11-24）：現場の口述の原文。prune で詰めない
 /** 終わった state（もう動かない）。stopped は Human が新しい依頼を出し直す */
 export const TERMINAL = Object.freeze(['succeeded', 'failed', 'rejected', 'blocked', 'expired', 'stopped']);
 /** 依頼元へ返す state（待っていることも伝える） */

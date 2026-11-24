@@ -1,190 +1,1375 @@
 {
   "$comment": "Task Hub の intent 台帳（2026-11-09・MA-24）。依頼（intent）ごとの class・handler・flags・params の形。class：auto＝ローカルで読む・記録するだけの handler が無人で走る／ai_check＝Decision Layer（executor-route）が candidate と読んだ時だけ無人で走る（それ以外は Human 承認待ち）／human_required＝Human の承認が要る（handler が null のものは承認しても走らせない＝blocked/no_handler）／forbidden＝取り込むが必ず blocked（承認もできない）。台帳に無い intent は human_required・handler null。flags は executor-route の input に写す構造情報（auto／ai_check は全部 false でなければ読み込めない）。execution_mode は interactive：scheduled／long-running は executor-route が常に human を返す（常駐の実行主体 Hermes が未導入のため）ので、1 回の短い同期処理で終わるローカルの記録処理は interactive と申告する。environment は dev：作業が影響するのはこの Mac の手元の記録だけで、deploy 済みの環境（staging／production）には触れない。最大の params の大きさ（max_params_bytes）は既定 8192、digest 系だけ 14000（wire の body 上限 16KiB に収める）。",
   "forbidden_prefixes": [
-    "trading.", "system.", "shell.", "secret.", "permission.", "gate.", "payment.", "account.",
-    "hermes.toolset.", "vault.write", "deploy.", "credential.", "keychain.", "launchd.", "ssh.", "sudo."
+    "trading.",
+    "system.",
+    "shell.",
+    "secret.",
+    "permission.",
+    "gate.",
+    "payment.",
+    "account.",
+    "hermes.toolset.",
+    "vault.write",
+    "deploy.",
+    "credential.",
+    "keychain.",
+    "launchd.",
+    "ssh.",
+    "sudo."
   ],
   "intents": {
     "status.query": {
-      "class": "auto", "handler": "status.query", "timeout_ms": 10000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "detail": { "type": "boolean" } } },
+      "class": "auto",
+      "handler": "status.query",
+      "timeout_ms": 10000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "boolean"
+          }
+        }
+      },
       "usage": "params: {} or {\"detail\":true} (true is a JSON boolean, not a string). No other keys.",
       "note": "runtime-brief を読み、全体の水準・要確認の件数・生成時刻だけを返す。値・項目名は返さない。detail: true（2026-11-13）は区分ごとの水準（ok/warn/crit だけ・文も日数も無い）・その business の Task Hub の件数・Hermes の実行の件数・定期の回のコードを足す"
     },
     "task.status": {
-      "class": "auto", "handler": "task.status", "timeout_ms": 10000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "task_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" }, "view": { "type": "string", "enum": ["recent", "awaiting_approval", "failed", "succeeded", "hermes", "pending", "approval", "awaiting", "failure", "failures", "error", "errors", "success", "done", "completed", "all", "latest"] }, "limit": { "type": "integer" } } },
+      "class": "auto",
+      "handler": "task.status",
+      "timeout_ms": 10000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task_ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "recent",
+              "awaiting_approval",
+              "failed",
+              "succeeded",
+              "hermes",
+              "pending",
+              "approval",
+              "awaiting",
+              "failure",
+              "failures",
+              "error",
+              "errors",
+              "success",
+              "done",
+              "completed",
+              "all",
+              "latest"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
       "usage": "params: {} (your recent tasks) | {\"view\":\"recent|awaiting_approval|failed|succeeded|hermes\",\"limit\":1-20} | {\"task_ref\":\"<idempotency_key of an earlier task>\"}. Use view OR task_ref, not both. No other keys.",
       "note": "同じ依頼元・同じ business の依頼の状態だけ。それ以外は not_found（存在を教えない）。task_ref か view のどちらか 1 つ（2026-11-13）：view は自分の依頼の一覧（recent・承認待ち・失敗・成功・Hermes）を新しい順に limit 件（既定 10・最大 20）。承認待ちは他の依頼元の分を件数だけ。hermes.task の task_ref は Hermes の状態と結果の要約も返す。2026-11-16（本番で {} と view: pending が失敗した）：params が空なら recent。view の別名（pending・approval・awaiting → awaiting_approval、failure(s)・error(s) → failed、success・done・completed → succeeded、all・latest → recent）を受ける＝enum は handlers.mjs の VIEWS と VIEW_ALIASES の和。usage は形の誤りで断った時に依頼元へ返す呼び方の 1 行（hint）"
     },
     "mail.digest.ingest": {
-      "class": "auto", "handler": "mail.digest.ingest", "timeout_ms": 15000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "class": "auto",
+      "handler": "mail.digest.ingest",
+      "timeout_ms": 15000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
       "params_schema": {
-        "type": "object", "required": ["items"], "additionalProperties": false,
-        "properties": { "items": { "type": "array", "maxItems": 200, "items": {
-          "type": "object", "required": ["id", "received_at", "account", "category", "from_label", "subject"], "additionalProperties": false,
-          "properties": {
-            "id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
-            "received_at": { "type": "string", "format": "iso" },
-            "account": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$" },
-            "category": { "type": "string", "enum": ["important", "reply_needed", "info", "spam"] },
-            "from_label": { "type": "string", "maxLength": 60 },
-            "subject": { "type": "string", "maxLength": 120 },
-            "due": { "type": "string", "format": "iso" }
-          } } } }
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "received_at",
+                "account",
+                "category",
+                "from_label",
+                "subject"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                },
+                "received_at": {
+                  "type": "string",
+                  "format": "iso"
+                },
+                "account": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "important",
+                    "reply_needed",
+                    "info",
+                    "spam"
+                  ]
+                },
+                "from_label": {
+                  "type": "string",
+                  "maxLength": 60
+                },
+                "subject": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "due": {
+                  "type": "string",
+                  "format": "iso"
+                }
+              }
+            }
+          }
+        }
       },
       "note": "Grok が作ったメールの要約を business ごとの記録に残すだけ。メールの操作は一切しない（id で重複を除く）"
     },
     "calendar.digest.ingest": {
-      "class": "auto", "handler": "calendar.digest.ingest", "timeout_ms": 15000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
+      "class": "auto",
+      "handler": "calendar.digest.ingest",
+      "timeout_ms": 15000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
       "params_schema": {
-        "type": "object", "required": ["events"], "additionalProperties": false,
-        "properties": { "events": { "type": "array", "maxItems": 300, "items": {
-          "type": "object", "required": ["id", "start", "end", "title"], "additionalProperties": false,
-          "properties": {
-            "id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
-            "start": { "type": "string", "format": "iso" },
-            "end": { "type": "string", "format": "iso" },
-            "title": { "type": "string", "maxLength": 120 },
-            "case_ref": { "type": "string", "maxLength": 64 },
-            "all_day": { "type": "boolean" }
-          } } } }
+        "type": "object",
+        "required": [
+          "events"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 300,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "start",
+                "end",
+                "title"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                },
+                "start": {
+                  "type": "string",
+                  "format": "iso"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "iso"
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "case_ref": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "all_day": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
       },
       "note": "予定の要約を記録し、重なり・重複の疑いを検出して返す。予定の作成・変更・削除はしない"
     },
     "report.morning": {
-      "class": "auto", "handler": "report.morning", "timeout_ms": 10000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "class": "auto",
+      "handler": "report.morning",
+      "timeout_ms": 10000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
       "usage": "params: {} (no keys).",
       "note": "その business 自身の記録だけから作る決まった文面（3000 字まで）。他の business の記録は読まない"
     },
     "note.record": {
-      "class": "ai_check", "handler": "note.record", "timeout_ms": 10000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["text"], "additionalProperties": false, "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 500 }, "case_ref": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" } } },
-      "usage": "params: {\"text\":\"<1-500 chars>\",\"case_ref\":\"<optional: 1-64 chars of A-Z a-z 0-9 . _ : ->\"}. No other keys.",
-      "note": "短いメモ（500 字まで）を business のローカルのメモに追記する。case_ref（任意・2026-11-13）は予定の case_ref と同じ値で、朝のまとめが予定とメモを結ぶ"
+      "class": "ai_check",
+      "handler": "note.record",
+      "timeout_ms": 10000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "case_ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "memo",
+              "dictation"
+            ]
+          },
+          "site": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "recorded_on": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "typed",
+              "voice_transcript",
+              "unknown"
+            ]
+          }
+        }
+      },
+      "usage": "params: {\"text\":\"<1-500 chars>\",\"case_ref\":\"<optional A-Z a-z 0-9 . _ : - (1-64)>\"}. Site dictation: add \"kind\":\"dictation\",\"site\":\"<site name>\",\"recorded_on\":\"YYYY-MM-DD\",\"channel\":\"typed|voice_transcript\". No other keys.",
+      "note": "短いメモ（500 字まで）を business のローカルのメモに追記する。case_ref（任意・2026-11-13）は予定の case_ref と同じ値で、朝のまとめが予定とメモを結ぶ。2026-11-24：kind \"dictation\"＝現場の口述（原文・現場名・日付・入力の経路）を口述の記録へ（カルテの入力・APP 側の dictation-input-v1 へ書き出す・Mac は構造化しない）"
     },
     "hermes.task": {
-      "class": "human_required", "handler": "hermes.task", "timeout_ms": 10000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["title", "body"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "body": { "type": "string", "minLength": 1, "maxLength": 2000 }, "kind": { "type": "string", "enum": ["ops_review"] } } },
+      "class": "human_required",
+      "handler": "hermes.task",
+      "timeout_ms": 10000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "title",
+          "body"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ops_review"
+            ]
+          }
+        }
+      },
       "usage": "params: {\"title\":\"<1-120 chars>\",\"body\":\"<1-2000 chars>\",\"kind\":\"<optional: ops_review = Hermes reviews Task Hub states, failures and waiting items>\"}. No other keys. It runs only after a human approves it on the Mac.",
       "note": "休眠中。承認済みの依頼を、設定された Hermes の inbox に既にあるフォルダへ書くだけ（フォルダは作らない）。無ければ hermes_inbox_not_connected で終わる"
     },
     "dropbox.pdf.fetch": {
-      "class": "human_required", "handler": "dropbox.pdf.fetch", "timeout_ms": 60000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["path", "rev"], "additionalProperties": false, "properties": { "path": { "type": "string", "minLength": 5, "maxLength": 1024, "pattern": "^/" }, "rev": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9]+$" } } },
+      "class": "human_required",
+      "handler": "dropbox.pdf.fetch",
+      "timeout_ms": 60000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "path",
+          "rev"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 1024,
+            "pattern": "^/"
+          },
+          "rev": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9]+$"
+          }
+        }
+      },
       "note": "Mac local CLI only. Stages a Human-approved PDF revision locally; no attachment or link is sent."
     },
     "dropbox.pdf.search": {
-      "class": "auto", "handler": "dropbox.pdf.search", "timeout_ms": 30000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["query", "path"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 200 }, "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "class": "auto",
+      "handler": "dropbox.pdf.search",
+      "timeout_ms": 30000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "query",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1024,
+            "pattern": "^/"
+          }
+        }
+      },
       "note": "Mac local CLI only. Searches explicitly configured PDF roots by filename and returns candidates for selection."
     },
     "dropbox.search": {
-      "class": "auto", "handler": "dropbox.search", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["query"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 200 }, "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "class": "auto",
+      "handler": "dropbox.search",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1024,
+            "pattern": "^/"
+          }
+        }
+      },
       "note": "2026-11-13：その business の許可フォルダ（config の dropbox・Human が承認）の中だけを、読み取り専用の資格情報で検索。名前・path・大きさ・更新時刻だけ返す"
     },
     "dropbox.list": {
-      "class": "auto", "handler": "dropbox.list", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["path"], "additionalProperties": false, "properties": { "path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" } } },
+      "class": "auto",
+      "handler": "dropbox.list",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1024,
+            "pattern": "^/"
+          }
+        }
+      },
       "note": "許可フォルダの中の 1 つのフォルダの一覧（読み取り専用）"
     },
     "schedule.read": {
-      "class": "auto", "handler": "schedule.read", "timeout_ms": 45000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "sheet": { "type": "string", "minLength": 1, "maxLength": 31 }, "query": { "type": "string", "minLength": 1, "maxLength": 100 }, "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }, "from": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }, "to": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } } },
+      "class": "auto",
+      "handler": "schedule.read",
+      "timeout_ms": 45000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "integer"
+          },
+          "sheet": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 31
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "from": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      },
       "usage": "params: {} (7 days from today) | {\"date\":\"YYYY-MM-DD\"} | {\"from\":\"YYYY-MM-DD\",\"to\":\"YYYY-MM-DD\"} (max 31 days) | {\"query\":\"<1-100 chars>\"} (from today on; add from and to for other dates). If the result has next_from, call again with from=next_from. Optional: \"sheet\", \"file\". No other keys.",
       "note": "工程表（config の schedule_files）を読むだけ。日付が横に並ぶ表は日付で抜き出す（既定は今日から 7 日・date・from〜to・query。2026-11-16）。日付の見出しが無い表は query を含む行。結果は bytes の上限の手前で切る（truncated・next_from）。工程表に書く道は無い"
     },
     "schedule.backup": {
-      "class": "auto", "handler": "schedule.backup", "timeout_ms": 60000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "class": "auto",
+      "handler": "schedule.backup",
+      "timeout_ms": 60000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
       "note": "工程表の臨時バックアップ（AI を使わない）。Dropbox の版を content_hash で確かめ、Dropbox の外の Mac の場所へ保存・読み直して sha256 を確かめた時だけ completed。同じ中身なら新しい世代を作らない"
     },
     "schedule.backup.list": {
-      "class": "auto", "handler": "schedule.backup.list", "timeout_ms": 10000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" } } },
+      "class": "auto",
+      "handler": "schedule.backup.list",
+      "timeout_ms": 10000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "integer"
+          }
+        }
+      },
       "note": "バックアップの世代の一覧（新しい順・20 件まで）"
     },
     "schedule.restore": {
-      "class": "auto", "handler": "schedule.restore", "timeout_ms": 60000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "additionalProperties": false, "properties": { "file": { "type": "integer" }, "generation": { "type": "string", "pattern": "^[0-9TZ]{15}-[0-9a-f]{8}$" }, "at": { "type": "string", "format": "iso" } } },
+      "class": "auto",
+      "handler": "schedule.restore",
+      "timeout_ms": 60000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "integer"
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[0-9TZ]{15}-[0-9a-f]{8}$"
+          },
+          "at": {
+            "type": "string",
+            "format": "iso"
+          }
+        }
+      },
       "note": "世代を App folder の restore/ へ別の file として出す（原本は変えない・置き換えは Human）"
     },
     "karte.create": {
-      "class": "auto", "handler": "karte.create", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["case_id", "site_name"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "site_name": { "type": "string", "minLength": 1, "maxLength": 120 }, "fields": { "type": "object", "additionalProperties": false, "properties": { "site_name": { "type": "string", "minLength": 1, "maxLength": 2000 }, "case_id": { "type": "string", "minLength": 1, "maxLength": 2000 }, "address": { "type": "string", "minLength": 1, "maxLength": 2000 }, "survey_date": { "type": "string", "minLength": 1, "maxLength": 2000 }, "schedule": { "type": "string", "minLength": 1, "maxLength": 2000 }, "work": { "type": "string", "minLength": 1, "maxLength": 2000 }, "building": { "type": "string", "minLength": 1, "maxLength": 2000 }, "floors_height": { "type": "string", "minLength": 1, "maxLength": 2000 }, "perimeter": { "type": "string", "minLength": 1, "maxLength": 2000 }, "scaffold_area": { "type": "string", "minLength": 1, "maxLength": 2000 }, "materials": { "type": "string", "minLength": 1, "maxLength": 2000 }, "carport": { "type": "string", "minLength": 1, "maxLength": 2000 }, "special": { "type": "string", "minLength": 1, "maxLength": 2000 }, "access": { "type": "string", "minLength": 1, "maxLength": 2000 }, "neighborhood": { "type": "string", "minLength": 1, "maxLength": 2000 }, "safety": { "type": "string", "minLength": 1, "maxLength": 2000 }, "photos": { "type": "string", "minLength": 1, "maxLength": 2000 }, "estimates": { "type": "string", "minLength": 1, "maxLength": 2000 }, "process": { "type": "string", "minLength": 1, "maxLength": 2000 }, "survey_log": { "type": "string", "minLength": 1, "maxLength": 2000 }, "human_log": { "type": "string", "minLength": 1, "maxLength": 2000 }, "ai_notes": { "type": "string", "minLength": 1, "maxLength": 2000 }, "unknowns": { "type": "string", "minLength": 1, "maxLength": 2000 } } } } },
+      "class": "auto",
+      "handler": "karte.create",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "site_name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$"
+          },
+          "site_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "site_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "case_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "address": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "survey_date": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "schedule": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "work": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "building": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "floors_height": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "perimeter": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "scaffold_area": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "materials": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "carport": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "special": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "access": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "neighborhood": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "safety": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "photos": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "estimates": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "process": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "survey_log": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "human_log": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "ai_notes": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "unknowns": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          }
+        }
+      },
       "note": "現場カルテを AI の共通の書式で作る（App folder の karte/・在れば作らない）。渡された値だけを書き、無い項目は未確認"
     },
     "karte.get": {
-      "class": "auto", "handler": "karte.get", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["case_id"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "section": { "type": "string", "enum": ["site_name", "case_id", "address", "survey_date", "schedule", "work", "building", "floors_height", "perimeter", "scaffold_area", "materials", "carport", "special", "access", "neighborhood", "safety", "photos", "estimates", "process", "survey_log", "human_log", "ai_notes", "unknowns"] } } },
+      "class": "auto",
+      "handler": "karte.get",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "case_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$"
+          },
+          "section": {
+            "type": "string",
+            "enum": [
+              "site_name",
+              "case_id",
+              "address",
+              "survey_date",
+              "schedule",
+              "work",
+              "building",
+              "floors_height",
+              "perimeter",
+              "scaffold_area",
+              "materials",
+              "carport",
+              "special",
+              "access",
+              "neighborhood",
+              "safety",
+              "photos",
+              "estimates",
+              "process",
+              "survey_log",
+              "human_log",
+              "ai_notes",
+              "unknowns"
+            ]
+          }
+        }
+      },
       "note": "現場カルテを読む（全文は 6000 字かつ約 11 KB〈日本語で 3,600 字ほど〉まで＝越えたら truncated・節を指定できる）"
     },
     "karte.append": {
-      "class": "auto", "handler": "karte.append", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["case_id", "section", "text"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" }, "section": { "type": "string", "enum": ["site_name", "case_id", "address", "survey_date", "schedule", "work", "building", "floors_height", "perimeter", "scaffold_area", "materials", "carport", "special", "access", "neighborhood", "safety", "photos", "estimates", "process", "survey_log", "human_log", "ai_notes", "unknowns"] }, "text": { "type": "string", "minLength": 1, "maxLength": 2000 }, "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" } } },
+      "class": "auto",
+      "handler": "karte.append",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "case_id",
+          "section",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$"
+          },
+          "section": {
+            "type": "string",
+            "enum": [
+              "site_name",
+              "case_id",
+              "address",
+              "survey_date",
+              "schedule",
+              "work",
+              "building",
+              "floors_height",
+              "perimeter",
+              "scaffold_area",
+              "materials",
+              "carport",
+              "special",
+              "access",
+              "neighborhood",
+              "safety",
+              "photos",
+              "estimates",
+              "process",
+              "survey_log",
+              "human_log",
+              "ai_notes",
+              "unknowns"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      },
       "note": "節の末尾に AI の囲みを差し込むだけ（Human の文は 1 文字も変えない・rev つきで上げる＝同時の編集は読み直す）"
     },
     "karte.search": {
-      "class": "auto", "handler": "karte.search", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["query"], "additionalProperties": false, "properties": { "query": { "type": "string", "minLength": 1, "maxLength": 100 } } },
+      "class": "auto",
+      "handler": "karte.search",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      },
       "note": "カルテの検索（App folder の karte/ の中だけ）"
     },
     "karte.report": {
-      "class": "auto", "handler": "karte.report", "timeout_ms": 30000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["case_id"], "additionalProperties": false, "properties": { "case_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$" } } },
+      "class": "auto",
+      "handler": "karte.report",
+      "timeout_ms": 30000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "case_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$"
+          }
+        }
+      },
       "note": "決まった形の要点（作業予定・注意事項・未確認事項・現調履歴の抜き出し。AI の要約ではない）"
     },
     "estimate.ai.create": {
-      "class": "human_required", "handler": "estimate.ai.create", "timeout_ms": 60000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["original_path", "sheet_name", "title", "rows"], "additionalProperties": false, "properties": { "original_path": { "type": "string", "minLength": 2, "maxLength": 1024, "pattern": "^/" }, "sheet_name": { "type": "string", "minLength": 4, "maxLength": 31, "pattern": "^AI_" }, "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "rows": { "type": "array", "maxItems": 300, "items": { "type": "object", "required": ["item", "qty", "price"], "additionalProperties": false, "properties": { "item": { "type": "string", "minLength": 1, "maxLength": 200 }, "spec": { "type": "string", "maxLength": 200 }, "qty": { "type": "number" }, "unit": { "type": "string", "maxLength": 20 }, "price": { "type": "number" }, "note": { "type": "string", "maxLength": 200 } } } } } },
+      "class": "human_required",
+      "handler": "estimate.ai.create",
+      "timeout_ms": 60000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "original_path",
+          "sheet_name",
+          "title",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "original_path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1024,
+            "pattern": "^/"
+          },
+          "sheet_name": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 31,
+            "pattern": "^AI_"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 300,
+            "items": {
+              "type": "object",
+              "required": [
+                "item",
+                "qty",
+                "price"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "item": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "spec": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "qty": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                "price": {
+                  "type": "number"
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 200
+                }
+              }
+            }
+          }
+        }
+      },
       "note": "見積書の AI 作業版に AI の tab を足す（原本は読むだけ・L2＝毎回 Human の承認）。Human の tab と他の部品は 1 byte も変えない（保存の前に確かめる）"
     },
     "estimate.ai.edit": {
-      "class": "human_required", "handler": "estimate.ai.edit", "timeout_ms": 60000, "max_params_bytes": 14000,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["working_name", "sheet_name", "title", "rows"], "additionalProperties": false, "properties": { "working_name": { "type": "string", "minLength": 1, "maxLength": 120 }, "sheet_name": { "type": "string", "minLength": 4, "maxLength": 31, "pattern": "^AI_" }, "title": { "type": "string", "minLength": 1, "maxLength": 120 }, "rows": { "type": "array", "maxItems": 300, "items": { "type": "object", "required": ["item", "qty", "price"], "additionalProperties": false, "properties": { "item": { "type": "string", "minLength": 1, "maxLength": 200 }, "spec": { "type": "string", "maxLength": 200 }, "qty": { "type": "number" }, "unit": { "type": "string", "maxLength": 20 }, "price": { "type": "number" }, "note": { "type": "string", "maxLength": 200 } } } } } },
+      "class": "human_required",
+      "handler": "estimate.ai.edit",
+      "timeout_ms": 60000,
+      "max_params_bytes": 14000,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "working_name",
+          "sheet_name",
+          "title",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "working_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "sheet_name": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 31,
+            "pattern": "^AI_"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 300,
+            "items": {
+              "type": "object",
+              "required": [
+                "item",
+                "qty",
+                "price"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "item": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "spec": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "qty": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "string",
+                  "maxLength": 20
+                },
+                "price": {
+                  "type": "number"
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 200
+                }
+              }
+            }
+          }
+        }
+      },
       "note": "AI 作業版の AI の tab（台帳に AI が作ったと記録した AI_ の tab）だけを作り直す"
     },
     "freeform.request": {
-      "class": "human_required", "handler": null,
-      "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false },
-      "params_schema": { "type": "object", "required": ["text"], "additionalProperties": false, "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 1000 } } },
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
       "note": "自然文だけの依頼。追跡のために受けるが、ここでは実行しない"
     },
-    "mail.reply.draft": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "返信の下書き。実行する handler は無い" },
-    "mail.send": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": true }, "params_schema": null, "note": "メール送信は実装しない" },
-    "mail.label": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "メールのラベル変更は実装しない" },
-    "mail.move": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "メールの移動は実装しない" },
-    "mail.mark-read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "既読化は実装しない" },
-    "mail.delete": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": true }, "params_schema": null, "note": "メールの削除は実装しない" },
-    "calendar.event.create": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": false }, "params_schema": null, "note": "予定の作成は実装しない" },
-    "calendar.event.update": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": false }, "params_schema": null, "note": "予定の変更は実装しない" },
-    "calendar.event.delete": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": true, "production_change": false, "irreversible": true }, "params_schema": null, "note": "予定の削除は実装しない" },
-    "docomo.rule.propose": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": false, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "ルール案の提案。実行する handler は無い" },
-    "dropbox.read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": true, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "外部ストレージの読み取りは接続していない" },
-    "github.read": { "class": "human_required", "handler": null, "flags": { "work_center": "operations", "execution_mode": "interactive", "environment": "dev", "touches_secrets": true, "paid_api": false, "external_send": false, "production_change": false, "irreversible": false }, "params_schema": null, "note": "GitHub の読み取りは接続していない" }
+    "mail.reply.draft": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "返信の下書き。実行する handler は無い"
+    },
+    "mail.send": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": true,
+        "production_change": false,
+        "irreversible": true
+      },
+      "params_schema": null,
+      "note": "メール送信は実装しない"
+    },
+    "mail.label": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "メールのラベル変更は実装しない"
+    },
+    "mail.move": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "メールの移動は実装しない"
+    },
+    "mail.mark-read": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "既読化は実装しない"
+    },
+    "mail.delete": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": true
+      },
+      "params_schema": null,
+      "note": "メールの削除は実装しない"
+    },
+    "calendar.event.create": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": true,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "予定の作成は実装しない"
+    },
+    "calendar.event.update": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": true,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "予定の変更は実装しない"
+    },
+    "calendar.event.delete": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": true,
+        "production_change": false,
+        "irreversible": true
+      },
+      "params_schema": null,
+      "note": "予定の削除は実装しない"
+    },
+    "docomo.rule.propose": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": false,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "ルール案の提案。実行する handler は無い"
+    },
+    "dropbox.read": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": true,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "外部ストレージの読み取りは接続していない"
+    },
+    "github.read": {
+      "class": "human_required",
+      "handler": null,
+      "flags": {
+        "work_center": "operations",
+        "execution_mode": "interactive",
+        "environment": "dev",
+        "touches_secrets": true,
+        "paid_api": false,
+        "external_send": false,
+        "production_change": false,
+        "irreversible": false
+      },
+      "params_schema": null,
+      "note": "GitHub の読み取りは接続していない"
+    }
   }
 }
