@@ -16,6 +16,7 @@ import { analyzeEvents, keepEvent, keepMail, morningReport, parseTime } from './
 import { jobStatus, RETRYABLE } from './hermes-jobs.mjs';
 
 import { fail, HandlerError } from './handler-error.mjs';
+import { nextStepOf, nextStepsFor } from './next-step.mjs';
 import { BUSINESS_HANDLERS } from './business-handlers.mjs';
 
 export { fail, HandlerError };
@@ -148,13 +149,15 @@ const taskStatus = ({ task, store }) => {
       };
     });
     const others = view === 'awaiting_approval' ? store.listTasks({ state: 'awaiting_approval', business: task.business }).filter((t) => t.source !== task.source).length : undefined;
-    return { result: { view, total: mine.length, items, ...(others !== undefined ? { others_awaiting_approval: others } : {}) } };
+    // 失敗した項目の code ごとの「次にやること」（決まった文だけ・2026-11-24・next-step.mjs）
+    const problems = items.filter((i) => OPS_PROBLEM.has(i.state));
+    return { result: { view, total: mine.length, items, ...(problems.length ? { next_steps: nextStepsFor(problems) } : {}), ...(others !== undefined ? { others_awaiting_approval: others } : {}) } };
   }
   const other = store.findByKey(task.source, ref); // 同じ依頼元の中でしか探せない
   // 無い・別の business は同じ答え not_found（存在を教えない）。自分自身の key を引けば found（state は running）
   if (!other || other.business !== task.business) return { result: { found: false, code: 'not_found' } };
   const h = hermesOf(store, other);
-  return { result: { found: true, state: other.state, intent: other.intent, updated_at: other.updated_at, ...(other.error?.code ? { code: other.error.code } : {}), ...(h ? { hermes: h } : {}) } };
+  return { result: { found: true, state: other.state, intent: other.intent, updated_at: other.updated_at, ...(other.error?.code ? { code: other.error.code } : {}), ...(OPS_PROBLEM.has(other.state) ? { next: nextStepOf(other.error?.code, other.state) } : {}), ...(h ? { hermes: h } : {}) } };
 };
 
 const mailIngest = ({ task, store, now, signal }) => {

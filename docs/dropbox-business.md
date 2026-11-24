@@ -223,3 +223,19 @@ EN司令塔の business は今 e-nexus だけ＝E-STEP の Dropbox を EN司令�
 - 4 の前に、許可フォルダ・名前の拒否が本番の config で効いていること（2）と、EN司令塔の鍵の businesses が `e-step` を含む時に **E-NEXUS の business は Dropbox の設定が無い＝閉じたまま**であること（`dropbox_business_not_enabled`）を確かめる
 - Dropbox の資格情報の失敗（切れた・障害）が続いても Task Hub 全体は止まらない：Dropbox の task だけ一時止まる（`docs/task-hub.md` §5「機能ごとの回路遮断」）。状況は `status.query {detail:true}` の `suspended`
 
+
+### 8-1. 段 2（読むだけの検収）の実機の結果（2026-11-24）
+
+本番の store・本番の config（e-step・read_only）で、source human-cli の依頼を 5 分ごとの回（LaunchAgent）に通した。Dropbox へは書いていない。名前・path は Mac の store にだけ残り、ここには書かない。
+
+| 依頼 | 結果 |
+|---|---|
+| `dropbox.list`（許可フォルダの 1 つ目） | succeeded（Decision Layer の tier auto・読みの資格情報・一覧 1 件） |
+| `dropbox.search`（同じフォルダ・query `pdf`） | succeeded（範囲の中の 1 件） |
+| `schedule.read {}`（今日から 7 日） | succeeded（calendar の形・7 日・truncated なし） |
+| `dropbox.list`（許可フォルダの外の path） | failed `dropbox_path_not_allowed`（Dropbox に聞く前に止まる） |
+| `dropbox.list`（許可フォルダの下の「給与」） | failed `dropbox_path_not_allowed`（名前で読ませない共通の下限） |
+
+- 拒否の 2 件は想定内の失敗（回路遮断に数えない）。ただし、その回の `task-hub-cycle` の記録は 1 回だけ `problem`（run の段が失敗の task を含む時の決まり）。host-health の通知は 2 回続いた時だけなので、通知は出ない
+- 同じ回の後に human-cli の `task.status {view:"failed"}` が、拒否の 2 件と `next_steps`（`dropbox_path_not_allowed`＝who human・retry no）を返した（`docs/grok-bot.md` §8）。次の回の記録は `ok` に戻った
+- 段 1（許可フォルダの承認）は、台帳の `dropbox-folders` が open のまま（config は 2026-11-20 に適用済み）。閉じてよいかは Human が決める

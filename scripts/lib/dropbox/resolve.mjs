@@ -65,3 +65,22 @@ export async function resolveReal(reader, scope, requested, kind = 'any', { sign
   }
   return cur;
 }
+
+/**
+ * Dropbox の file の ID（`id:…`）から実の path を引き、その path で読んでよいかを判定する（2026-11-24・E-STEP LINK の files.dropbox_id への準備）。
+ * まだどの intent にもつないでいない（LINK の sites/ を許可フォルダに足すのは Human の承認）。
+ *
+ * - ID の形は `id:` ＋ 英数字・`_`・`-`（Dropbox の ID の形）。それ以外は dropbox_id_invalid（Dropbox に聞かない）
+ * - Dropbox が返した ID が依頼の ID と違う・path が無い（共有の外など）・許可フォルダの外・読ませない名前・一覧に出さない見積のフォルダ（kind に依る）は、
+ *   **どれも dropbox_id_not_readable**（無い ID と区別しない＝範囲の外に file が在ることを教えない）
+ * - 戻り値は実の path と rev。**読む時は ID ではなく、この path と rev で読む**（判定の後に file が範囲の外へ動かされても、ID で読んで外の file を返さない）
+ */
+const ID_RE = /^id:[A-Za-z0-9_-]{1,128}$/;
+export async function resolveById(reader, scope, id, kind = 'any', { signal } = {}) {
+  if (typeof id !== 'string' || !ID_RE.test(id)) throw new ScopeError('dropbox_id_invalid');
+  let meta;
+  try { meta = await reader.metadata(id, { ids: true, signal }); } catch (e) { if (isNotFound(e)) throw new ScopeError('dropbox_id_not_readable'); throw e; }
+  const p = meta?.id === id && typeof meta.path === 'string' ? normPath(meta.path) : null;
+  if (!p) throw new ScopeError('dropbox_id_not_readable');
+  try { return { path: assertReadable(scope, p, kind), tag: meta.tag, ...(meta.rev ? { rev: meta.rev } : {}) }; } catch (e) { if (e instanceof ScopeError) throw new ScopeError('dropbox_id_not_readable'); throw e; }
+}

@@ -42,6 +42,7 @@ source `grok-commander`・business `e-nexus` だけ（VPS の鍵の intents と 
   > 質問と呼び方（params はこの形だけ。他の key を足さない）：
   > ・「承認待ちは？」→ intent "task.status"、params {"view":"awaiting_approval"}。items が自分の依頼、others_awaiting_approval は他の経路の承認待ちの件数。承認は Mac の端末で人が行うと伝える。
   > ・「最近失敗した仕事は？」→ intent "task.status"、params {"view":"failed"}。
+  > ・「失敗の原因と対応は？」→ intent "task.status"、params {"view":"failed"}。result.next_steps の code ごとの who（requester＝params を直せば通る・human＝Mac の Human の判断か設定が要る・wait＝一時的）と retry（new_key＝新しい key で 1 回・later＝時間をおいて 1 回・no＝出し直さない）と text をそのまま伝える。1 件だけなら get_task_status の result.next。retry が no の依頼は出し直さない。
   > ・「さっきの仕事は終わった？」→ 直前の task_ref が分かれば get_task_status。分からなければ intent "task.status"、params {"view":"recent"}。
   > ・「終わった仕事の一覧」→ intent "task.status"、params {"view":"succeeded"}。
   > ・「Hermes は正常？」→ intent "status.query"、params {"detail":true}（result.hermes と result.sections.hermes を読む）。Hermes に出した依頼の結果は intent "task.status"、params {"view":"hermes"}。
@@ -84,6 +85,7 @@ Grok Bot は Gmail・Google カレンダーに接続済み。新しい OAuth・�
 | 失敗の原因・次の作業の整理 | 「失敗の原因と次にやることを Hermes に整理させて」 | `hermes.task {kind:"ops_review"}` | 毎回 Mac で承認（課金あり） |
 | 承認待ちの一覧 | 「承認待ちは？」 | `task.status {view:"awaiting_approval"}` | 今使える（11-16 に EN司令塔からの往復を検収済み・§7。承認は Mac の端末） |
 | 失敗した仕事 | 「最近失敗した仕事は？」 | `task.status {view:"failed"}` | 同上 |
+| 失敗の原因と対応 | 「失敗の原因と対応は？」 | `task.status {view:"failed"}` の `next_steps`（code ごとの決まった文・2026-11-24・§8） | 今使える（Mac の側。Grok からの往復は未検収） |
 | さっきの仕事 | 「さっきの仕事は終わった？」 | `get_task_status`（task_ref）・`task.status {}`（recent） | 同上 |
 | 終わった仕事 | 「終わった仕事の一覧」 | `task.status {view:"succeeded"}` | 同上 |
 | 朝のまとめ | 「朝のまとめを出して」 | `report.morning` | 今使える |
@@ -123,3 +125,14 @@ Human が「人間が作ったタブ 1 と 2 は触らないで」と言わな�
 境は変えていない：返すのは同じ依頼元・同じ business の依頼だけ、他の依頼元の承認待ちは件数だけ、依頼の題名・本文は返さない。
 
 検収：Mac の本番の store・本番の config で `{}`・`{"view":"pending"}`・`{"view":"failed"}`・`{"view":"hermes"}` が succeeded、`{"view":"approvals"}` が rejected＋hint（2026-11-16・source human-cli）。**EN司令塔からの往復（Grok → VPS → Mac → 結果）は検収済み**：2026-11-16 08:26Z に grok-commander（channel vps-intake）の task.status 4 件（`{}`・`view:"pending"`・`view:"failed"`・`view:"hermes"`）が Mac の store で succeeded（2026-11-18 に Claude Code が `task-hub list` と task の記録で確認）。EN司令塔の指示文（§3）を Grok の画面に貼ったかは未確認（ledger `grok-ask-first`）。
+
+## 8. 失敗の「次にやること」（2026-11-24）
+
+`task.status` の一覧に失敗（failed・rejected・expired・stopped・blocked）が含まれる時、結果に `next_steps` を付ける：code（無ければ state）ごとに `{ who, retry, text }` が 1 つ。1 件の `task_ref` で引いた失敗には `next` が付く。
+
+- who：`requester`（依頼元が params を直せば通る）／`human`（Mac の Human の判断・承認・設定が要る）／`wait`（時間切れ・回線・混雑などの一時的な失敗）
+- retry：`new_key`（新しい idempotency_key で 1 回）／`later`（時間をおいて 1 回）／`no`（出し直さない）
+- 文は `scripts/lib/task-hub/next-step.mjs` の表の**決まった文だけ**。依頼の中身・Mac の log・他の依頼元の情報は混ざらない（外へ出す範囲は変えていない）。表に無い code は「Mac で確かめる・出し直さない」
+- 自動の再実行はしない。Human の承認の境（`hermes.task` など）も変えていない
+
+検収：合成の store の試験（`tests/task-hub-next-step-20261124.test.mjs`）と、Mac の本番の store で source human-cli の依頼（2026-11-24）。**EN司令塔からの往復は未検収**（Human が「失敗の原因と対応は？」と聞いて、結果の `next_steps` を確かめる）。§3 の指示文の候補に 1 行足した（Grok の画面で貼るのは Human）。
