@@ -248,7 +248,7 @@ Grok・Mac の端末から話した・書いた現場の内容は、`note.record
 - 同じ現場・同じ日・同じ文の出し直しは 1 件（`duplicate: true`）。訂正は新しい口述として足す（前の行を消さない＝変更の前と後が両方残る）。版の照合・古い版での上書きの拒否は `karte-diff-v1` の側（APP-040）
 - 結果に内部の ID（task・記録）と原文を返さない。返すのは `recorded`・現場名・日付だけ（決定 G）
 - APP 側への渡し方：`node scripts/karte-dictation-export.mjs --business <b> --out <file>` が `dictation-input-v1` の JSONL を書く（`input_id` は Mac の記録から作る固定の値・`case_id` は case_ref か現場名＝H-17 が決まるまでの仮）。置き場所（H-3・H-15）が決まるまで、自動では渡さない
-- **原文の注意**：Task Hub の受け口は依頼の文字を NFKC に揃える＝全角の数字・「：」などは半角になる（`dictation-input-v1` の「原文は改変しない」と食い違う。台帳 `task-hub-nfkc-text` で判断）
+- **原文と解析用の文（2026-11-24 に直した）**：受け口は params を NFKC に揃える（鍵の形・見た目の同じ文字の検査のため）。`params.text` が揃えで変わった時は、受け取ったままの文を task の `raw_text` に別に残し、口述の記録は `text`＝原文・`text_normalized`＝揃えた形。承認の digest と params は変えない。見えない文字を含む原文は残さない。書き出し（`dictation-input-v1`）は原文
 - EN司令塔からの e-step の口述は、今は `business_intents` の外＝毎回 Mac で承認（公開は台帳 `dropbox-grok-exposure` の次の段）
 
 ## 9. 2026-11-24 の Human 決定（A〜G）と実装の対応
@@ -264,3 +264,10 @@ Grok・Mac の端末から話した・書いた現場の内容は、`note.record
 | E カルテは AI 主体 | 口述の原文・日時・候補・確定値と未確認値・訂正・履歴・参照。1 案件 1 カルテ | 受け付けと原文の記録まで実装（§5-2）。構造化・版・差分は APP 側の karte-adapter を使う（二重に作らない）。Mac の Markdown のカルテは H-3・H-15 まで機能を足さない（§5-1） |
 | F 写真・書類の紐付け | 実体は今の場所・ID と参照で結ぶ・LINK の写真は LINK の file-gateway | `resolveById`（Dropbox の ID → 実の path → 許可の判定）は準備済み・未接続。写真の upload の仕組みは Mac に作らない |
 | G 内部 ID の通常の非表示 | 現場 ID・写真 ID・Dropbox ID・task ID は画面・PDF・カルテの本文に出さない。聞かれた時だけ | 口述の結果は ID を返さない。結果の板の上の段の `task_id` は受け渡しの契約として残す（Grok の指示文で「聞かれない限り出さない」・docs/grok-bot.md §10）。ID を隠すことを機密の保護の代わりにはしない |
+
+### 9-1. スキャンの保存先（2026-11-24・実の Dropbox で読むだけで確かめた）
+
+- 一番上にスキャンのフォルダが 2 つ：今使っている側（約 330 file・PDF が 9 割・約 150 MiB・2026-11 まで更新）と、2026-03 に写した前の写し（中身の 98% が今の側と同じ＝足さない）
+- 中は作業員の資格証・安全書類・提出書類が多く、約 1/3 は名前の共通の下限に当たる。**資格証は下限の語に無い**＝名前で絞れない個人の書類が中心
+- 案（未適用・台帳 `dropbox-scan-folder`）：今の側を e-step の read_roots に足し、`external.deny_roots` で同じフォルダを外へ返さない＝Mac の端末（human-cli）だけが一覧・検索できる。PDF の取り出しは `pdf_roots` の別の承認と、毎回の Mac での承認
+- 画像だけの PDF の文字の検索（OCR）は、この Mac の今の道具に無い。新しい有料の OCR は入れない（必要なら別の判断）

@@ -206,7 +206,9 @@ function recordDictation({ task, store, now }) {
   const have = store.readRecords(task.business, 'dictation');
   if (have.has(task.task_id)) return { result: { recorded: true, ...shown } };
   if ([...have.values()].some((r) => r.digest === digest)) return { result: { recorded: true, duplicate: true, ...shown } };
-  store.appendRecords(task.business, 'dictation', [{ id: task.task_id, at: iso(now), source: task.source, text: p.text, digest, channel: p.channel ?? 'unknown', ...(p.site ? { site: p.site } : {}), ...(p.case_ref ? { case_ref: p.case_ref } : {}), ...(p.recorded_on ? { recorded_on: p.recorded_on } : {}) }]);
+  // 原文（受け口で揃える前）があればそれを text に、揃えた文は text_normalized に（検索・解析用）。照合できない原文は使わない
+  const original = typeof task.raw_text === 'string' && task.raw_text.normalize('NFKC') === p.text ? task.raw_text : p.text;
+  store.appendRecords(task.business, 'dictation', [{ id: task.task_id, at: iso(now), source: task.source, text: original, ...(original !== p.text ? { text_normalized: p.text } : {}), digest, channel: p.channel ?? 'unknown', ...(p.site ? { site: p.site } : {}), ...(p.case_ref ? { case_ref: p.case_ref } : {}), ...(p.recorded_on ? { recorded_on: p.recorded_on } : {}) }]);
   return { result: { recorded: true, ...shown } };
 }
 

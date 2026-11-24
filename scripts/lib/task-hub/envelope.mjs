@@ -126,7 +126,11 @@ export function parseEnvelope(input) {
       if (typeof raw.summary !== 'string' || raw.summary.length > MAX_SUMMARY) throw new Reject('summary');
       summary = cleanString(raw.summary, ctx, MAX_SUMMARY);
     }
-    return { ok: true, envelope: { v: ENVELOPE_VERSION, idempotency_key, business, intent, params, summary }, sanitized: ctx.sanitized };
+    // 原文（2026-11-24・Human 決定：原文と解析用の文を分ける）：params.text が NFKC で変わった時だけ、受け取ったままの文を別に返す。
+    // 見えない文字を含む原文は残さない（見た目で騙す文字を記録に入れない）。原文を NFKC にすると params.text と同じ＝後から照合できる
+    const orig = raw.params.text;
+    const raw_text = typeof orig === 'string' && typeof params.text === 'string' && orig !== params.text && !INVISIBLE.test(orig) && orig.normalize('NFKC') === params.text ? orig : null;
+    return { ok: true, envelope: { v: ENVELOPE_VERSION, idempotency_key, business, intent, params, summary, ...(raw_text ? { raw_text } : {}) }, sanitized: ctx.sanitized };
   } catch (e) {
     if (e instanceof Reject) return { ok: false, code: e.code };
     return { ok: false, code: 'invalid' };

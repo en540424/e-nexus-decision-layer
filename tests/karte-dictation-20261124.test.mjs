@@ -56,9 +56,11 @@ test('同じ現場への追記・訂正は別の行で両方残る（前の内�
     const again = await s.human(dict());
     assert.equal(again.result.duplicate, true);
     assert.equal(s.rows().length, 3);
-    assert.ok(s.rows().some((r) => r.text.includes('約6メートル。')) && s.rows().some((r) => r.text.startsWith('訂正:')), '訂正の前と後の両方が残る');
-    // 受け口は文字を NFKC に揃える＝全角の「：」は半角の「:」になる（原文のままではない・台帳 task-hub-nfkc-text の判断待ち）
-    assert.ok(!s.rows().some((r) => r.text.includes('：')));
+    assert.ok(s.rows().some((r) => r.text.includes('約6メートル。')) && s.rows().some((r) => r.text.startsWith('訂正：')), '訂正の前と後の両方が残る');
+    // 原文と解析用の文を分ける（2026-11-24）：text は受け取ったまま（全角の「：」）・text_normalized は受け口で揃えた形（半角の「:」）
+    const fix = s.rows().find((r) => r.text.startsWith('訂正：'));
+    assert.equal(fix.text_normalized, fix.text.normalize('NFKC'));
+    assert.ok(fix.text_normalized.startsWith('訂正:'));
   } finally { s.cleanup(); }
 });
 

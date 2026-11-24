@@ -406,6 +406,7 @@ export function openStore(dir, { now = () => Date.now(), lockHooks } = {}) {
         attempts: 0, max_attempts: t.max_attempts ?? 3, next_try_at: null, timeout_ms: t.timeout_ms ?? 10_000, lease_until: null,
         checkpoint: null, result: null, error: t.code ? { code: t.code, ...(isHint(t.hint) ? { hint: t.hint } : {}) } : null, approval: null,
         history: [{ at: iso(at), state: t.state, event: 'created', ...(t.code ? { code: t.code } : {}) }], created_at: iso(at), updated_at: iso(at),
+        ...(typeof t.raw_text === 'string' && t.raw_text.normalize('NFKC') === t.params?.text ? { raw_text: t.raw_text } : {}), // 原文（2026-11-24・承認の digest には入れない＝params.text と NFKC で照合できる物だけ）
       };
     },
     _write(task, event, at, code = null) {
